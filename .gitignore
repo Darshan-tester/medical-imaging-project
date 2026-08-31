@@ -1,0 +1,101 @@
+# ==========================================
+# Node / Next.js
+# ==========================================
+
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# ==========================================
+# Environment / Secrets
+# ==========================================
+
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+
+# ==========================================
+# Local ScanLab generated data
+# ==========================================
+
+.scanlab/
+
+# ==========================================
+# Medical datasets
+# ==========================================
+
+ScanLab_Datasets/
+datasets/
+data/
+
+# DICOM
+*.dcm
+*.dicom
+
+# NIfTI / MRI
+*.nii
+*.nii.gz
+
+# Medical image archives
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+
+# Large image files
+*.tif
+*.tiff
+*.bmp
+
+# ==========================================
+# Python
+# ==========================================
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# ==========================================
+# Logs
+# ==========================================
+
+*.log
+logs/
+
+# ==========================================
+# OS files
+# ==========================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# IDE
+# ==========================================
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+.idea/
+
+# ==========================================
+# Temporary files
+# ==========================================
+
+*.tmp
+*.temp
+*.bak

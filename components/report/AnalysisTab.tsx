@@ -1,0 +1,872 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square } from "lucide-react";
+import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage } from "@/lib/types";
+import { CURRENT_USER } from "@/lib/mock-data";
+import { resolveReportPanelContent } from "@/lib/report-utils";
+import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
+import { ImageViewer } from "@/components/viewer/ImageViewer";
+import { ViewerToolbar, DEFAULT_VIEWER_STATE, ViewerState } from "@/components/viewer/ViewerToolbar";
+import { AnnotationToolbar, AnnotationBrushSize, BRUSH_WIDTH_PX, DEFAULT_ANNOTATION_COLOR } from "@/components/viewer/AnnotationToolbar";
+import { AnnotationEditor, FindingDraft } from "@/components/viewer/AnnotationEditor";
+import { SliceNavigator } from "@/components/viewer/SliceNavigator";
+import { ThumbnailStrip } from "@/components/viewer/ThumbnailStrip";
+import { FindingsPanel } from "@/components/viewer/FindingsPanel";
+import { MarkersPanel } from "@/components/viewer/MarkersPanel";
+import { RadiologyReportPanel } from "@/components/report/RadiologyReportPanel";
+import { Drawer } from "@/components/ui/Drawer";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { cn } from "@/lib/utils";
+
+type RightPanelTab = "ai" | "report" | "annotations";
+const RIGHT_PANEL_TABS: { key: RightPanelTab; label: string; icon: React.ElementType }[] = [
+  { key: "ai", label: "AI Findings", icon: Sparkles },
+  { key: "report", label: "Radiology Report", icon: FileText },
+  { key: "annotations", label: "Annotations", icon: Pencil },
+];
+
+/**
+ * three.js + the ray-marching viewer are ~150 kB that only CT (and any other
+ * reconstructed stack) can use, so they are only fetched once the radiologist
+ * actually switches a volumetric series into 3-D.
+ */
+const Volume3DViewer = dynamic(() => import("@/components/viewer/Volume3DViewer").then((m) => m.Volume3DViewer), {
+  ssr: false,
+  loading: () => <div className="h-full w-full animate-pulse rounded-lg bg-viewer" />,
+});
+
+// Keys that should never hijack normal typing (note inputs, future text fields, etc.)
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+const newId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+export function AnalysisTab({
+  study,
+  onUpdateFinding,
+  onAppendFindingToReport,
+  onOpenReportTab,
+}: {
+  study: Study;
+  onUpdateFinding: (id: string, patch: Partial<Finding>) => void;
+  /** Appends a radiologist-authored finding into the report's Findings section — never overwrites existing report content. */
+  onAppendFindingToReport: (text: string) => void;
+  /** Jumps to the full Report & Approval tab — used by the Radiology Report panel's "Open full Report" button. */
+  onOpenReportTab?: () => void;
+}) {
+  const [activeSeriesId, setActiveSeriesId] = useState(study.series[0]?.id ?? "");
+  const [currentSlice, setCurrentSlice] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [viewerState, setViewerState] = useState<ViewerState>(DEFAULT_VIEWER_STATE);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<RightPanelTab>("ai");
+  const [mobileSeriesOpen, setMobileSeriesOpen] = useState(false);
+  const [mobileFindingsOpen, setMobileFindingsOpen] = useState(false);
+  const [mobileMarkersOpen, setMobileMarkersOpen] = useState(false);
+  const [mobileReportOpen, setMobileReportOpen] = useState(false);
+
+  /*
+   * 2-D planes vs. the interactive volume render. Only offered for a series the
+   * indexer actually reconstructed into a stack (`SeriesInfo.volumeAvailable`);
+   * there is deliberately no 3-D mode that fakes a volume out of one X-ray.
+   */
+  const [view3D, setView3D] = useState(false);
+
+  // Markers and measurements live for the whole study session (not persisted to
+  // a backend — nothing else in this demo app persists edits either — but
+  // scoped in memory to their exact series + slice so they never leak across
+  // images when the user navigates).
+  const [markers, setMarkers] = useState<Marker[]>([]);
+  const [measurements, setMeasurements] = useState<ViewerMeasurement[]>([]);
+
+  // ---- Radiologist pen/pencil annotations + findings ----------------------
+  // Same in-memory, session-scoped persistence model as markers/measurements
+  // above (this demo app has no backend yet); always tagged with the exact
+  // study + series + slice they belong to and filtered down before reaching
+  // ImageViewer, so a stroke never leaks onto another slice.
+  const [annotations, setAnnotations] = useState<ViewerAnnotation[]>([]);
+  const [radiologistFindings, setRadiologistFindings] = useState<RadiologistFinding[]>([]);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  // Undo/redo history, scoped per "seriesId:sliceIndex" — undo only ever
+  // pops the most recently drawn stroke *for the slice currently on screen*.
+  const [redoStacks, setRedoStacks] = useState<Record<string, ViewerAnnotation[]>>({});
+  const [brushColor, setBrushColor] = useState(DEFAULT_ANNOTATION_COLOR);
+  const [brushSize, setBrushSize] = useState<AnnotationBrushSize>("medium");
+  const [brushOpacity, setBrushOpacity] = useState(1);
+
+  const [findingEditorOpen, setFindingEditorOpen] = useState(false);
+  const [findingEditorAnnotationId, setFindingEditorAnnotationId] = useState<string | null>(null);
+  const [editingFindingId, setEditingFindingId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ annotationId: string; findingId: string } | null>(null);
+
+  // Wraps the whole viewer column (toolbar + image + slice controls) so
+  // navigation isn't lost when the user goes fullscreen.
+  const fullscreenRef = useRef<HTMLDivElement>(null);
+
+  const activeSeries = study.series.find((s) => s.id === activeSeriesId) ?? study.series[0];
+  const isProcessing = study.status === "queued" || study.status === "processing";
+  const activeFindingId = hoveredId ?? selectedId;
+  const sliceKey = `${activeSeries?.id ?? ""}:${currentSlice}`;
+  const reportPanelContent = useMemo(() => resolveReportPanelContent(study), [study]);
+
+  const visibleFindings = useMemo(
+    () =>
+      study.findings.filter(
+        (f) => f.sliceIndex === currentSlice && (!f.seriesId || !activeSeries || f.seriesId === activeSeries.id)
+      ),
+    [study.findings, currentSlice, activeSeries]
+  );
+
+  const currentMarkers = useMemo(
+    () => markers.filter((m) => m.seriesId === activeSeries?.id && m.sliceIndex === currentSlice),
+    [markers, activeSeries, currentSlice]
+  );
+  const currentMeasurements = useMemo(
+    () => measurements.filter((m) => m.seriesId === activeSeries?.id && m.sliceIndex === currentSlice),
+    [measurements, activeSeries, currentSlice]
+  );
+  const currentAnnotations = useMemo(
+    () => annotations.filter((a) => a.seriesId === activeSeries?.id && a.sliceIndex === currentSlice),
+    [annotations, activeSeries, currentSlice]
+  );
+  const canUndo = currentAnnotations.length > 0;
+  const canRedo = (redoStacks[sliceKey]?.length ?? 0) > 0;
+
+  // Prefer real per-series images (future PACS-ready shape) over the flat
+  // study-level upload list, falling back to the synthetic placeholder when
+  // neither exists — never fabricated, just whatever real data is present.
+  //
+  // Looked up by `ViewerImage.index`, not by array position: an adapter that
+  // skipped an unreadable instance leaves a gap, and positional access would
+  // then quietly display the wrong slice (off-by-N for every slice after the
+  // gap) while the slider still read "12/220".
+  const imageByIndex = useMemo(() => {
+    const map = new Map<number, ViewerImage>();
+    for (const img of activeSeries?.images ?? []) map.set(img.index, img);
+    return map;
+  }, [activeSeries]);
+
+  const activeImageUrl =
+    imageByIndex.get(currentSlice)?.imageUrl ??
+    (study.imageUrls && study.imageUrls.length > 0 ? study.imageUrls[currentSlice % study.imageUrls.length] : undefined);
+
+  /*
+   * A real indexed dataset study is expected to have a URL for every slice, so a
+   * missing one is a genuine error worth surfacing. A seeded demo study has no
+   * files at all by design and must keep its synthetic placeholder.
+   */
+  const isDatasetStudy = Boolean(study.datasetSource);
+  const hasImageData = !isDatasetStudy || Boolean(activeImageUrl);
+
+  /*
+   * Cine backpressure: cleared the moment the slice changes, set when that
+   * slice's pixels finish decoding. Placeholder-only studies have nothing to
+   * wait for, so they report ready immediately and play at full rate.
+   */
+  const [imageReady, setImageReady] = useState(false);
+  useEffect(() => {
+    setImageReady(false);
+  }, [activeImageUrl]);
+
+  /*
+   * Clamp when the series shrinks under us (series switch, or a re-index that
+   * dropped instances). Without this, `currentSlice` could sit past the end and
+   * the viewer would render nothing while the strip highlighted a tile that no
+   * longer exists.
+   */
+  useEffect(() => {
+    if (!activeSeries) return;
+    const last = Math.max(0, activeSeries.sliceCount - 1);
+    setCurrentSlice((prev) => (prev > last ? last : prev));
+  }, [activeSeries]);
+
+  /*
+   * A series with no reconstructed volume can never show 3-D, so drop out of it
+   * rather than leaving the viewer on a mode that would 404 the volume route.
+   */
+  const volumeAvailable = Boolean(activeSeries?.volumeAvailable);
+  useEffect(() => {
+    if (!volumeAvailable) setView3D(false);
+  }, [volumeAvailable]);
+
+  const onSelectSeries = useCallback((id: string) => {
+    setActiveSeriesId(id);
+    setCurrentSlice(0);
+    setPlaying(false);
+    setView3D(false);
+    setSelectedAnnotationId(null);
+    // Viewer settings (zoom/pan/brightness/contrast/invert) intentionally persist across series switches.
+  }, []);
+
+  const onChangeSlice = useCallback(
+    (n: number) => {
+      if (!activeSeries) return;
+      setCurrentSlice(Math.max(0, Math.min(activeSeries.sliceCount - 1, n)));
+      setSelectedAnnotationId(null);
+    },
+    [activeSeries]
+  );
+
+  const onSelectFinding = useCallback(
+    (id: string) => {
+      setSelectedId((prev) => (prev === id ? null : id));
+      const finding = study.findings.find((f) => f.id === id);
+      if (!finding) return;
+      const targetSeriesId = finding.seriesId ?? activeSeries?.id;
+      if (targetSeriesId && targetSeriesId !== activeSeriesId) {
+        setActiveSeriesId(targetSeriesId);
+      }
+      setCurrentSlice(finding.sliceIndex);
+      setPlaying(false);
+      setSelectedAnnotationId(null);
+      // Focus the finding: bring the full frame back into view so its
+      // bounding box (drawn in unpanned, unzoomed coordinates) is visible.
+      setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));
+    },
+    [study.findings, activeSeries, activeSeriesId]
+  );
+
+  const onJumpToMarker = useCallback((marker: Marker) => {
+    setActiveSeriesId(marker.seriesId);
+    setCurrentSlice(marker.sliceIndex);
+    setPlaying(false);
+    setSelectedAnnotationId(null);
+    setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));
+  }, []);
+
+  const onAddMarker = useCallback(
+    (m: { id: string; x: number; y: number }) => {
+      if (!activeSeries) return;
+      setMarkers((prev) => [...prev, { ...m, seriesId: activeSeries.id, sliceIndex: currentSlice, createdAt: new Date().toISOString() }]);
+    },
+    [activeSeries, currentSlice]
+  );
+  const onUpdateMarkerNote = useCallback((id: string, note: string) => {
+    setMarkers((prev) => prev.map((m) => (m.id === id ? { ...m, note } : m)));
+  }, []);
+  const onDeleteMarker = useCallback((id: string) => {
+    setMarkers((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  const onAddMeasurement = useCallback(
+    (m: { id: string; a: { x: number; y: number }; b: { x: number; y: number }; distancePx: number }) => {
+      if (!activeSeries) return;
+      setMeasurements((prev) => [...prev, { ...m, seriesId: activeSeries.id, sliceIndex: currentSlice }]);
+    },
+    [activeSeries, currentSlice]
+  );
+
+  const onClearAnnotations = useCallback(() => {
+    if (!activeSeries) return;
+    setMarkers((prev) => prev.filter((m) => !(m.seriesId === activeSeries.id && m.sliceIndex === currentSlice)));
+    setMeasurements((prev) => prev.filter((m) => !(m.seriesId === activeSeries.id && m.sliceIndex === currentSlice)));
+  }, [activeSeries, currentSlice]);
+
+  // ---- Pen annotation handlers --------------------------------------------
+
+  const onCommitStroke = useCallback(
+    (points: { x: number; y: number }[]) => {
+      if (!activeSeries) return;
+      const now = new Date().toISOString();
+      const stroke: ViewerAnnotation = {
+        id: newId("ann"),
+        studyId: study.studyId,
+        seriesId: activeSeries.id,
+        sliceIndex: currentSlice,
+        type: "freehand",
+        points,
+        color: brushColor,
+        strokeWidth: BRUSH_WIDTH_PX[brushSize],
+        opacity: brushOpacity,
+        createdAt: now,
+        updatedAt: now,
+      };
+      setAnnotations((prev) => [...prev, stroke]);
+      // A fresh stroke invalidates whatever was previously undone on this slice.
+      setRedoStacks((prev) => ({ ...prev, [sliceKey]: [] }));
+      setSelectedAnnotationId(stroke.id);
+    },
+    [activeSeries, currentSlice, study.studyId, brushColor, brushSize, brushOpacity, sliceKey]
+  );
+
+  const onUndo = useCallback(() => {
+    if (!activeSeries || currentAnnotations.length === 0) return;
+    const last = [...currentAnnotations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).pop()!;
+    setAnnotations((prev) => prev.filter((a) => a.id !== last.id));
+    setRedoStacks((prev) => ({ ...prev, [sliceKey]: [...(prev[sliceKey] ?? []), last] }));
+    setSelectedAnnotationId((prev) => (prev === last.id ? null : prev));
+  }, [activeSeries, currentAnnotations, sliceKey]);
+
+  const onRedo = useCallback(() => {
+    const stack = redoStacks[sliceKey];
+    if (!stack || stack.length === 0) return;
+    const restored = stack[stack.length - 1];
+    setAnnotations((prev) => [...prev, restored]);
+    setRedoStacks((prev) => ({ ...prev, [sliceKey]: prev[sliceKey].slice(0, -1) }));
+  }, [redoStacks, sliceKey]);
+
+  const onQuickAnnotationNote = useCallback((id: string, note: string) => {
+    setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, radiologistNote: note, updatedAt: new Date().toISOString() } : a)));
+  }, []);
+
+  const removeAnnotation = useCallback((id: string, alsoDeleteFinding: boolean) => {
+    setAnnotations((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target?.findingId) {
+        if (alsoDeleteFinding) {
+          setRadiologistFindings((f) => f.filter((rf) => rf.id !== target.findingId));
+        } else {
+          setRadiologistFindings((f) => f.map((rf) => (rf.id === target.findingId ? { ...rf, annotationId: undefined } : rf)));
+        }
+      }
+      return prev.filter((a) => a.id !== id);
+    });
+    setSelectedAnnotationId((prev) => (prev === id ? null : prev));
+  }, []);
+
+  const onRequestDeleteAnnotation = useCallback(
+    (id: string) => {
+      const target = annotations.find((a) => a.id === id);
+      if (target?.findingId) {
+        setDeleteConfirm({ annotationId: id, findingId: target.findingId });
+      } else {
+        removeAnnotation(id, false);
+      }
+    },
+    [annotations, removeAnnotation]
+  );
+
+  const onClearPenAnnotations = useCallback(() => {
+    if (!activeSeries) return;
+    // Bulk clear: detach (don't delete) any attached findings — the cleaner
+    // UX for a multi-stroke action than prompting once per annotation.
+    const idsToRemove = new Set(currentAnnotations.map((a) => a.id));
+    const findingIdsToDetach = new Set(currentAnnotations.map((a) => a.findingId).filter(Boolean) as string[]);
+    setAnnotations((prev) => prev.filter((a) => !idsToRemove.has(a.id)));
+    if (findingIdsToDetach.size > 0) {
+      setRadiologistFindings((prev) => prev.map((f) => (findingIdsToDetach.has(f.id) ? { ...f, annotationId: undefined } : f)));
+    }
+    setRedoStacks((prev) => ({ ...prev, [sliceKey]: [] }));
+    setSelectedAnnotationId(null);
+  }, [activeSeries, currentAnnotations, sliceKey]);
+
+  const onExitPenMode = useCallback(() => {
+    setViewerState((s) => ({ ...s, tool: "pan" }));
+    setSelectedAnnotationId(null);
+  }, []);
+
+  const onOpenAddFinding = useCallback((annotationId: string) => {
+    setFindingEditorAnnotationId(annotationId);
+    setEditingFindingId(null);
+    setFindingEditorOpen(true);
+  }, []);
+
+  const onOpenEditFinding = useCallback(
+    (annotationId: string) => {
+      const ann = annotations.find((a) => a.id === annotationId);
+      if (!ann?.findingId) return;
+      setFindingEditorAnnotationId(annotationId);
+      setEditingFindingId(ann.findingId);
+      setFindingEditorOpen(true);
+    },
+    [annotations]
+  );
+
+  const onSaveFinding = useCallback(
+    (draft: FindingDraft) => {
+      if (!activeSeries) return;
+      const now = new Date().toISOString();
+      const clean = (v: string) => (v.trim().length > 0 ? v : undefined);
+
+      if (editingFindingId) {
+        setRadiologistFindings((prev) =>
+          prev.map((f) =>
+            f.id === editingFindingId
+              ? {
+                  ...f,
+                  text: draft.text,
+                  findingType: clean(draft.findingType),
+                  location: clean(draft.location),
+                  severity: clean(draft.severity),
+                  confidence: clean(draft.confidence),
+                  radiologistNote: clean(draft.radiologistNote),
+                  updatedAt: now,
+                }
+              : f
+          )
+        );
+      } else {
+        const finding: RadiologistFinding = {
+          id: newId("rf"),
+          studyId: study.studyId,
+          seriesId: activeSeries.id,
+          sliceIndex: currentSlice,
+          annotationId: findingEditorAnnotationId ?? undefined,
+          text: draft.text,
+          findingType: clean(draft.findingType),
+          location: clean(draft.location),
+          severity: clean(draft.severity),
+          confidence: clean(draft.confidence),
+          radiologistNote: clean(draft.radiologistNote),
+          author: CURRENT_USER,
+          createdAt: now,
+          updatedAt: now,
+          addedToReport: false,
+        };
+        setRadiologistFindings((prev) => [...prev, finding]);
+        if (findingEditorAnnotationId) {
+          setAnnotations((prev) =>
+            prev.map((a) => (a.id === findingEditorAnnotationId ? { ...a, findingId: finding.id, updatedAt: now } : a))
+          );
+        }
+      }
+      setFindingEditorOpen(false);
+      setFindingEditorAnnotationId(null);
+      setEditingFindingId(null);
+    },
+    [activeSeries, currentSlice, study.studyId, editingFindingId, findingEditorAnnotationId]
+  );
+
+  const onSelectRadiologistFinding = useCallback(
+    (id: string) => {
+      const finding = radiologistFindings.find((f) => f.id === id);
+      if (!finding) return;
+      if (finding.seriesId !== activeSeriesId) setActiveSeriesId(finding.seriesId);
+      setCurrentSlice(finding.sliceIndex);
+      setPlaying(false);
+      setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0, tool: "pen" }));
+      setSelectedAnnotationId(finding.annotationId ?? null);
+    },
+    [radiologistFindings, activeSeriesId]
+  );
+
+  const onEditRadiologistFinding = useCallback(
+    (id: string) => {
+      const finding = radiologistFindings.find((f) => f.id === id);
+      if (!finding) return;
+      setFindingEditorAnnotationId(finding.annotationId ?? null);
+      setEditingFindingId(id);
+      setFindingEditorOpen(true);
+    },
+    [radiologistFindings]
+  );
+
+  const onDeleteRadiologistFinding = useCallback((id: string) => {
+    setRadiologistFindings((prev) => prev.filter((f) => f.id !== id));
+    setAnnotations((prev) => prev.map((a) => (a.findingId === id ? { ...a, findingId: undefined } : a)));
+  }, []);
+
+  const onAddRadiologistFindingToReport = useCallback(
+    (id: string) => {
+      const finding = radiologistFindings.find((f) => f.id === id);
+      if (!finding || finding.addedToReport) return;
+      onAppendFindingToReport(finding.text);
+      setRadiologistFindings((prev) => prev.map((f) => (f.id === id ? { ...f, addedToReport: true } : f)));
+    },
+    [radiologistFindings, onAppendFindingToReport]
+  );
+
+  const editingFinding = editingFindingId ? radiologistFindings.find((f) => f.id === editingFindingId) ?? null : null;
+  const findingEditorLocationLabel = activeSeries
+    ? study.series.length > 1
+      ? `${activeSeries.label} · Slice ${currentSlice + 1}`
+      : activeSeries.sliceCount > 1
+      ? `Slice ${currentSlice + 1}`
+      : undefined
+    : undefined;
+
+  const onFullscreen = () => {
+    if (fullscreenRef.current?.requestFullscreen) fullscreenRef.current.requestFullscreen();
+  };
+
+  // Keyboard navigation: arrows step slices, Space toggles cine. Disabled
+  // while a text field (e.g. a marker note) has focus, and while the 3-D view
+  // is up — there are no slices to step through in a volume render.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target) || !activeSeries || view3D) return;
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        onChangeSlice(currentSlice - 1);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        onChangeSlice(currentSlice + 1);
+      } else if (e.key === " " || e.code === "Space") {
+        if (activeSeries.sliceCount > 1) {
+          e.preventDefault();
+          setPlaying((p) => !p);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeSeries, currentSlice, onChangeSlice, view3D]);
+
+  if (!activeSeries || study.series.length === 0) {
+    return (
+      <div className="flex h-[calc(100dvh-56px)] items-center justify-center p-6">
+        <EmptyState icon={Layers} title="No series available" description="This study doesn't have any image series to display yet." />
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid h-[calc(100dvh-56px)] grid-cols-1 lg:grid-cols-[220px_1fr_320px]">
+      <div className="hidden overflow-y-auto border-r border-border bg-panel lg:block">
+        <SeriesNavigator series={study.series} activeSeriesId={activeSeries.id} onSelect={onSelectSeries} />
+      </div>
+
+      <div ref={fullscreenRef} className="flex flex-col gap-3 bg-base p-4 [&:fullscreen]:justify-center [&:fullscreen]:bg-black">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="max-w-full overflow-x-auto">
+            <ViewerToolbar state={viewerState} setState={setViewerState} onFullscreen={onFullscreen} />
+          </div>
+          <div className="flex w-full items-center gap-1.5 overflow-x-auto sm:w-auto sm:gap-2 lg:hidden">
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setMobileSeriesOpen(true)}>
+              <Layers className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Series</span>
+            </Button>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setMobileFindingsOpen(true)}>
+              <Sparkles className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Findings</span> ({study.findings.length})
+            </Button>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setMobileReportOpen(true)}>
+              <FileText className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Report</span>
+            </Button>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => setMobileMarkersOpen(true)}>
+              <MapPin className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Annotations</span> ({markers.length + radiologistFindings.length})
+            </Button>
+          </div>
+          <p className="hidden text-[11.5px] text-ink-muted lg:block">
+            {activeSeries.label} · {study.modality}
+          </p>
+        </div>
+
+        {/*
+          2D / 3D switch. Rendered only for a series the server can actually
+          serve a volume for, so it never promises a view the data can't back.
+        */}
+        {volumeAvailable && (
+          <div className="flex items-center gap-2">
+            <div className="flex overflow-hidden rounded-md border border-border-strong">
+              <button
+                onClick={() => setView3D(false)}
+                aria-pressed={!view3D}
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
+                  !view3D ? "bg-[rgb(var(--overlay-hover)/0.10)] text-ink-primary" : "text-ink-muted hover:text-ink-secondary"
+                )}
+              >
+                <Square className="h-3 w-3" /> 2D planes
+              </button>
+              <button
+                onClick={() => {
+                  setPlaying(false);
+                  setView3D(true);
+                }}
+                aria-pressed={view3D}
+                className={cn(
+                  "flex items-center gap-1.5 border-l border-border-strong px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
+                  view3D ? "bg-[rgb(var(--overlay-hover)/0.10)] text-ink-primary" : "text-ink-muted hover:text-ink-secondary"
+                )}
+              >
+                <Box className="h-3 w-3" /> 3D volume
+              </button>
+            </div>
+            <p className="hidden text-[11px] text-ink-muted sm:block">
+              {view3D
+                ? "Ray-marched from the reconstructed stack — drag to orbit."
+                : "This series is reconstructed, so it can also be viewed as a volume."}
+            </p>
+          </div>
+        )}
+
+        {viewerState.tool === "pen" && !view3D && (
+          <div className="max-w-full overflow-x-auto">
+            <AnnotationToolbar
+              color={brushColor}
+              setColor={setBrushColor}
+              size={brushSize}
+              setSize={setBrushSize}
+              opacity={brushOpacity}
+              setOpacity={setBrushOpacity}
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onUndo={onUndo}
+              onRedo={onRedo}
+              onClear={onClearPenAnnotations}
+              onExit={onExitPenMode}
+              strokeCount={currentAnnotations.length}
+            />
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 rounded-lg bg-black">
+          {view3D && <Volume3DViewer studyId={study.id} seriesId={activeSeries.id} />}
+          {!view3D && (
+            <ImageViewer
+              modality={study.modality}
+              seed={study.thumbnailSeed + currentSlice}
+              imageUrl={activeImageUrl}
+              isProcessing={isProcessing}
+              findings={visibleFindings}
+              activeFindingId={activeFindingId}
+              onHoverFinding={setHoveredId}
+              onSelectFinding={onSelectFinding}
+              viewerState={viewerState}
+              setViewerState={setViewerState}
+              markers={currentMarkers}
+              onAddMarker={onAddMarker}
+              onUpdateMarkerNote={onUpdateMarkerNote}
+              onDeleteMarker={onDeleteMarker}
+              measurements={currentMeasurements}
+              onAddMeasurement={onAddMeasurement}
+              onClearAnnotations={onClearAnnotations}
+              hasImageData={hasImageData}
+              onImageReady={() => setImageReady(true)}
+              resetKey={`${activeSeries.id}:${currentSlice}`}
+              annotations={currentAnnotations}
+              brushColor={brushColor}
+              brushSizePx={BRUSH_WIDTH_PX[brushSize]}
+              brushOpacity={brushOpacity}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={setSelectedAnnotationId}
+              onCommitStroke={onCommitStroke}
+              onDeleteAnnotation={onRequestDeleteAnnotation}
+              onQuickAnnotationNote={onQuickAnnotationNote}
+              onAddFinding={onOpenAddFinding}
+              onEditFinding={onOpenEditFinding}
+            />
+          )}
+        </div>
+
+        {!view3D && activeSeries.sliceCount > 1 && (
+          <ThumbnailStrip
+            modality={study.modality}
+            thumbnailSeed={study.thumbnailSeed}
+            total={activeSeries.sliceCount}
+            current={currentSlice}
+            onChange={onChangeSlice}
+            getImageUrl={(i) =>
+              imageByIndex.get(i)?.imageUrl ?? (study.imageUrls && study.imageUrls[i % (study.imageUrls.length || 1)])
+            }
+          />
+        )}
+
+        {!view3D && activeSeries.sliceCount > 1 && (
+          <SliceNavigator
+            current={currentSlice}
+            total={activeSeries.sliceCount}
+            onChange={onChangeSlice}
+            orientation={activeSeries.orientation}
+            playing={playing}
+            onTogglePlay={() => setPlaying((p) => !p)}
+            ready={imageReady || !activeImageUrl}
+          />
+        )}
+      </div>
+
+      <div className="hidden flex-col overflow-hidden border-l border-border bg-panel lg:flex">
+        <div className="flex shrink-0 border-b border-border">
+          {RIGHT_PANEL_TABS.map((t) => {
+            const Icon = t.icon;
+            const count = t.key === "ai" ? study.findings.length : t.key === "annotations" ? markers.length + radiologistFindings.length : undefined;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setRightTab(t.key)}
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 text-[11.5px] font-medium transition-colors",
+                  rightTab === t.key ? "border-clinical text-ink-primary" : "border-transparent text-ink-muted hover:text-ink-secondary"
+                )}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{t.label}</span>
+                {count !== undefined && count > 0 && (
+                  <span className="rounded-md bg-[rgb(var(--overlay-hover)/0.08)] px-1 py-0.5 font-mono text-[10px] leading-none text-ink-muted">{count}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {rightTab === "ai" && (
+            <FindingsPanel
+              mode="ai"
+              aiStatus={study.aiStatus ?? "complete"}
+              findings={study.findings}
+              activeFindingId={activeFindingId}
+              onHover={setHoveredId}
+              onSelect={onSelectFinding}
+              onUpdate={onUpdateFinding}
+              isProcessing={isProcessing}
+              series={study.series}
+            />
+          )}
+
+          {rightTab === "report" && <RadiologyReportPanel sourceReport={reportPanelContent} onOpenFullReport={onOpenReportTab} />}
+
+          {rightTab === "annotations" && (
+            <div className="flex h-full flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <FindingsPanel
+                  mode="radiologist"
+                  findings={study.findings}
+                  activeFindingId={activeFindingId}
+                  onHover={setHoveredId}
+                  onSelect={onSelectFinding}
+                  onUpdate={onUpdateFinding}
+                  isProcessing={isProcessing}
+                  series={study.series}
+                  radiologistFindings={radiologistFindings}
+                  onSelectRadiologistFinding={onSelectRadiologistFinding}
+                  onEditRadiologistFinding={onEditRadiologistFinding}
+                  onDeleteRadiologistFinding={onDeleteRadiologistFinding}
+                  onAddRadiologistFindingToReport={onAddRadiologistFindingToReport}
+                />
+              </div>
+              <div className="h-[220px] shrink-0 overflow-hidden border-t border-border">
+                <MarkersPanel
+                  markers={markers}
+                  series={study.series}
+                  activeSeriesId={activeSeries.id}
+                  currentSlice={currentSlice}
+                  onJump={onJumpToMarker}
+                  onDelete={onDeleteMarker}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <Drawer open={mobileReportOpen} onClose={() => setMobileReportOpen(false)} title="Radiology Report" widthClassName="w-full max-w-sm">
+        <RadiologyReportPanel
+          sourceReport={reportPanelContent}
+          onOpenFullReport={
+            onOpenReportTab
+              ? () => {
+                  onOpenReportTab();
+                  setMobileReportOpen(false);
+                }
+              : undefined
+          }
+        />
+      </Drawer>
+
+      <Drawer open={mobileSeriesOpen} onClose={() => setMobileSeriesOpen(false)} title="Series" widthClassName="w-full max-w-xs">
+        <SeriesNavigator
+          series={study.series}
+          activeSeriesId={activeSeries.id}
+          onSelect={(id) => {
+            onSelectSeries(id);
+            setMobileSeriesOpen(false);
+          }}
+        />
+      </Drawer>
+
+      <Drawer open={mobileFindingsOpen} onClose={() => setMobileFindingsOpen(false)} title="AI Findings" widthClassName="w-full max-w-sm">
+        <FindingsPanel
+          mode="ai"
+          aiStatus={study.aiStatus ?? "complete"}
+          findings={study.findings}
+          activeFindingId={activeFindingId}
+          onHover={setHoveredId}
+          onSelect={onSelectFinding}
+          onUpdate={onUpdateFinding}
+          isProcessing={isProcessing}
+          series={study.series}
+        />
+      </Drawer>
+
+      <Drawer open={mobileMarkersOpen} onClose={() => setMobileMarkersOpen(false)} title="Annotations" widthClassName="w-full max-w-sm">
+        <div className="flex h-full flex-col overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <FindingsPanel
+              mode="radiologist"
+              findings={study.findings}
+              activeFindingId={activeFindingId}
+              onHover={setHoveredId}
+              onSelect={onSelectFinding}
+              onUpdate={onUpdateFinding}
+              isProcessing={isProcessing}
+              series={study.series}
+              radiologistFindings={radiologistFindings}
+              onSelectRadiologistFinding={(id) => {
+                onSelectRadiologistFinding(id);
+                setMobileMarkersOpen(false);
+              }}
+              onEditRadiologistFinding={onEditRadiologistFinding}
+              onDeleteRadiologistFinding={onDeleteRadiologistFinding}
+              onAddRadiologistFindingToReport={onAddRadiologistFindingToReport}
+            />
+          </div>
+          <div className="h-[220px] shrink-0 overflow-hidden border-t border-border">
+            <MarkersPanel
+              markers={markers}
+              series={study.series}
+              activeSeriesId={activeSeries.id}
+              currentSlice={currentSlice}
+              onJump={(m) => {
+                onJumpToMarker(m);
+                setMobileMarkersOpen(false);
+              }}
+              onDelete={onDeleteMarker}
+            />
+          </div>
+        </div>
+      </Drawer>
+
+      <AnnotationEditor
+        open={findingEditorOpen}
+        onClose={() => {
+          setFindingEditorOpen(false);
+          setFindingEditorAnnotationId(null);
+          setEditingFindingId(null);
+        }}
+        onSave={onSaveFinding}
+        editingFinding={editingFinding}
+        locationLabel={findingEditorLocationLabel}
+      />
+
+      <Modal open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)} title="Delete this annotation?" size="sm">
+        <p className="text-[13px] leading-relaxed text-ink-secondary">
+          This drawing has a finding attached to it. You can delete the finding along with it, or keep the finding and just detach it from the
+          drawing — it will stay in the Findings panel and, if already added, in the report.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={() => setDeleteConfirm(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              if (deleteConfirm) removeAnnotation(deleteConfirm.annotationId, false);
+              setDeleteConfirm(null);
+            }}
+          >
+            Keep Finding
+          </Button>
+          <Button
+            variant="critical"
+            size="sm"
+            onClick={() => {
+              if (deleteConfirm) removeAnnotation(deleteConfirm.annotationId, true);
+              setDeleteConfirm(null);
+            }}
+          >
+            Delete Finding Too
+          </Button>
+        </div>
+      </Modal>
+    </div>
+  );
+}

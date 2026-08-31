@@ -1,0 +1,551 @@
+import path from "path";
+import {
+  parseCsv,
+  pickColumn,
+  readTextFileSafe,
+  safeExists,
+  stableId,
+  walk,
+} from "../fs-utils";
+import { buildLookup, matchByIdentifiers } from "../report-matcher";
+import { readDicomSummary } from "../image-render";
+import {
+  AdapterIssue,
+  AdapterResult,
+  DatasetAdapter,
+  DatasetImageRef,
+  DatasetSeries,
+  DatasetStudy,
+  StudyReport,
+} from "../types";
+import { naturalSort, studyCode } from "./shared";
+
+interface ReportRow {
+  key?: string;
+  text: string;
+  raw: Record<string, string>;
+}
+
+export const ctAdapter: DatasetAdapter = {
+  id: "CT",
+  matchesDir: ["02_CT"],
+
+  async scan(rootDir): Promise<AdapterResult> {
+    const issues: AdapterIssue[] = [];
+
+    if (!safeExists(rootDir)) {
+      return { studies: [], issues };
+    }
+
+    /*
+     * Perle CT contains DICOM files with NO .dcm extension.
+     *
+     * Example:
+     *   PA0_ct_chest/ST0/SE2/IM0
+     *   PA0_ct_chest/ST0/SE2/IM1
+     *   PA0_ct_chest/ST0/SE2/IM2
+     *
+     * Therefore we scan ALL files and let readDicomSummary()
+     * determine which files are valid DICOM files.
+     */
+    const candidateFiles = [...walk(rootDir)];
+
+    /*
+     * Reports/metadata can be stored in CSV or JSON files.
+     */
+    const csvFiles = [
+      ...walk(rootDir, {
+        extensions: [".csv"],
+      }),
+    ];
+
+    const jsonFiles = [
+      ...walk(rootDir, {
+        extensions: [".json"],
+      }),
+    ];
+
+    const reportLookup = loadReports(
+      csvFiles,
+      jsonFiles,
+      issues
+    );
+
+    /*
+     * studyKey -> seriesKey -> DICOM instances
+     */
+    type Instance = {
+      absPath: string;
+      summary: ReturnType<typeof readDicomSummary>;
+    };
+
+    const studies = new Map<
+      string,
+      Map<string, Instance[]>
+    >();
+
+    /*
+     * Study-level metadata.
+     */
+    const studyMeta = new Map<
+      string,
+      {
+        accession?: string;
+        bodyPart?: string;
+        date?: string;
+      }
+    >();
+
+    /*
+     * Read every candidate file.
+     *
+     * Invalid files are ignored.
+     * Valid DICOM files are grouped into studies and series.
+     */
+    for (const file of candidateFiles) {
+      const summary = readDicomSummary(file);
+
+      if (!summary) {
+        continue;
+      }
+
+      /*
+       * Prefer DICOM StudyInstanceUID.
+       *
+       * If the UID is unavailable, fall back to the
+       * dataset folder structure.
+       *
+       * Example:
+       *
+       * PA0_ct_chest/
+       *   ST0/
+       *     SE2/
+       *       IM0
+       *
+       * fallback study = PA0_ct_chest
+       */
+      const studyKey =
+        summary.studyInstanceUID ||
+        path.basename(
+          path.dirname(
+            path.dirname(file)
+          )
+        );
+
+      /*
+       * Prefer DICOM SeriesInstanceUID.
+       *
+       * Otherwise use the immediate parent directory.
+       *
+       * Example:
+       * SE2/
+       *   IM0
+       *   IM1
+       *
+       * fallback series = SE2
+       */
+      const seriesKey =
+        summary.seriesInstanceUID ||
+        path.basename(
+          path.dirname(file)
+        );
+
+      if (!studies.has(studyKey)) {
+        studies.set(
+          studyKey,
+          new Map<string, Instance[]>()
+        );
+      }
+
+      const seriesMap =
+        studies.get(studyKey)!;
+
+      if (!seriesMap.has(seriesKey)) {
+        seriesMap.set(
+          seriesKey,
+          []
+        );
+      }
+
+      seriesMap
+        .get(seriesKey)!
+        .push({
+          absPath: file,
+          summary,
+        });
+
+      /*
+       * Save study metadata once.
+       */
+      if (!studyMeta.has(studyKey)) {
+        studyMeta.set(
+          studyKey,
+          {
+            accession:
+              summary.accessionNumber,
+
+            bodyPart:
+              summary.bodyPart,
+
+            date:
+              normalizeDicomDate(
+                summary.studyDate
+              ),
+          }
+        );
+      }
+    }
+
+    /*
+     * Convert grouped DICOM files into DatasetStudy objects.
+     */
+    const result: DatasetStudy[] = [];
+
+    for (const [
+      studyKey,
+      seriesMap,
+    ] of studies) {
+      const series: DatasetSeries[] = [];
+
+      let seriesIdx = 0;
+
+      for (const [
+        seriesKey,
+        instances,
+      ] of seriesMap) {
+        /*
+         * Sort CT slices using:
+         *
+         * 1. InstanceNumber
+         * 2. SliceLocation
+         * 3. Filename
+         */
+        instances.sort(
+          (a, b) => {
+            const an =
+              a.summary?.instanceNumber;
+
+            const bn =
+              b.summary?.instanceNumber;
+
+            if (
+              an !== undefined &&
+              bn !== undefined &&
+              an !== bn
+            ) {
+              return an - bn;
+            }
+
+            const asl =
+              a.summary?.sliceLocation;
+
+            const bsl =
+              b.summary?.sliceLocation;
+
+            if (
+              asl !== undefined &&
+              bsl !== undefined &&
+              asl !== bsl
+            ) {
+              return asl - bsl;
+            }
+
+            return naturalSort(
+              a.absPath,
+              b.absPath
+            );
+          }
+        );
+
+        /*
+         * Convert every DICOM instance into
+         * a DatasetImageRef for the viewer.
+         */
+        const images: DatasetImageRef[] =
+          instances.map(
+            (inst, index) => ({
+              id: stableId(
+                seriesKey,
+                String(index)
+              ),
+
+              index,
+
+              kind: "dicom",
+
+              absPath:
+                inst.absPath,
+
+              width:
+                inst.summary?.columns,
+
+              height:
+                inst.summary?.rows,
+            })
+          );
+
+        seriesIdx++;
+
+        series.push({
+          id: stableId(
+            studyKey,
+            seriesKey
+          ),
+
+          label:
+            instances[0]?.summary
+              ?.seriesDescription ||
+            `Series ${seriesIdx}`,
+
+          modality: "CT",
+
+          orientation: "Axial",
+
+          sliceCount:
+            images.length,
+
+          images,
+        });
+      }
+
+      if (series.length === 0) {
+        continue;
+      }
+
+      const meta =
+        studyMeta.get(studyKey);
+
+      /*
+       * Try to match a report using:
+       *
+       * 1. StudyInstanceUID
+       * 2. Accession number
+       */
+      const reportRow =
+        matchByIdentifiers(
+          reportLookup,
+          [
+            studyKey,
+            meta?.accession,
+          ]
+        );
+
+      const report:
+        | StudyReport
+        | undefined =
+        reportRow
+          ? {
+              source: "Perle CT",
+              text: reportRow.text,
+            }
+          : undefined;
+
+      const id =
+        stableId(
+          "CT",
+          studyKey
+        );
+
+      result.push({
+        id,
+
+        dataset: "CT",
+
+        studyCode:
+          studyCode(
+            "CT",
+            studyKey
+          ),
+
+        sourceStudyId:
+          studyKey,
+
+        patientAlias:
+          `Patient ${id
+            .slice(0, 6)
+            .toUpperCase()}`,
+
+        modality: "CT",
+
+        bodyRegion:
+          meta?.bodyPart,
+
+        date:
+          meta?.date,
+
+        series,
+
+        report,
+
+        sourceDir:
+          rootDir,
+      });
+    }
+
+    return {
+      studies: result,
+      issues,
+    };
+  },
+};
+
+/**
+ * Convert DICOM YYYYMMDD into YYYY-MM-DD.
+ */
+function normalizeDicomDate(
+  value?: string
+): string | undefined {
+  if (
+    !value ||
+    value.length !== 8
+  ) {
+    return undefined;
+  }
+
+  return (
+    `${value.slice(0, 4)}-` +
+    `${value.slice(4, 6)}-` +
+    `${value.slice(6, 8)}`
+  );
+}
+
+/**
+ * Load CT reports from CSV and JSON files.
+ */
+function loadReports(
+  csvFiles: string[],
+  jsonFiles: string[],
+  issues: AdapterIssue[]
+): Map<string, ReportRow> {
+  const rows: ReportRow[] = [];
+
+  /*
+   * CSV reports.
+   */
+  for (const csv of csvFiles) {
+    const content =
+      readTextFileSafe(csv);
+
+    if (!content) {
+      issues.push({
+        dataset: "CT",
+        path: csv,
+        reason:
+          "Unreadable CSV file",
+      });
+
+      continue;
+    }
+
+    let parsed:
+      Record<string, string>[];
+
+    try {
+      parsed =
+        parseCsv(content);
+    } catch {
+      issues.push({
+        dataset: "CT",
+        path: csv,
+        reason:
+          "Malformed CSV",
+      });
+
+      continue;
+    }
+
+    for (const row of parsed) {
+      const key =
+        pickColumn(
+          row,
+          [
+            "studyinstanceuid",
+            "study_instance_uid",
+            "accession",
+            "accession_number",
+            "study_id",
+            "id",
+          ]
+        );
+
+      const text =
+        pickColumn(
+          row,
+          [
+            "report",
+            "findings",
+            "impression",
+            "text",
+            "narrative",
+          ]
+        );
+
+      if (key && text) {
+        rows.push({
+          key,
+          text,
+          raw: row,
+        });
+      }
+    }
+  }
+
+  /*
+   * JSON reports.
+   */
+  for (const jsonFile of jsonFiles) {
+    const content =
+      readTextFileSafe(
+        jsonFile
+      );
+
+    if (!content) {
+      continue;
+    }
+
+    try {
+      const data =
+        JSON.parse(content);
+
+      const entries =
+        Array.isArray(data)
+          ? data
+          : Object.values(data);
+
+      for (const entry of entries as any[]) {
+        const key =
+          entry.StudyInstanceUID ??
+          entry.study_instance_uid ??
+          entry.accession_number ??
+          entry.study_id ??
+          entry.id;
+
+        const text =
+          entry.report ??
+          entry.findings ??
+          entry.impression ??
+          entry.text;
+
+        if (key && text) {
+          rows.push({
+            key: String(key),
+            text: String(text),
+            raw: entry,
+          });
+        }
+      }
+    } catch {
+      issues.push({
+        dataset: "CT",
+        path: jsonFile,
+        reason:
+          "Malformed JSON",
+      });
+    }
+  }
+
+  return buildLookup(
+    rows,
+    (row) => row.key
+  );
+}

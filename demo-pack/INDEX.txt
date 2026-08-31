@@ -1,0 +1,38 @@
+DEMO UPLOAD PACK
+================
+
+Every file here was copied byte-for-byte out of the indexed dataset. Uploading
+one on the Upload Scan page (with NEXT_PUBLIC_DATA_MODE=dataset) hashes it,
+finds the study it came from, and opens that study's real images, real
+reconstructed planes and the radiology report that shipped with the dataset.
+
+Nothing in that path runs a model. The match is a lookup, not a prediction, and
+the app labels it that way.
+
+FILE | STUDY | PATIENT | MODALITY | DATASET | REGION | WHAT THE FILE IS
+------------------------------------------------------------------------------
+CXR-75B43A__CHEST_000001.jpg | CXR-75B43A | Patient AD9D3A | X-Ray | Chest X-Ray | Chest | Chest X-Ray
+CXR-DC2ACF__CHEST_000002.jpg | CXR-DC2ACF | Patient 52C27B | X-Ray | Chest X-Ray | Chest | Chest X-Ray
+CXR-6D4226__CHEST_000003.jpg | CXR-6D4226 | Patient 7C48A0 | X-Ray | Chest X-Ray | Chest | Chest X-Ray
+CT-C48B2F__IM278.dcm | CT-C48B2F | Patient 5E565C | CT | Perle CT | CHEST | Thorax Plain 0.80 Br40 S3 · slice 280 of 558
+CT-9339BE__IM76.dcm | CT-9339BE | Patient 9C05D7 | CT | Perle CT | HEAD | Brain 1.50 Hr40 S3 ax · slice 77 of 153
+MRI-2DFB95__2I6DGZ7PGS_flair-raw-axi.nii.gz | MRI-2DFB95 | Patient CCF707 | MRI | MR-RATE | — | FLAIR · Axial · full volume (24 frames)
+MRI-ED2DEF__2IU2IBBLZT_flair-raw-axi.nii.gz | MRI-ED2DEF | Patient 500881 | MRI | MR-RATE | — | FLAIR · Axial · full volume (21 frames)
+MRI-182419__2KIYAXYAPX_t1w-raw-axi.nii.gz | MRI-182419 | Patient 464FDA | MRI | MR-RATE | — | T1W · Axial · full volume (166 frames)
+PET-2D0E24__sub-983777-000001_ses-01_desc-pet_suv.nii.gz | PET-2D0E24 | Patient F0409C | PET | PET | — | PET SUV · Axial · full volume (221 frames)
+PET-124F7C__sub-983777-000004_ses-01_desc-pet_suv.nii.gz | PET-124F7C | Patient A89E54 | PET | PET | — | PET SUV · Axial · full volume (196 frames)
+PET-F8DFC6__sub-983777-000006_ses-01_desc-pet_suv.nii.gz | PET-F8DFC6 | Patient EFDC84 | PET | PET | — | PET SUV · Axial · full volume (196 frames)
+ROCO-097459__ROCOv2_2023_train_004452.png | ROCO-097459 | ROCOv2 135A22 | X-Ray | ROCOv2 | — | Image
+
+Notes
+-----
+- .dcm (CT) and .nii/.nii.gz (MRI, PET) are not browser-viewable formats, so the
+  upload page will not show a thumbnail for them. They still match exactly, and
+  the study that opens shows the rendered slices and MPR planes.
+- CT instances are stored extensionless in the source data (e.g. IM278). A .dcm
+  extension is appended on export so the file is selectable in the browser's
+  file picker; the bytes are unchanged, so the hash still matches.
+- The study code in each filename is a second, independent way to match, so a
+  file that gets renamed or re-saved still resolves as long as the code survives.
+- Re-run `npm run dataset:index` then `npm run demo:pack` after changing the
+  dataset; the index in .scanlab/upload-index.json belongs to this pack.
