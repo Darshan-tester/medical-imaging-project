@@ -316,6 +316,21 @@ So `buildCommand` in `open-next.config.ts` replaces the `npm run build` shell-ou
 
 Worker size. OpenNext bundles all server code into one `worker.js`, and the limit is **3 MiB compressed on the free plan, 10 MiB on Workers Paid**. `three`, `@react-three/*` and `framer-motion` are client-only so they land in `.open-next/assets`, but `dicom-parser`, `nifti-reader-js` and `pngjs` are pulled in by `lib/dataset/image-render.ts`, which the study routes import on the server. `adm-zip` is already out of the graph (`scanner.ts` is reachable only from `scripts/`, and `/api/datasets` goes through `lib/dataset/counts.ts` instead). If the deploy is rejected for size, the fix is to check what the bundle actually contains before removing anything.
 
+### Build `#5c4e246f` — built the wrong branch
+
+The branch is pushed: `origin/cloudflare-next-upgrade` is at `c4b0ab6`, byte-identical to local `HEAD`, and carries `wrangler.jsonc`, `open-next.config.ts`, `lib/dataset/counts.ts`, both `app/api/datasets` routes and the lockfile with the adapter pinned.
+
+`#5c4e246f` did not build it. It built **`main`**, which is still the initial commit: Next 14.2.35, no `@opennextjs/cloudflare`, no `wrangler.jsonc`, and **no `cf:build` script at all**. `npm run cf:build` there exits on "Missing script" — which is the whole 2-second Building phase. Installing passed (37 s) because `main`'s lockfile is valid; it just installs an app that has no adapter in it.
+
+Two dashboard changes remain, both under Settings → Build:
+
+1. **Branch control → Production branch:** `main` → `cloudflare-next-upgrade`. This is what makes the pushed work the thing that gets built, and it leaves `main` untouched until the deploy is green.
+2. **Deploy command:** `npx wrangler deploy` → `npx opennextjs-cloudflare deploy`.
+
+The build command `npm run cf:build` is already correct — on the branch that script is `opennextjs-cloudflare build`, resolved from `node_modules/.bin`, so it is equivalent to `npx opennextjs-cloudflare build`.
+
+Do not skip step 1 by pushing the branch and leaving production on `main`. Commits to a non-production branch produce a **preview** build, and a preview build replaces the deploy command with a preview deploy command defaulting to `npx wrangler versions upload` — which delegates back into the adapter exactly the way bare `wrangler deploy` does. The adapter does have an `upload` command (`build`, `deploy`, `migrate`, `populate-cache`, `preview`, `skew-protection`, `upload`) if preview builds are wanted later.
+
 ## How To Continue
 
 1. Read this file top to bottom before touching anything.
