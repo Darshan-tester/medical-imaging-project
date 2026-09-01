@@ -225,6 +225,8 @@ The install has to be done there, not here, so `package.json` and `package-lock.
 
 Then in the Cloudflare dashboard, for the `vedh-medical-imaging` Worker:
 
+> **Superseded — do not act on this list.** It was written before `main` was fast-forwarded and before `postbuild` was wired. As of the `#2d87983a` section at the end of this phase, no dashboard change is needed at all. Kept for the reasoning only.
+
 - Build branch: `cloudflare-next-upgrade` (leave `main` alone until this deploy is proven green).
 - Deploy command: `npx opennextjs-cloudflare deploy` — not `npx wrangler deploy`. The adapter has to build `.open-next/` before anything is uploaded; `wrangler deploy` on its own is what triggered the auto-config guessing.
 - Build command: must be `npx opennextjs-cloudflare build`, **not** `npm run build`. See the OOM section below — `deploy` does not build, so `npm run build` alone leaves `.open-next/` missing and the deploy has nothing to upload.
@@ -269,6 +271,8 @@ Note also that `buildHelper.initOutputDir()` wipes `.open-next` and Next wipes i
 - Build command: `npx opennextjs-cloudflare build` (or `npm run cf:build`) — **not** `npm run build`, which produces no `.open-next/`.
 - Deploy command: `npx opennextjs-cloudflare deploy` — **not** `npx wrangler deploy`.
 - Build branch: `cloudflare-next-upgrade`.
+
+> **Superseded as an instruction, still true as a fact.** `deploy` really does not build — that is why `postbuild` now exists. But since the `#2d87983a` section, `npm run build` *does* produce `.open-next/` on Cloudflare's builder, and either deploy command works. Leave the dashboard alone.
 
 The same file also explains the original `#c59ba8e9` failure outright. `deploy` sets `OPEN_NEXT_DEPLOY=true` with the comment *"otherwise `wrangler deploy` run in an open-next project would call `opennextjs-cloudflare deploy` (thus causing an unwanted recursion)"* — i.e. bare `wrangler deploy` in an OpenNext project delegates back to the adapter. That delegation is what ran the adapter against Next 14.
 
@@ -331,6 +335,8 @@ The build command `npm run cf:build` is already correct — on the branch that s
 
 Do not skip step 1 by pushing the branch and leaving production on `main`. Commits to a non-production branch produce a **preview** build, and a preview build replaces the deploy command with a preview deploy command defaulting to `npx wrangler versions upload` — which delegates back into the adapter exactly the way bare `wrangler deploy` does. The adapter does have an `upload` command (`build`, `deploy`, `migrate`, `populate-cache`, `preview`, `skew-protection`, `upload`) if preview builds are wanted later.
 
+> **Superseded.** Neither change is needed — `main` was fast-forwarded instead, so the production branch already carries the upgrade. Two corrections to the paragraph above, both re-checked against wrangler 4.127.1: the runtime delegation to the adapter exists **only** for `deploy` (`maybeDelegateToOpenNextDeployCommand` is called from one place, `runDeployCommandHandler`); `versions upload` has no equivalent. And with `wrangler.jsonc` committed, auto-configuration no longer fires either, so `wrangler versions upload` goes straight to entrypoint resolution and hits the `build.command` hook — which means preview builds now work as-is. That is the one path where the hook, not `postbuild`, is what saves the deploy.
+
 ### Build `#2d87983a` — the same root cause, one stage later
 
 Also branch `main`. `npm run build` passed in 1m 7s (Next 14 builds fine), then `npx wrangler deploy` failed in 1m 30s with the original error verbatim: `escapedCommand: 'npx opennextjs-cloudflare build'`, `Next.js version : 14.2.35`, `ERROR ... is not supported`. That is `#c59ba8e9` again, and the reason is unchanged: **Cloudflare is building `main`, and `main` is the pre-upgrade initial commit.** Three failed builds, one cause.
@@ -350,9 +356,11 @@ async function runCustomBuild(expectedEntryAbsolute, expectedEntryRelative, buil
 }
 ```
 
-So `"build": { "command": "node scripts/cf-ensure-open-next.mjs" }` runs on every deploy no matter what the dashboard's own build command is. `scripts/cf-ensure-open-next.mjs` is idempotent — it skips when `.open-next/worker.js` already exists, so it costs nothing when the Building phase already ran `npm run cf:build`, and it builds when the Building phase only ran `npm run build`. `OPEN_NEXT_BUILD_COMMAND` overrides the command it runs, which is the hook to use from Cloudflare's Build variables if Turbopack ever needs replacing on the builder. Its four paths (skip / build / propagate a failing exit code / fail loudly when the command lies about success) were tested directly.
+That hook is real, but it turned out **not** to be the thing that fixes this — see the next section. It stays as a backstop for the invocations that do reach entrypoint resolution (`wrangler dev`, `wrangler versions upload`, `deploy --config <path>`, `deploy --no-autoconfig`). `scripts/cf-ensure-open-next.mjs` is idempotent, so when `.open-next/worker.js` is already there it costs nothing.
 
-Also worth recording, since it retires an earlier worry: `npx wrangler deploy` is now safe. `getDetailsForAutoConfig()` returns `configured: true` as soon as a real wrangler config is found —
+**3. `package.json` gained a `postbuild` that produces the bundle during the Building phase.** This is the change that actually makes the deploy work, and the reasoning is in the next section.
+
+Also worth recording: `getDetailsForAutoConfig()` returns `configured: true` as soon as a real wrangler config is found —
 
 ```js
 if (target === "wrangler" && wranglerConfig?.configPath && !wranglerConfig.pages_build_output_dir) {
@@ -360,9 +368,77 @@ if (target === "wrangler" && wranglerConfig?.configPath && !wranglerConfig.pages
 }
 ```
 
-— and `maybeRunAutoConfig` only enters auto-config on `!details.configured`. Committing `wrangler.jsonc` is therefore what stops the delegation to `opennextjs-cloudflare build`, permanently. `npx opennextjs-cloudflare deploy` is still the better command (it also runs `populateCache`, which will matter once R2 is wired), but it is no longer required to avoid the recursion.
+— and `maybeRunAutoConfig` only enters auto-config on `!details.configured`. So committing `wrangler.jsonc` does permanently stop the *auto-configuration* path, which is the one that ran `npx opennextjs-cloudflare build` and produced the Next 14 rejection in `#c59ba8e9` and `#2d87983a`. That much held up. What it does not stop is a second, separate delegation described below.
 
-Net effect: with `main` pushed, the existing dashboard settings (`npm run build` + `npx wrangler deploy`) deploy successfully. Switching the build command to `npm run cf:build` is now an optimisation — it moves the OpenNext build out of the Deploying phase and avoids one redundant `next build`.
+### `wrangler deploy` will not build for you — it hands off before it looks
+
+Committing `wrangler.jsonc` and a `build.command` was not enough, and this is worth being precise about because the first read of wrangler's source was too optimistic.
+
+`runDeployCommandHandler` (wrangler `cli.js:407779`) does this *after* auto-config and *before* anything touches the entrypoint:
+
+```js
+if (!pagesToWorkersDelegation && args.autoconfig && !args.config && !args.dryRun
+    && await maybeDelegateToOpenNextDeployCommand(process.cwd())) {
+  return;
+}
+const { props, buildProps } = await mergeDeployConfigArgs(args, config6);
+...
+const buildResult = await buildWorker(buildProps, config6);   // <- runCustomBuild lives in here
+```
+
+`maybeDelegateToOpenNextDeployCommand` returns true when `isOpenNextProject()` does, and that check is only: a `next.config.(m|c)?(ts|js)`, an `open-next.config.(ts|js)`, and `@opennextjs/cloudflare` resolvable from the project root. All three are true here. So `npx wrangler deploy` logs "OpenNext project detected, calling `opennextjs-cloudflare deploy`", shells out with `OPEN_NEXT_DEPLOY=true`, and **returns** — the `build.command` hook is never reached. Note the gate is `args.autoconfig && !args.config`, not `!details.configured`: no amount of committed config disables it.
+
+And `opennextjs-cloudflare deploy` does not build. Its first real statement is:
+
+```js
+export async function retrieveCompiledConfig() {
+    const configPath = path.join(nextAppDir, ".open-next/.build/open-next.config.edge.mjs");
+    if (!existsSync(configPath)) {
+        logger.error("Could not find compiled Open Next config, did you run the build command?");
+        process.exit(1);
+    }
+```
+
+So with the dashboard's `npm run build` + `npx wrangler deploy`, a fast-forwarded `main` would have failed again — just with a new error. The bundle has to exist by the end of the Building phase.
+
+Hence `"postbuild": "node scripts/cf-ensure-open-next.mjs --if-ci"`. npm runs `postbuild` after `npm run build`, so the Building phase now ends with a Worker in `.open-next` whatever the dashboard's build command is, as long as it goes through `npm run build`. Four guards keep that from causing new problems:
+
+- **Recursion.** `opennextjs-cloudflare build` runs `npm run build` internally (`buildNextjsApp`), which re-triggers `postbuild`. `setStandaloneBuildMode()` sets `NEXT_PRIVATE_STANDALONE=true` on the line immediately before that, and `execSync` inherits `process.env`, so the inner run sees it and skips. The script also sets its own `CF_ENSURE_OPEN_NEXT_RUNNING=1` when it spawns. An existence check alone cannot catch this — `initOutputDir()` has already wiped `.open-next` by then.
+- **`--if-ci`.** Off a CI builder the script does nothing. The gate is `WORKERS_CI || CF_PAGES || CI` — `WORKERS_CI` is what `ci-info` (bundled into wrangler) uses to identify Workers Builds, and the other two are there because a false positive costs one wasted build while a false negative costs a failed deploy. So `npm run build` on the Windows box behaves exactly as before, which matters because the adapter build OOMs there *and* destroys the `.next` output on its way down.
+- **`CF_ENSURE_OPEN_NEXT=0`** to opt out, `=1` to force it off-CI.
+- **Already built** → skip, so a dashboard build command of `npm run cf:build` costs nothing extra.
+
+Verified in the sandbox: ten behaviour cases (skip off-CI, build on-CI, skip when present, both recursion guards, opt-out, force, no-`--if-ci` always-build, exit-code propagation, and detection of a build that reports success without producing a worker), plus a nested end-to-end run where a stub adapter re-enters `npm run build` — the adapter starts exactly once and the bundle ends up on disk.
+
+Net effect: with `main` pushed, all four combinations work.
+
+| Dashboard build | Dashboard deploy | What happens |
+| --- | --- | --- |
+| `npm run build` | `npx wrangler deploy` | `postbuild` builds the bundle; wrangler delegates to the adapter, which finds it |
+| `npm run build` | `npx opennextjs-cloudflare deploy` | same, one hop fewer |
+| `npm run cf:build` | `npx wrangler deploy` | adapter builds; inner `postbuild` skips on `NEXT_PRIVATE_STANDALONE` |
+| `npm run cf:build` | `npx opennextjs-cloudflare deploy` | same |
+
+No dashboard change is required. `npm run cf:build` remains the tidier build command — it keeps the OpenNext build inside the Building phase and avoids the redundant second `next build` that the `postbuild` route pays for.
+
+Why either deploy command is equivalent *today*: besides `wrangler deploy`, `opennextjs-cloudflare deploy` also runs `populateCache()` and `getDeploymentMapping()`. Both are no-ops here. `defineCloudflareConfig()` called with no arguments defaults `incrementalCache`, `tagCache`, `queue` and `cdnInvalidation` to the string `"dummy"`, which falls through `populateCache`'s switch to a "does not need populating" log; and skew protection returns `undefined` unless `cloudflare.skewProtection.enabled === true`. That changes the moment R2 is wired in Phase 8 — `populateCache` is what uploads the incremental cache to the bucket, so from then on the deploy must go through the adapter (either directly, or via the delegation, which is automatic).
+
+
+### The only thing left: push
+
+Everything above is committed on `cloudflare-next-upgrade`, and `main` has been fast-forwarded to the same commit locally. The sandbox cannot reach github over SSH, so the push has to happen from PowerShell in `D:\meridian-scanlab-integration\meridian`:
+
+```powershell
+git push origin cloudflare-next-upgrade
+git push origin main
+```
+
+`main` is the one that matters — that is the branch Workers Builds is pointed at. The push is a fast-forward, so it needs no `--force`. Then re-run the failed build from the dashboard (or push and let it trigger).
+
+Two things that will *not* be fixed by a green deploy, so they should not be read as regressions: the deployed app serves the seeded mock studies, because Workers have no filesystem for `SCANLAB_DATA_ROOT` (see "What the first successful deploy will and will not show", and Phase 8's R2 sequence for the fix); and locally, nothing in the data layer changes until `npm run dataset:index` is run.
+
+If the deploy fails again, the likely causes in order are: worker size over the 3 MiB compressed free-plan limit (`dicom-parser`, `nifti-reader-js`, `pngjs` reach the server bundle via `lib/dataset/image-render.ts`); or a Turbopack failure on the builder, for which the committed knob is `config.buildCommand` in `open-next.config.ts` and the environment knob is a Cloudflare build variable `OPEN_NEXT_BUILD_COMMAND`.
+
 
 ## How To Continue
 

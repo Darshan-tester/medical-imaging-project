@@ -20,12 +20,21 @@
   "main": ".open-next/worker.js",
 
   // Wrangler runs this while resolving `main`, on every `deploy` /
-  // `versions upload` / `dev`, and then asserts the entrypoint exists. It is
-  // what makes a deploy work even when the Cloudflare dashboard's own build
-  // command is `npm run build` — which produces `.next` but no Worker. The
-  // script is idempotent: if `.open-next/worker.js` is already there (because
-  // the dashboard ran `npm run cf:build`, or because `opennextjs-cloudflare
-  // deploy` built it) this costs nothing.
+  // `versions upload` / `dev`, and then asserts the entrypoint exists.
+  //
+  // This is a *backstop*, not the main mechanism. Plain `npx wrangler deploy`
+  // never gets here: it detects an OpenNext project and shells out to
+  // `npx opennextjs-cloudflare deploy` before entrypoint resolution
+  // (`maybeDelegateToOpenNextDeployCommand`, wrangler cli.js:407779), and that
+  // command refuses to build — it exits on "Could not find compiled Open Next
+  // config" when `.open-next` is missing. Producing the bundle is therefore
+  // package.json's `postbuild` job, in the Building phase.
+  //
+  // The hook still earns its place for the paths that skip the delegation and
+  // do reach entrypoint resolution: `wrangler dev`, `wrangler versions
+  // upload`, and `deploy --config <path>` / `deploy --no-autoconfig`. The
+  // script is idempotent, so when `.open-next/worker.js` is already there it
+  // costs nothing.
   "build": {
     "command": "node scripts/cf-ensure-open-next.mjs"
   },

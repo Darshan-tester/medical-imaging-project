@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/cf-ensure-open-next.mjs --if-ci",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
