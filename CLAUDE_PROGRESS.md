@@ -219,13 +219,15 @@ npx opennextjs-cloudflare build
 git push -u origin cloudflare-next-upgrade
 ```
 
+Status as of 2026-09-01: the install and `npm run build` both **passed** on Windows (`@opennextjs/cloudflare` 1.20.5, `wrangler` 4.127.1, `@opennextjs/aws` 4.1.3). `npx opennextjs-cloudflare build` **failed with an out-of-memory abort** — see the OOM section below; it is a Windows/RAM problem, not a code problem, and the fix is to let Cloudflare's Linux builder run it.
+
 The install has to be done there, not here, so `package.json` and `package-lock.json` stay in sync — Cloudflare's install step runs `npm ci`-style and will fail on a lockfile that does not list the adapter. Next.js 16 and the latest minors of 14/15 are the supported set for `@opennextjs/cloudflare`, and Turbopack builds have been supported since adapter v1.15.0, so Next 16's default Turbopack `next build` is fine.
 
 Then in the Cloudflare dashboard, for the `vedh-medical-imaging` Worker:
 
 - Build branch: `cloudflare-next-upgrade` (leave `main` alone until this deploy is proven green).
 - Deploy command: `npx opennextjs-cloudflare deploy` — not `npx wrangler deploy`. The adapter has to build `.open-next/` before anything is uploaded; `wrangler deploy` on its own is what triggered the auto-config guessing.
-- Build command: `npm run build` is fine to keep.
+- Build command: must be `npx opennextjs-cloudflare build`, **not** `npm run build`. See the OOM section below — `deploy` does not build, so `npm run build` alone leaves `.open-next/` missing and the deploy has nothing to upload.
 
 ### What the first successful deploy will and will not show
 
@@ -242,6 +244,52 @@ The chosen end state is the full dataset in R2. In dependency order:
 5. Pre-compute the CT volume exports rather than decoding DICOM per request; `assertWithinRoot` must stay in the path-resolution chain in whatever form the R2 key mapping takes.
 
 Steps 3–5 are where CT is most at risk. None of it should be started without re-reading the Phase 7 notes above.
+
+### The Windows OOM on `opennextjs-cloudflare build` — and the corrected commands
+
+`npm run build` succeeds on Windows (Next 16.3.4 Turbopack, ~51 s, all 19 routes, TypeScript clean). `npx opennextjs-cloudflare build` then failed with:
+
+```
+memory allocation of 4193332 bytes failed
+Error: Command failed: npm run build   status: 3221226505
+```
+
+`3221226505` is `0xC0000409` (Windows fail-fast abort) and the line above it is **Rust** — Turbopack — failing to get 4 MB from the OS. It is a machine memory failure, not a code error. Nothing in the app is broken.
+
+Why the second build failed when the first passed:
+
+1. Run 1 started with a cold Turbopack cache and, on success, wrote **99 MB** into `.next/cache/turbopack` (five `.sst` files, largest 19.7 MB). Run 2 restores that cache.
+2. OpenNext calls `setStandaloneBuildMode()` before `npm run build`, which sets `NEXT_PRIVATE_STANDALONE=true` and `NEXT_PRIVATE_OUTPUT_TRACE_ROOT`. So run 2 additionally does full output-file tracing and copies a `.next/standalone` tree — work run 1 never did.
+3. OpenNext prints `WARN OpenNext is not fully compatible with Windows … recommended to use WSL` for exactly this class of problem.
+
+Note also that `buildHelper.initOutputDir()` wipes `.open-next` and Next wipes its own `.next/server` and `.next/static` at build start, so **a failed OpenNext build destroys the output of the `npm run build` that came before it.** After that failure `.next/server` and `.next/static` were empty; only `.next/cache` survived. Do not assume a previous good build is still on disk.
+
+**Corrected Cloudflare dashboard settings.** Read from the installed adapter source (`@opennextjs/cloudflare@1.20.5`, `dist/cli/commands/deploy.js`): `deploy` does **not** build. It reads `.open-next/.build/open-next.config.mjs`, populates the cache, then shells out to `wrangler deploy`. So the build phase has to produce `.open-next/` or the deploy has nothing to upload:
+
+- Build command: `npx opennextjs-cloudflare build` (or `npm run cf:build`) — **not** `npm run build`, which produces no `.open-next/`.
+- Deploy command: `npx opennextjs-cloudflare deploy` — **not** `npx wrangler deploy`.
+- Build branch: `cloudflare-next-upgrade`.
+
+The same file also explains the original `#c59ba8e9` failure outright. `deploy` sets `OPEN_NEXT_DEPLOY=true` with the comment *"otherwise `wrangler deploy` run in an open-next project would call `opennextjs-cloudflare deploy` (thus causing an unwanted recursion)"* — i.e. bare `wrangler deploy` in an OpenNext project delegates back to the adapter. That delegation is what ran the adapter against Next 14.
+
+**Preferred fix: do not run the OpenNext build on Windows at all.** Cloudflare's builder is Linux, which is the supported platform, and it clones only tracked files — so the 7 GB `.scanlab/` and the `meridian/` duplicate (both untracked now) never reach it. Push the branch and let the builder do it.
+
+**If a local `.open-next/` is wanted anyway** (for `npm run cf:preview`), in order of cost:
+
+1. Clear the Turbopack cache first, so the build starts cold like the run that worked. `.next` is entirely regenerable build cache.
+   ```powershell
+   Remove-Item -Recurse -Force .next
+   npx opennextjs-cloudflare build
+   ```
+2. Build with webpack instead of Turbopack, then let OpenNext skip the rebuild. This moves the allocation onto the V8 heap where `--max-old-space-size` actually applies — it cannot help a Rust allocator failure. `next build --webpack` exists in 16.3.4, `--skipNextBuild` exists on the adapter (aliases `--skipBuild`/`-s`, env `SKIP_NEXT_APP_BUILD=1`), and OpenNext detects either runtime via `getBundlerRuntime()`. `NEXT_PRIVATE_STANDALONE` must be set by hand here, because the adapter only sets it on the branch that runs the build.
+   ```powershell
+   Remove-Item -Recurse -Force .next
+   $env:NEXT_PRIVATE_STANDALONE="true"
+   $env:NODE_OPTIONS="--max-old-space-size=8192"
+   npm run build -- --webpack
+   npx opennextjs-cloudflare build --skipNextBuild
+   ```
+3. Run it under WSL, which is what OpenNext recommends.
 
 ## How To Continue
 
