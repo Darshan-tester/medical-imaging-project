@@ -291,6 +291,31 @@ The same file also explains the original `#c59ba8e9` failure outright. `deploy` 
    ```
 3. Run it under WSL, which is what OpenNext recommends.
 
+### Pre-flight checks done against the installed packages
+
+Each of these was a plausible way the first Cloudflare build could fail, and each is cleared:
+
+- **Native binary for Linux.** `package-lock.json` was generated on Windows, but it carries all eight `@next/swc-*` platform entries as optional deps, `@next/swc-linux-x64-gnu` included. `npm ci` on the builder resolves the Linux binary; the Windows-only `node_modules` here is not what ships.
+- **Node version.** `wrangler@4.127.1` declares `engines.node >= 22.0.0`. Workers Builds defaults to **Node 24.18.0** (changelog 2026-07-30), so this is satisfied. Pinning it explicitly (a `NODE_VERSION` build variable or `.nvmrc`) is still worth doing — Cloudflare recommends pinning so a future default bump cannot move under the project.
+- **Next version gate.** `@opennextjs/cloudflare@1.20.5` declares `peerDependencies.next` as `">=15.5.24 <16 || >=16.3.3"`. 16.3.4 satisfies the upper branch — which is why `ensureNextjsVersionSupported()` and `checkNextVersionSupport()` both passed in the local run. This is the check Next 14.2.35 failed in `#c59ba8e9`.
+- **`compatibility_date`.** The adapter's check on it is informational only: warn if older than six months, otherwise log. `2026-08-04` logged as info, as seen locally. Note that with a compat date this recent, `nodejs_compat` is on by default anyway; it stays listed in `wrangler.jsonc` because the adapter's middleware bundler asserts on it and being explicit costs nothing.
+- **`rclone.js`.** Declared as an *optional* peer (`peerDependenciesMeta.rclone.js.optional`) and not installed. Harmless now. It becomes relevant at the R2 step, since `populate-cache` is the consumer.
+
+### The one knob that works on both platforms
+
+`buildNextjsApp()` in `@opennextjs/aws` composes the inner build as:
+
+```js
+const command = config.buildCommand ?? (["bun","npm"].includes(packager) ? `${packager} run build` : `${packager} build`);
+cp.execSync(command, { stdio: "inherit", cwd: path.dirname(options.appPackageJsonPath) });
+```
+
+So `buildCommand` in `open-next.config.ts` replaces the `npm run build` shell-out, and unlike a `$env:` variable set in one PowerShell session it is committed and therefore applies on Cloudflare's builder too. It is left unset deliberately — the default is correct and Turbopack is faster — but if the *Linux* build also runs out of memory, that is the place to put `next build --webpack`, not a dashboard tweak.
+
+### Most likely next failure, if there is one
+
+Worker size. OpenNext bundles all server code into one `worker.js`, and the limit is **3 MiB compressed on the free plan, 10 MiB on Workers Paid**. `three`, `@react-three/*` and `framer-motion` are client-only so they land in `.open-next/assets`, but `dicom-parser`, `nifti-reader-js` and `pngjs` are pulled in by `lib/dataset/image-render.ts`, which the study routes import on the server. `adm-zip` is already out of the graph (`scanner.ts` is reachable only from `scripts/`, and `/api/datasets` goes through `lib/dataset/counts.ts` instead). If the deploy is rejected for size, the fix is to check what the bundle actually contains before removing anything.
+
 ## How To Continue
 
 1. Read this file top to bottom before touching anything.
