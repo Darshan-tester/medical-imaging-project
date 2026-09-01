@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { AIConfidenceBand, IncidentSeverity, IncidentStatus, Modality, StudyPriority, StudyStatus } from "@/lib/types";
-import { Activity, AlertTriangle, CheckCircle2, Clock, FileClock, Loader2 } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Clock, FileClock, Loader2, type LucideIcon } from "lucide-react";
 
 export function Badge({
   children,
@@ -49,7 +49,7 @@ export function ModalityBadge({ modality }: { modality: Modality }) {
   );
 }
 
-const STATUS_CONFIG: Record<StudyStatus, { label: string; tone: "neutral" | "clinical" | "ai" | "success" | "warning"; icon: React.ElementType }> = {
+const STATUS_CONFIG: Record<StudyStatus, { label: string; tone: "neutral" | "clinical" | "ai" | "success" | "warning"; icon: LucideIcon }> = {
   queued: { label: "Queued", tone: "neutral", icon: Clock },
   processing: { label: "Processing", tone: "ai", icon: Loader2 },
   "ai-complete": { label: "AI Complete", tone: "clinical", icon: Activity },

@@ -4,9 +4,15 @@ import { toAppStudy } from "@/lib/dataset/to-app-study";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+/*
+ * `params` is a Promise from Next.js 15 onward (it was a plain object in 14).
+ * The generated route validators in `.next/types` enforce this, so the old
+ * synchronous signature fails the build rather than just warning.
+ */
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const manifest = readManifest();
-  const ds = manifest?.studies.find((s) => s.id === params.id);
+  const ds = manifest?.studies.find((s) => s.id === id);
   if (!ds) {
     return NextResponse.json({ error: "Study not found" }, { status: 404 });
   }

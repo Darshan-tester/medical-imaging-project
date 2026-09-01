@@ -11,6 +11,7 @@ import {
   UploadCloud,
   BarChart3,
   CornerDownLeft,
+  type LucideIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -23,7 +24,7 @@ interface Action {
   id: string;
   label: string;
   hint?: string;
-  icon: React.ElementType;
+  icon: LucideIcon;
   group: string;
   onSelect: (router: ReturnType<typeof useRouter>) => void;
 }

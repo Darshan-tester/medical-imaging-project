@@ -18,12 +18,13 @@ export const dynamic = "force-dynamic";
  * single-instance X-ray or a NIfTI series returns 404, which is the honest answer
  * — there is no CT stack to render.
  */
-export async function GET(_req: Request, { params }: { params: { id: string; seriesId: string } }) {
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string; seriesId: string }> }) {
+  const { id, seriesId } = await params;
   const manifest = readManifest();
-  const study = manifest?.studies.find((s) => s.id === params.id);
+  const study = manifest?.studies.find((s) => s.id === id);
   if (!study) return NextResponse.json({ error: "Study not found" }, { status: 404 });
 
-  const series = study.series.find((s) => s.id === params.seriesId);
+  const series = study.series.find((s) => s.id === seriesId);
   if (!series) return NextResponse.json({ error: "Series not found" }, { status: 404 });
 
   if (!series.volumeId) {

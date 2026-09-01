@@ -16,12 +16,13 @@ export const dynamic = "force-dynamic";
  * so a 44 px box stops downloading a full-resolution reslice. A source JPEG is
  * always returned at full size — see `RenderOptions.maxEdge`.
  */
-export async function GET(req: Request, { params }: { params: { id: string; path: string[] } }) {
-  const [seriesId, indexStr] = params.path;
+export async function GET(req: Request, { params }: { params: Promise<{ id: string; path: string[] }> }) {
+  const { id, path: pathParts } = await params;
+  const [seriesId, indexStr] = pathParts;
   const index = Number(indexStr);
 
   const manifest = readManifest();
-  const study = manifest?.studies.find((s) => s.id === params.id);
+  const study = manifest?.studies.find((s) => s.id === id);
   if (!study) return NextResponse.json({ error: "Study not found" }, { status: 404 });
 
   const series = study.series.find((s) => s.id === seriesId);

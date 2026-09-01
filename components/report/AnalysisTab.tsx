@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square } from "lucide-react";
+import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, type LucideIcon } from "lucide-react";
 import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage } from "@/lib/types";
 import { CURRENT_USER } from "@/lib/mock-data";
 import { resolveReportPanelContent } from "@/lib/report-utils";
@@ -23,7 +23,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { cn } from "@/lib/utils";
 
 type RightPanelTab = "ai" | "report" | "annotations";
-const RIGHT_PANEL_TABS: { key: RightPanelTab; label: string; icon: React.ElementType }[] = [
+const RIGHT_PANEL_TABS: { key: RightPanelTab; label: string; icon: LucideIcon }[] = [
   { key: "ai", label: "AI Findings", icon: Sparkles },
   { key: "report", label: "Radiology Report", icon: FileText },
   { key: "annotations", label: "Annotations", icon: Pencil },

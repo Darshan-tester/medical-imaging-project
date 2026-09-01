@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Activity, LayoutList, FileText, Loader2 } from "lucide-react";
+import { ArrowLeft, Activity, LayoutList, FileText, Loader2, type LucideIcon } from "lucide-react";
 import { fetchStudy } from "@/lib/data-source";
 import { Finding, ReportSection, Study } from "@/lib/types";
 import { ModalityBadge, PriorityBadge, StatusBadge } from "@/components/ui/Badge";
@@ -16,7 +16,7 @@ import { CURRENT_USER } from "@/lib/mock-data";
 
 type Tab = "overview" | "analysis" | "report";
 
-const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
+const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "overview", label: "Overview", icon: LayoutList },
   { key: "analysis", label: "Viewer & AI Analysis", icon: Activity },
   { key: "report", label: "Report", icon: FileText },

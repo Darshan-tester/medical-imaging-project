@@ -1,6 +1,6 @@
 "use client";
 
-import { ZoomIn, ZoomOut, Move, Sun, Contrast, FlipHorizontal2, Maximize, Ruler, MessageSquarePlus, RefreshCw, Pencil } from "lucide-react";
+import { ZoomIn, ZoomOut, Move, Sun, Contrast, FlipHorizontal2, Maximize, Ruler, MessageSquarePlus, RefreshCw, Pencil, type LucideIcon } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +33,7 @@ function ToolButton({
   onClick,
 }: {
   label: string;
-  icon: React.ElementType;
+  icon: LucideIcon;
   active?: boolean;
   onClick: () => void;
 }) {

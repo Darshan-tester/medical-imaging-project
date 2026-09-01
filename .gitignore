@@ -4,9 +4,38 @@
 
 node_modules/
 .next/
-out/
-dist/
-build/
+/out/
+/dist/
+/build/
+
+# ==========================================
+# Cloudflare Workers / OpenNext build output
+# ==========================================
+
+.open-next/
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# ==========================================
+# Stale in-tree duplicate of this project
+# ==========================================
+# `/meridian/` is a full copy of this app (its own node_modules, package.json and
+# pre-MPR .scanlab/manifest.json) that predates the dataset work. It was tracked
+# in git — 130 of 276 files — and cloned on every Cloudflare build for nothing.
+# Untracked with `git rm -r --cached meridian`; still present on disk.
+# Leading slash matters: it pins the pattern to the repo root.
+
+/meridian/
+
+# ==========================================
+# Working files that should never have been committed
+# ==========================================
+
+*.backup
+*.backup-*
+*-debug.txt
+tsconfig.tsbuildinfo
 
 # ==========================================
 # Environment / Secrets
@@ -31,9 +60,14 @@ build/
 # Medical datasets
 # ==========================================
 
-ScanLab_Datasets/
-datasets/
-data/
+# Every pattern here is root-anchored with a leading slash. Unanchored,
+# `datasets/` also matched `app/api/datasets/`, so two real API routes
+# (`/api/datasets` and `/api/datasets/status`) were silently excluded from the
+# repo and never reached the Cloudflare build.
+
+/ScanLab_Datasets/
+/datasets/
+/data/
 
 # DICOM
 *.dcm

@@ -1,5 +1,6 @@
 import path from "path";
 import { getDataRoot } from "./config";
+import { countByDataset } from "./counts";
 import { writeManifest } from "./manifest-store";
 import { chestXrayAdapter } from "./adapters/chest-xray";
 import { ctAdapter } from "./adapters/ct";
@@ -41,19 +42,6 @@ export async function runScan(): Promise<ScanSummary> {
   const totals = sumCounts(Object.values(perDataset));
 
   return { manifest, perDataset, totals };
-}
-
-export function countByDataset(studies: DatasetStudy[]): Record<DatasetSourceId, DatasetCounts> {
-  const ids: DatasetSourceId[] = ["MRI", "CT", "CHEST_XRAY", "PET", "ULTRASOUND", "ROCOV2"];
-  const result = {} as Record<DatasetSourceId, DatasetCounts>;
-  for (const id of ids) {
-    const subset = studies.filter((s) => s.dataset === id);
-    const images = subset.reduce((sum, s) => sum + s.series.reduce((n, se) => n + se.sliceCount, 0), 0);
-    const reports = subset.filter((s) => !!s.report).length;
-    const completePairs = subset.filter((s) => !!s.report && s.series.some((se) => se.sliceCount > 0)).length;
-    result[id] = { studies: subset.length, images, reports, completePairs };
-  }
-  return result;
 }
 
 function sumCounts(counts: DatasetCounts[]): DatasetCounts {

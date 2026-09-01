@@ -1,6 +1,6 @@
 import fs from "fs";
 import { readManifest } from "./manifest-store";
-import { countByDataset } from "./scanner";
+import { countByDataset } from "./counts";
 import { seriesHasNoImages, seriesSourcePaths } from "./series-frames";
 import { DatasetSourceId, VerifyReport } from "./types";
 

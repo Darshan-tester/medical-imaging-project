@@ -3,7 +3,10 @@
 import { RefObject, useEffect, useState } from "react";
 import { useUIStore } from "./store";
 
-export function useOnClickOutside(ref: RefObject<HTMLElement>, handler: () => void) {
+// `RefObject<HTMLElement | null>` — React 19's types make `useRef<T>(null)`
+// return `RefObject<T | null>`, so the narrower `RefObject<HTMLElement>` no
+// longer accepts the refs Header passes in. The body already null-guards.
+export function useOnClickOutside(ref: RefObject<HTMLElement | null>, handler: () => void) {
   useEffect(() => {
     const listener = (e: MouseEvent) => {
       if (!ref.current || ref.current.contains(e.target as Node)) return;

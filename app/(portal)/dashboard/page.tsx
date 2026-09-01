@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
 import { Activity, AlertOctagon, ClipboardList, Sparkles, UploadCloud } from "lucide-react";
 import { StatCard, StatTone } from "@/components/dashboard/StatCard";
 import { DashboardHero } from "@/components/dashboard/DashboardHero";
@@ -17,11 +17,15 @@ const KPI_ICONS = [Activity, Sparkles, ClipboardList, AlertOctagon];
 // attention, red for what's critical — the palette carries real meaning here.
 const KPI_TONES: StatTone[] = ["clinical", "success", "warning", "critical"];
 
-const gridVariants = {
+const gridVariants: Variants = {
   hidden: {},
   show: { transition: { staggerChildren: 0.07 } },
 };
-const cardVariants = {
+// Annotated as `Variants` so the cubic-bezier stays a 4-tuple. Without the
+// annotation TypeScript widens `[0.16, 1, 0.3, 1]` to `number[]`, which
+// framer-motion's `ease` (Easing | Easing[]) rejects. Inline `transition={{...}}`
+// props elsewhere are fine because the prop supplies that context already.
+const cardVariants: Variants = {
   hidden: { opacity: 0, y: 10 },
   show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.16, 1, 0.3, 1] } },
 };

@@ -1,0 +1,47 @@
+{
+  // Wrangler config for deploying this Next.js app to Cloudflare Workers via
+  // the OpenNext adapter (@opennextjs/cloudflare).
+  //
+  // This file exists mainly so Wrangler stops *guessing*. With no config in the
+  // repo, `npx wrangler deploy` falls into its automatic-configuration path and
+  // picks an adapter for you — that is what produced the
+  // `runAutoConfigLogic -> npx opennextjs-cloudflare build` failure in the
+  // 21:05 build. Committing the config makes the adapter, the compatibility
+  // date, and the Worker name explicit and reviewable.
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  // Must match the existing Worker in the Cloudflare dashboard, otherwise
+  // `deploy` creates a second Worker on a new *.workers.dev subdomain instead
+  // of replacing the one that is already wired to the GitHub repo.
+  "name": "vedh-medical-imaging",
+
+  // Built by `opennextjs-cloudflare build`; both paths are generated, never
+  // hand-edited, and .open-next/ is gitignored.
+  "main": ".open-next/worker.js",
+
+  // From 2026-08-04 onward the runtime enables nodejs_compat/_v2 by default,
+  // but the flag is listed anyway: OpenNext requires it, and an explicit flag
+  // survives someone later pinning the date to something older.
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": [
+    "nodejs_compat",
+    // Makes fetch() to this Worker's own hostname go out to the public
+    // internet rather than looping back internally — what Next.js's server
+    // code assumes when it fetches its own routes.
+    "global_fetch_strictly_public"
+  ],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+
+  // NOTE: no R2/D1/KV bindings yet. The dataset layer still reads the local
+  // filesystem (SCANLAB_DATA_ROOT), which does not exist on Workers, so this
+  // deployment serves the seeded mock studies. Moving the real dataset to R2 is
+  // tracked separately — see the "Cloudflare / R2" section of CLAUDE_PROGRESS.md.
+}
