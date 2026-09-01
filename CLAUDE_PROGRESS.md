@@ -156,10 +156,97 @@ npx next lint
 
 `dataset:mpr-check` prints each volume's dims, mm spacing, whether a qform/sform was present, the acquired plane, and then per plane: slice count, rendered pixel size, through-axis, and the non-black fraction of the middle slice — writing those slices as PNGs under `.scanlab/logs/mpr-check`. Differing slice counts and pixel heights per plane are what prove these are reslices of the volume rather than rotations of one image; open the PNGs to confirm the anatomy.
 
+## Phase 8 — Cloudflare Workers deployment (Next 16 + OpenNext)
+
+Scope: get the app deployable to Cloudflare Workers. CT was again not touched — `lib/dataset/adapters/ct.ts` and the DICOM half of `lib/dataset/image-render.ts` are unchanged in this phase.
+
+### Why the first Cloudflare build failed
+
+Build `#c59ba8e9` ran `npm run build` then `npx wrangler deploy`. With no Wrangler config in the repo, `wrangler deploy` entered its automatic-configuration path (`runAutoConfigLogic` → `maybeRunAutoConfig`), picked the OpenNext adapter for us and ran `npx opennextjs-cloudflare build`, which exited 1:
+
+```
+ERROR Next.js version 14.2.35 is not supported by the Next.js team.
+```
+
+Two separate problems sat behind that one line. First, `package.json` had been bumped to Next 16.3.4 / React 19 locally but the *deployed* branch was still 14.2.35 and the code had never been migrated. Second, Wrangler was choosing the adapter itself, so nothing about the deployment was pinned or reviewable.
+
+### Files added
+
+- `wrangler.jsonc` — Worker name `vedh-medical-imaging` (must match the existing Worker, or `deploy` creates a second one), `main: ".open-next/worker.js"`, `compatibility_date` 2026-08-04, flags `nodejs_compat` + `global_fetch_strictly_public`, assets binding `ASSETS` → `.open-next/assets`, observability on. No R2/D1/KV bindings.
+- `open-next.config.ts` — bare `defineCloudflareConfig()`. R2 incremental cache and D1 tag cache are deliberately off: they need bindings that do not exist yet, a missing binding fails the build rather than degrading, and every API route here is `force-dynamic` with no ISR pages, so there is nothing to cache.
+- `lib/dataset/counts.ts` — `countByDataset` extracted verbatim from `scanner.ts`. `/api/datasets` imported it from `scanner`, which pulled all six adapters → `adapters/mri.ts` → `zip-cache.ts` → `adm-zip` (and its optional `original-fs` require) into the Worker bundle for one pure function. `scanner.ts` is now reachable only from `scripts/`.
+
+### Next 16 breaking changes fixed
+
+- Route handler `params` is a `Promise` in Next 15+. Awaited in `app/api/studies/[id]/route.ts`, `.../report/route.ts`, `.../images/[...path]/route.ts`, `.../volume/[seriesId]/route.ts`. The generated `.next/types` route validators fail the build otherwise.
+- `next.config.js` — `eslint.ignoreDuringBuilds` removed (Next 16 dropped `next lint` and `next build` no longer lints) and the `original-fs` webpack alias removed (unnecessary now that `adm-zip` is out of the app graph; a `webpack` key would also be ignored under Next 16's default Turbopack build).
+- `npm run lint` still points at `next lint`, which no longer exists. Left as-is rather than half-migrated: `.eslintrc.json` is eslintrc-format while the installed ESLint is 9.x, so that needs a flat-config migration of its own. Nothing in `verify:all` or the build calls it.
+
+### Type errors fixed (React 19 / framer-motion 13)
+
+Eleven whole-program type errors, in three groups:
+
+- Six `Type 'string' is not assignable to type 'never'` errors on icon props. Cause was **not** React 19 or lucide-react: `@react-three/fiber` augments the global `JSX.IntrinsicElements` with three.js elements that have no `className`, so `React.ElementType`'s prop intersection collapses to `never`. `components/ui/Badge.tsx` typechecks clean in isolation and only fails in the full program. Fixed by switching five sites to `LucideIcon` (already used without error in `StatCard.tsx` and `EmptyState.tsx`): `Badge.tsx`, `ViewerToolbar.tsx`, `AnalysisTab.tsx`, `CommandPalette.tsx`, `app/(portal)/studies/[id]/page.tsx`.
+- `app/(portal)/dashboard/page.tsx` — `cardVariants` annotated `Variants` so `ease: [0.16, 1, 0.3, 1]` stays a 4-tuple instead of widening to `number[]`. The many inline `transition={{ ease: [...] }}` props never errored because the prop supplies that context already.
+- `lib/hooks.ts` — `useOnClickOutside` now takes `RefObject<HTMLElement | null>`; React 19 types `useRef<T>(null)` as `RefObject<T | null>`, which `Header.tsx` passes three of.
+
+### Repo hygiene
+
+- The in-tree `meridian/` duplicate (a full stale copy of this app, 130 of 276 tracked files) and the `*.backup` / `*-debug.txt` working files were untracked with `git rm -r --cached` and gitignored. **Nothing was deleted from disk** — every file is still there; git just stops shipping them to the builder. Tracked files: 276 → 141.
+- Dataset ignore patterns are now root-anchored. Unanchored `datasets/` also matched `app/api/datasets/`, so `/api/datasets` and `/api/datasets/status` were never committed and never reached any build. Both are now tracked.
+- `demo-pack/INDEX.txt` and `lib/dataset/adapters/chest.ts` show as modified but differ from `HEAD` only in line endings (CRLF in the worktree, LF in git). Left uncommitted on purpose — committing them would be a 2,066-line no-op diff.
+
+### Verification status — READ THIS
+
+What was actually run: `node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json` over the whole program. It reports exactly one error, and only this one:
+
+```
+open-next.config.ts(1,40): error TS2307: Cannot find module '@opennextjs/cloudflare'
+```
+
+That clears as soon as the package is installed. All eleven pre-existing type errors are gone.
+
+What was **not** run, and cannot be run in this environment: `next build`, `next dev`, `opennextjs-cloudflare build`, ESLint, and any `npm install`. The npm registry returns 403 here and the only installed SWC binary is `@next/swc-win32-x64-msvc`, so the build must be verified on Windows or on Cloudflare's builder. Treat "typechecks" as strictly weaker than "builds".
+
+Also still true from Phase 7: the dataset index on disk is `builderVersion 3` while the code expects `4`, so real data stays invisible until `npm run dataset:index` is re-run on Windows.
+
+### What has to happen next (on Windows)
+
+```
+npm install --save-dev @opennextjs/cloudflare wrangler
+npm run build
+npx opennextjs-cloudflare build
+git push -u origin cloudflare-next-upgrade
+```
+
+The install has to be done there, not here, so `package.json` and `package-lock.json` stay in sync — Cloudflare's install step runs `npm ci`-style and will fail on a lockfile that does not list the adapter. Next.js 16 and the latest minors of 14/15 are the supported set for `@opennextjs/cloudflare`, and Turbopack builds have been supported since adapter v1.15.0, so Next 16's default Turbopack `next build` is fine.
+
+Then in the Cloudflare dashboard, for the `vedh-medical-imaging` Worker:
+
+- Build branch: `cloudflare-next-upgrade` (leave `main` alone until this deploy is proven green).
+- Deploy command: `npx opennextjs-cloudflare deploy` — not `npx wrangler deploy`. The adapter has to build `.open-next/` before anything is uploaded; `wrangler deploy` on its own is what triggered the auto-config guessing.
+- Build command: `npm run build` is fine to keep.
+
+### What the first successful deploy will and will not show
+
+It will serve the app against the seeded mock studies. It will **not** serve real scans: Workers have no filesystem, so `SCANLAB_DATA_ROOT`, `.scanlab/manifest.json`, the ZIP extraction cache and the server-side DICOM/NIfTI decode have nothing to read. `readManifest()` swallows ENOENT and returns `undefined`, so the dataset surfaces degrade to "No dataset index has been built yet." rather than erroring. `NEXT_PUBLIC_DATA_MODE` must stay unset (or `mock`) until the R2 work below lands.
+
+### R2 migration — sequenced, not yet started
+
+The chosen end state is the full dataset in R2. In dependency order:
+
+1. Upload the dataset to an R2 bucket and add the binding to `wrangler.jsonc` (keeping `SCANLAB_DATA_ROOT` as the local Windows path — it must never become a `NEXT_PUBLIC_*` var, and `absPath` must never reach the client).
+2. Replace the single 5.7 MB `.scanlab/manifest.json` with per-study objects or a KV/D1 index; a 2,314-study JSON blob per cold start is not viable in a Worker.
+3. Make `fs-utils.ts`, `manifest-store.ts` and `image-render.ts` read through an async storage interface with two implementations — Node `fs` for Windows, R2 `get()` for Workers — so the local path keeps working unchanged.
+4. Pre-extract the ZIPs during indexing instead of at request time (`adm-zip` and its `original-fs` require cannot run on Workers).
+5. Pre-compute the CT volume exports rather than decoding DICOM per request; `assertWithinRoot` must stay in the path-resolution chain in whatever form the R2 key mapping takes.
+
+Steps 3–5 are where CT is most at risk. None of it should be started without re-reading the Phase 7 notes above.
+
 ## How To Continue
 
 1. Read this file top to bottom before touching anything.
 2. Do a manual browser QA pass on `/studies/[id]?tab=analysis` for a CT or MRI study (multi-series, multi-slice) — this exercises series switching, slice navigation, cine, markers, measurements, and AI-finding jump-to all at once.
 3. If persistence is requested next, look at `lib/mock-data.ts`'s stated integration boundary — markers/measurements should follow the same pattern as `onUpdateFinding` in `app/(portal)/studies/[id]/page.tsx` once there's a real backend.
 4. Do not redo the marker/measurement lifting — it's complete and scoped correctly per series+slice.
-5. Run `npx next build && npx next lint` after any further change before considering it done.
+5. Run `npx next build` after any further change before considering it done. (`npx next lint` no longer exists — Next 16 removed it. Use `npm run typecheck`.)
