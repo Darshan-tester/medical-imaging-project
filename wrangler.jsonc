@@ -19,6 +19,17 @@
   // hand-edited, and .open-next/ is gitignored.
   "main": ".open-next/worker.js",
 
+  // Wrangler runs this while resolving `main`, on every `deploy` /
+  // `versions upload` / `dev`, and then asserts the entrypoint exists. It is
+  // what makes a deploy work even when the Cloudflare dashboard's own build
+  // command is `npm run build` — which produces `.next` but no Worker. The
+  // script is idempotent: if `.open-next/worker.js` is already there (because
+  // the dashboard ran `npm run cf:build`, or because `opennextjs-cloudflare
+  // deploy` built it) this costs nothing.
+  "build": {
+    "command": "node scripts/cf-ensure-open-next.mjs"
+  },
+
   // From 2026-08-04 onward the runtime enables nodejs_compat/_v2 by default,
   // but the flag is listed anyway: OpenNext requires it, and an explicit flag
   // survives someone later pinning the date to something older.

@@ -331,6 +331,39 @@ The build command `npm run cf:build` is already correct — on the branch that s
 
 Do not skip step 1 by pushing the branch and leaving production on `main`. Commits to a non-production branch produce a **preview** build, and a preview build replaces the deploy command with a preview deploy command defaulting to `npx wrangler versions upload` — which delegates back into the adapter exactly the way bare `wrangler deploy` does. The adapter does have an `upload` command (`build`, `deploy`, `migrate`, `populate-cache`, `preview`, `skew-protection`, `upload`) if preview builds are wanted later.
 
+### Build `#2d87983a` — the same root cause, one stage later
+
+Also branch `main`. `npm run build` passed in 1m 7s (Next 14 builds fine), then `npx wrangler deploy` failed in 1m 30s with the original error verbatim: `escapedCommand: 'npx opennextjs-cloudflare build'`, `Next.js version : 14.2.35`, `ERROR ... is not supported`. That is `#c59ba8e9` again, and the reason is unchanged: **Cloudflare is building `main`, and `main` is the pre-upgrade initial commit.** Three failed builds, one cause.
+
+Two repo changes were made so the deploy stops depending on getting dashboard fields exactly right.
+
+**1. `main` fast-forwarded to the upgrade branch.** `origin/main` (`bf98f9c`) is a strict ancestor of the branch, so `git branch -f main cloudflare-next-upgrade` is a fast-forward: no merge commit, no conflicts, nothing on `main` lost. The earlier plan was to leave `main` alone until a deploy was green, but that precaution existed to protect a working production deploy and there has never been one — meanwhile the dashboard keeps building `main`. To undo: `git branch -f main bf98f9c` (and a force-push if it has already gone up).
+
+**2. `wrangler.jsonc` now carries a `build.command`.** From wrangler 4.127.1's source, entrypoint resolution unconditionally calls `runCustomBuild(config.build)` before `deploy` / `versions upload` / `dev`, then asserts the entrypoint exists:
+
+```js
+async function runCustomBuild(expectedEntryAbsolute, expectedEntryRelative, build6, configPath, runOptions) {
+  if (build6.command) {
+    await runCommand(build6.command, build6.cwd, "[custom build]", runOptions);
+    assertEntryPointExists(expectedEntryAbsolute, expectedEntryRelative, build6.command, configPath);
+  } else { assertEntryPointExists(expectedEntryAbsolute, expectedEntryRelative); }
+}
+```
+
+So `"build": { "command": "node scripts/cf-ensure-open-next.mjs" }` runs on every deploy no matter what the dashboard's own build command is. `scripts/cf-ensure-open-next.mjs` is idempotent — it skips when `.open-next/worker.js` already exists, so it costs nothing when the Building phase already ran `npm run cf:build`, and it builds when the Building phase only ran `npm run build`. `OPEN_NEXT_BUILD_COMMAND` overrides the command it runs, which is the hook to use from Cloudflare's Build variables if Turbopack ever needs replacing on the builder. Its four paths (skip / build / propagate a failing exit code / fail loudly when the command lies about success) were tested directly.
+
+Also worth recording, since it retires an earlier worry: `npx wrangler deploy` is now safe. `getDetailsForAutoConfig()` returns `configured: true` as soon as a real wrangler config is found —
+
+```js
+if (target === "wrangler" && wranglerConfig?.configPath && !wranglerConfig.pages_build_output_dir) {
+  return { configured: true, ... };
+}
+```
+
+— and `maybeRunAutoConfig` only enters auto-config on `!details.configured`. Committing `wrangler.jsonc` is therefore what stops the delegation to `opennextjs-cloudflare build`, permanently. `npx opennextjs-cloudflare deploy` is still the better command (it also runs `populateCache`, which will matter once R2 is wired), but it is no longer required to avoid the recursion.
+
+Net effect: with `main` pushed, the existing dashboard settings (`npm run build` + `npx wrangler deploy`) deploy successfully. Switching the build command to `npm run cf:build` is now an optimisation — it moves the OpenNext build out of the Deploying phase and avoids one redundant `next build`.
+
 ## How To Continue
 
 1. Read this file top to bottom before touching anything.
