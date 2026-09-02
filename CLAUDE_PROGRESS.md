@@ -611,13 +611,22 @@ The exported PDF carries the same information with the same marks: `Age / Sex`, 
 
 `components/upload/UploadZone.tsx`'s Study Details step now collects Age, Sex, Height, Weight, relevant history (one condition per line) and special notes. BMI and BSA are **computed and displayed live, never typed** — asking for them invites a value that disagrees with the height and weight beside it. Everything is optional; a blank box stays `undefined` all the way through `createDemoStudy` and is filled and badged by `buildPatientProfile`, so a blank box never turns into a number that reads as if it were entered. What *was* typed is badged `entered`.
 
+### The report section that swallowed the findings
+
+Part of the MRI set is written as one paragraph that opens with a technique list: *"Technique: Axial and sagittal T2, coronal T1, axial FLAIR. In the medial aspect of the frontal lobe of the left cerebral hemisphere, hypointensity on T1-weighted sequences…"*. `parseReportSections` ends a section at the next heading, and there is no FINDINGS heading to stop at, so the entire report — up to 2,360 characters of it — landed under **Technique** and Findings came out empty. Measured over the v4 manifest that is **57 of 311 MRI studies**, all of the same shape (only `technique` non-empty, nothing else parsed). Two visible consequences: an empty Findings panel in the report tab, and nothing for the annotator to localise, which is most of why MRI looked unannotated.
+
+`splitTechniqueTail` in `lib/dataset/to-app-study.ts` cuts the technique block at its first terminator — a full stop, a semicolon, or the colon that introduces the description, with `1.5 Tesla` and `7.5 x 4 x 6 cm` protected — and gives the remainder to Findings. Nothing is rewritten or invented; the same characters are attributed to the section they were written for. It runs only when the parser found neither Findings nor Impression, and only when something substantial (≥ 80 characters) follows the list, so a genuinely technique-only report is left alone. `report-utils.ts` is untouched, so uploads and demo reports are unaffected. Result: **+48** annotated MRI studies (129 → 177); the other 9 of the 57 stay silent because their reports are entirely normal, which is correct.
+
 ### Verification — measured against the real manifest, not asserted
 
-`tsc --noEmit` is clean. Beyond that, the two pure modules were compiled to CJS with the repo's own `tsc` and run over all 2,314 real studies (`outputs/simcheck.cjs`, `outputs/profcheck.cjs`, `outputs/projcheck.cjs`):
+`tsc --noEmit -p tsconfig.json` is clean over the whole project, which is the same check `next build` runs on the Cloudflare builder.
+
+`npm run findings:check` (`scripts/findings-check.ts`) is the repo-resident version of what used to be throwaway scripts. It has two halves: 32 fixture sentences written for the test, one per modality-specific phrasing, asserting label, side and height plus three that must stay silent; and a sweep of all 2,314 studies through the real `toAppStudy` conversion the API routes use — the production path, not an approximation of it. **32/32 fixtures pass and all five sweep invariants are 0.**
 
 | Property | Result |
 | --- | --- |
-| studies with ≥ 1 report-quoted annotation | **1,931 of 2,314** — X-Ray 1,192/1,503 (79.3%), MRI 242/311 (77.8%), PET 490/490, CT 7/9, US 0/1 |
+| studies with ≥ 1 report-quoted annotation | **1,939 of 2,314** — X-Ray 1,263/1,503 (84.0%), MRI 177/311 (56.9%), PET 490/490, CT 8/9, US 1/1. Mammography has 0 indexed studies, so that path is fixture-verified only |
+| every finding's description quoted verbatim from that study's own report | **0** violations of 4,700-odd boxes |
 | determinism (same input twice, deep-equal) | **0** mismatches across findings and profiles |
 | boxes / slice indices / confidences in range | **0** out of range |
 | profiles missing a field | **0** |
@@ -626,6 +635,8 @@ The exported PDF carries the same information with the same marks: `Age / Sex`, 
 | provenance | age `source` 3 / `simulated` 2,311 · sex `source` 4 / `simulated` 2,310 |
 | plausibility | heights 120–188 cm, weights 25.1–108.9 kg, BMI 17.4–31.4, history present on 80.9% |
 | paediatric cases given an adult body or an adult history | **0** |
+
+An earlier count of **1,931**, and a later **2,033**, are both superseded and were both wrong in the same way: those scripts fed `simulateFindings` the raw `report.text`, whereas `toAppStudy` feeds it `sections.findings` and `sections.impression`. Running the real conversion is what exposed the Technique bug above — the approximation had been hiding it by accident.
 
 The list projection was measured the same way. `/api/studies` is **2.87 MB** across 2,314 studies; leaving `patientProfile` in would have added 1,151 KB and the finding descriptions another 350 KB, for fields no card reads — `StudyCard` reads `study.findings.length` and nothing else about them, and the table shows a dash for age and sex. `lib/data-source.ts` confirms the detail page fetches `/api/studies/[id]`, which is full `toAppStudy`, so `toAppStudySummary` now strips both. Verified end to end: 0 of 2,314 list entries carry a profile, report prose, a source report or a finding description; 0 of 2,314 detail bodies are missing the profile.
 
@@ -636,6 +647,8 @@ One pre-existing data fact surfaced by that run, recorded so it is not mistaken 
 **`npm run mirror:export` must be re-run.** `NextResponse.json(x)` is a plain `JSON.stringify(x)`, and R2 holds finished JSON bodies. The study JSON now carries `patientProfile`, `findings` and `aiStatus`, so bodies exported before this phase would serve a deployed site with no demographics and no annotations. It is metadata only — roughly 13 s, and **no pixel re-render**.
 
 **No script change was needed.** `scripts/mirror-export.ts` calls `toAppStudy` and `toAppStudySummary` directly, and `write(key, value)` is `JSON.stringify` plus `assertNoLocalPaths`, so the new fields flow into the mirror on their own. That is also why the generators had to be pure: a `Math.random()` anywhere in this path would make the mirrored body and the locally rendered one disagree.
+
+**`scripts/` is inside the deploy's type check.** Build #0b71cbe8 on `cf61a08` failed in the Building phase with `scripts/findings-check.ts(273,52): error TS2339: Property 'version' does not exist on type 'DatasetManifest'` — `next build` runs `tsc` over everything `tsconfig.json` includes, and that includes `scripts/**`. `DatasetManifest` stamps `builderVersion`, not `version`; fixed. Nothing about the Worker or the bindings was involved, and no earlier phase regressed. The lesson worth keeping: a helper script that does not compile fails the deploy exactly like a broken page would, so run `npm run typecheck` before pushing rather than after the build tells you.
 
 ## How To Continue
 

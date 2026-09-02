@@ -134,6 +134,54 @@ function toSourceReport(
  *
  * We never modify the original dataset report.
  */
+function isDigitChar(ch: string | undefined): boolean {
+  return ch !== undefined && ch >= "0" && ch <= "9";
+}
+
+/**
+ * Splits a technique block that has swallowed the report's own observations.
+ *
+ * Part of the MRI set is written as a single paragraph that opens with a
+ * technique list — "Technique: Axial and sagittal T2, coronal T1, axial FLAIR.
+ * In the medial aspect of the frontal lobe of the left cerebral hemisphere,
+ * hypointensity on T1-weighted sequences ..." — and a section parser ends a
+ * section only at the next heading. With no FINDINGS heading to stop at, the
+ * whole report (measured at up to 2,360 characters) lands under Technique and
+ * Findings comes out empty: an empty Findings panel in the report tab, and
+ * nothing for the annotator to localise. Measured over the v4 manifest that is
+ * 57 of 311 MRI studies, all of the same shape.
+ *
+ * The list itself ends at its first terminator — a full stop, a semicolon, or
+ * the colon that introduces the description. What follows is what the
+ * radiologist observed, so that is what Findings should hold. Nothing is
+ * rewritten or invented: the same characters are simply attributed to the
+ * section they were written for.
+ *
+ * Returns undefined when there is nothing substantial after the list, so a
+ * genuinely technique-only report is left alone.
+ */
+function splitTechniqueTail(
+  technique: string
+): { technique: string; findings: string } | undefined {
+  const text = technique.trim();
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== ";" && ch !== ":") continue;
+
+    // "1.5 Tesla" and "7.5 x 4 x 6 cm" are not the end of anything.
+    if (ch === "." && isDigitChar(text[i - 1]) && isDigitChar(text[i + 1])) continue;
+
+    const head = text.slice(0, i + 1).trim();
+    const tail = text.slice(i + 1).trim();
+
+    // Short tail: the report really is only a technique note. Leave it.
+    return tail.length < 80 ? undefined : { technique: head, findings: tail };
+  }
+
+  return undefined;
+}
+
 function toWorkingReport(
   ds: DatasetStudy
 ): Report {
@@ -183,6 +231,31 @@ function toWorkingReport(
    * retained as fallback for individual missing fields.
    */
   if (hasParsedSections) {
+    const parsedTechnique =
+      parsed.technique ??
+      src.technique ??
+      "";
+
+    const parsedFindings =
+      parsed.findings ??
+      src.findings ??
+      "";
+
+    const parsedImpression =
+      parsed.impression ??
+      src.impression ??
+      "";
+
+    /*
+     * Only when the parser produced neither Findings nor Impression: see
+     * splitTechniqueTail above. A report with a real Findings or Impression
+     * heading is used exactly as parsed.
+     */
+    const salvaged =
+      !parsedFindings.trim() && !parsedImpression.trim()
+        ? splitTechniqueTail(parsedTechnique)
+        : undefined;
+
     return {
       status: "in-review",
 
@@ -194,19 +267,15 @@ function toWorkingReport(
           "",
 
         technique:
-          parsed.technique ??
-          src.technique ??
-          "",
+          salvaged?.technique ??
+          parsedTechnique,
 
         findings:
-          parsed.findings ??
-          src.findings ??
-          "",
+          salvaged?.findings ??
+          parsedFindings,
 
         impression:
-          parsed.impression ??
-          src.impression ??
-          "",
+          parsedImpression,
       },
 
       aiAssisted: false,

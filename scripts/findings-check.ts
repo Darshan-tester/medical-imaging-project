@@ -270,7 +270,8 @@ function main(): void {
     console.log("Run npm run dataset:index first if you want the real-study half.");
   } else {
     const manifest = JSON.parse(fs.readFileSync(mp, "utf8")) as DatasetManifest;
-    console.log(`\n--- sweep: manifest v${manifest.version}, ${manifest.studies?.length ?? 0} studies ---`);
+    const built = manifest.builderVersion ?? 0;
+    console.log(`\n--- sweep: builder v${built}, ${manifest.studies?.length ?? 0} studies, indexed ${manifest.generatedAt} ---`);
     runSweep(manifest.studies ?? []);
   }
 
