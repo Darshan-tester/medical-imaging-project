@@ -1,0 +1,78 @@
+ Patient ID 
+ Patient Name 
+ Referred By 
+[STUDY_ID]
+ PA00 47Y/M 
+
+ Age/Sex 
+ Date 
+ Reported Date   
+
+ 047YM 
+ 2026 
+
+            CT CHEST – REPORT  
+
+TECHNIQUE: ULTRA LOW RADIATION CT 
+        32 MSCT, 0.8 MM AXIAL ACQUISITION, 5MM AXIAL, CORONAL & SAGITTAL IMAGES WITH OUT IV CONTRAST STUDY 
+
+Lungs:  
+*** Trachea & Main bronchi are normal. 
+*** Fibrocalcific lesions with cicatricial bronchiectasis in bilateral upper lobes & 
+        superior segment of bilateral lower lobes. 
+*** Few fibrotic lesions in middle lobe & bilateral lower lobes. 
+*** Pleural spaces are normal, bilaterally. 
+
+Mediastinum: 
+*** Main pulmonary artery normal. 
+*** Mediastinal soft tissue densities normal.  
+*** 8 mm likely calcified node anterior to the superiorvenacava.  
+
+Chest wall:  
+*** Rib cage & domes are normal. 
+
+IMPRESSION: 
+* Fibrocalcific lesions with cicatricial bronchiectasis in bilateral upper lobes & 
+        superior segment of bilateral lower lobes. 
+* Few fibrotic lesions in middle lobe & bilateral lower lobes. 
+* 8 mm likely calcified node anterior to the superiorvenacava.  
+
+Suggested: Clinical correlation and followup scan. 
+
+NB: This report is only an observation & opinion furnished only based on the present black, white & colour echoes / density / intensity shadows {findings}, which may be variable in 
+
+identification, significance with inter & intra observer variations & also depending upon disease dynamics.  Findings interpretation is highly variable from doctor to doctors & in view of 
+
+clinical presentation, clinical examination & other investigations. Hence opinion needs clinical correlation with other investigations, follow up. If you have doubt / clinic-radiological 
+
+disparity / lab-radiological disparity please contact us for clarification. If necessary take 2nd opinion. Hence this opinion cannot be subjected to jurisdiction, in any court or tribunal. Print 
+
+user: [STAFF]
+
+Page 1 of 2 
+
+ 
+ 
+ 
+ 
+ 
+ 
+  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Page 2 of 2 
+
+ 
+ 
+

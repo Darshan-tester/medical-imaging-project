@@ -1,0 +1,82 @@
+ Patient ID 
+ Patient Name 
+ Referred By 
+[STUDY_ID]
+ PA01 4Y/M 
+
+ Age/Sex 
+ Date 
+ Reported Date   
+
+ 004YM 
+ 2026 
+
+CT BRAIN – REPORT  
+
+TECHNIQUE: ULTRA LOW RADIATION CT 
+                             32 MSCT, 1MM AXIAL ACQUISITION, 5MM AXIAL, CORONAL & SAGITTAL IMAGES                                                                                                                                                                                                                                                                                                                                                                                            
+                             WITH OUT IV CONTRAST STUDY 
+
+*** Attenuation values from cerebral hemispheres are normal.  
+        No e/o focal/ diffuse edema / hemorrhage. 
+*** Ventricular system normal. 
+*** Basal cisterna normal. 
+*** Sulci & sylvian fissures normal. No e/o focal / diffuse hyperdensity. 
+*** Brain stem & cerebellum are normal.  
+*** Eye balls are normal, bilaterally. 
+        Visual parts of rest of orbits are normal, bilaterally. 
+*** No e/o bony pathology / fractures / hemorrhages. 
+*** Visualized sinuses are normal. 
+*** Mild soft tissue swelling in left frontal & parietal scalp regions. 
+
+IMPRESSION:     
+* No significant abnormality detected in brain parenchyma. 
+* Mild soft tissue swelling in left frontal & parietal scalp regions. 
+
+Suggested: Clinical correlation and followup scan. 
+
+NB: This report is only an observation & opinion furnished only based on the present black, white & colour echoes / density / intensity shadows {findings}, which may be variable in 
+
+identification, significance with inter & intra observer variations & also depending upon disease dynamics.  Findings interpretation is highly variable from doctor to doctors & in view of 
+
+clinical presentation, clinical examination & other investigations. Hence opinion needs clinical correlation with other investigations, follow up. If you have doubt / clinic-radiological 
+
+disparity / lab-radiological disparity please contact us for clarification. If necessary take 2nd opinion. Hence this opinion cannot be subjected to jurisdiction, in any court or tribunal. Print 
+
+user: [STAFF]
+
+Page 1 of 2 
+
+ 
+ 
+ 
+ 
+ 
+ 
+  
+ 
+ 
+ 
+                                     
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Page 2 of 2 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+

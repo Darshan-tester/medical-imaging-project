@@ -1,0 +1,117 @@
+ Patient ID 
+ Patient Name 
+ Referred By 
+[STUDY_ID]
+ PA03 56Y/F 
+
+ Age/Sex 
+ Date 
+ Reported Date   
+
+ 056YF 
+ 2026 
+
+CECT CHEST – REPORT  
+
+TECHNIQUE: ULTRA LOW RADIATION CT 
+        32 MSCT, 0.8 MM AXIAL ACQUISITION, 5MM AXIAL, CORONAL & SAGITTAL IMAGES WITH OUT & WITH IV CONTRAST STUDY 
+
+Lungs:  
+*** Trachea & Main bronchi are normal. 
+*** Well defined soft tissue density {HU:+43} lesion with irregular margins  
+        measuring 58 x 45 x 47 mm with adjacent ground glass opacification &  
+        pleural thickening & pleural tags noted in superior segment  
+       of left lower lobe with tiny calcifications & showing moderate  
+         heterogenous enhancement{HU:+72}.  
+*** The lesion is encasing left main pulmonary artery, lower lobe branches &  
+        left lower lobe bronchus.  
+*** Another small similar appearing lesion in seen in the antero medial segment  
+        of left lower lobe 
+*** Few thin fibro parenchymal bands in bilateral lungs.  
+*** Small focal ground glass opacity in medial segment of  middle lobe. 
+*** Rest of the pleural spaces are normal, bilaterally. 
+
+Mediastinum: 
+*** Main pulmonary artery normal. 
+*** Mediastinal soft tissue densities normal.  
+*** Enlarged rounded heterogenously enhancing lymphnodes noted in left 
+       paraaortic region largest measuring 18.4mm SAD 
+Chest wall:  
+*** Rib cage & domes are normal. 
+*** Degenerative changes in spine.  
+
+Page 1 of 2 
+
+ 
+ 
+ 
+ 
+ 
+  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ Patient ID 
+ Patient Name 
+ Referred By 
+[STUDY_ID]
+ PA03 56Y/F 
+
+ Age/Sex 
+ Date 
+ Reported Date   
+
+ 056YF 
+ 2026 
+
+IMPRESSION: 
+*  58 x 45 x 47 mm Well defined irregular moderate heterogenously enhancing{ HU+72}   
+    soft tissue density {HU:+43} lesion with adjacent ground glass opacification, pleural  
+    thickening & pleural tags in superior segment of left lower lobe with tiny calcifications     
+   encasing left main pulmonary artery, lower lobe branches & left lower lobe bronchus.  
+* Few {2 to 3} enlarged rounded heterogenously enhancing lymphnodes  in left 
+    paraaortic region.  
+          - Neoplastic etiology Likely  Carcinoma lung. 
+* Another small similar appearing lesion in seen in the antero medial segment  
+        of left lower lobe 
+              ?Satellite nodule 
+* Few thin fibro parenchymal bands in bilateral lungs.  
+* Small focal ground glass opacity in medial segment of  middle lobe. 
+
+Note is made of : 
+* Visualized portion of liver shows focal faint  heterogenously enhancing mass lesion 
+   in right lobe.  
+                    ?Metastatic etiology 
+
+Suggested: Clinical, PET CT correlation and followup scan. 
+
+NB: This report is only an observation & opinion furnished only based on the present black, white & colour echoes / density / intensity shadows {findings}, which may be variable in 
+
+identification, significance with inter & intra observer variations & also depending upon disease dynamics.  Findings interpretation is highly variable from doctor to doctors & in view of 
+
+clinical presentation, clinical examination & other investigations. Hence opinion needs clinical correlation with other investigations, follow up. If you have doubt / clinic-radiological 
+
+disparity / lab-radiological disparity please contact us for clarification. If necessary take 2nd opinion. Hence this opinion cannot be subjected to jurisdiction, in any court or tribunal. Print 
+
+user: [STAFF]
+
+Page 2 of 2 
+
+ 
+ 
+ 
+ 
+ 
+ 
+  
+ 
+ 
+ 
+ 
+
