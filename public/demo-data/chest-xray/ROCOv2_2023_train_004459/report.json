@@ -1,0 +1,8 @@
+﻿{
+    "clinical_information":  "",
+    "modality":  "X-Ray",
+    "technique":  "",
+    "findings":  "Anteroposterior pelvis radiograph showed severe osteolytic involvement of the hips associated with massive disorganization/distortion of the weight bearing components with subsequent development of lower limb length inequality. The patient was able to walk a few days after surgery using crutches with partial weight bearing. Osteogenesis imperfecta was the first proposed diagnosis because of long bone fracture and osteopenia. Next-generation sequencing panel to detect COL1A1/2 mutations was negative.",
+    "study_uid":  "ROCOv2_2023_train_004459",
+    "impression":  "Anteroposterior pelvis radiograph showed severe osteolytic involvement of the hips associated with massive disorganization/distortion of the weight bearing components with subsequent development of lower limb length inequality. The patient was able to walk a few days after surgery using crutches with partial weight bearing. Osteogenesis imperfecta was the first proposed diagnosis because of long bone fracture and osteopenia. Next-generation sequencing panel to detect COL1A1/2 mutations was negative."
+}
