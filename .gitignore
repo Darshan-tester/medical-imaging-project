@@ -133,3 +133,7 @@ desktop.ini
 *.tmp
 *.temp
 *.bak
+
+# MRI archives exceeding Cloudflare Workers 25 MiB asset limit
+public/demo-data/mri/IQT6Z5U6WE/*.zip
+public/demo-data/mri/KNCH35VQQ5/*.zip
