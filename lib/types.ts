@@ -1,5 +1,11 @@
 export type Modality = "CT" | "MRI" | "X-Ray" | "Ultrasound" | "PET" | "Mammography";
 
+// `import type` rather than a plain import: this module is types only and must
+// stay erasable. `lib/patient-profile.ts` imports `Modality` back from here, and
+// a value import would make that cycle real at runtime.
+import type { PatientProfile } from "./patient-profile";
+
+
 export type StudyPriority = "routine" | "urgent" | "stat";
 
 export type StudyStatus = "queued" | "processing" | "ai-complete" | "in-review" | "approved";
@@ -227,9 +233,25 @@ export interface Study {
    * model produced `findings` for them — the AI Findings panel must show
    * "AI analysis not available for this study." instead of an empty list
    * that could be mistaken for a normal/clear result.
+   *
+   * "simulated" means `findings` exist but were placed by
+   * `lib/simulated-findings.ts`: the text is quoted from the study's own
+   * report, the box and the confidence are inferred from that text rather
+   * than measured from the pixels. Anything rendering findings must badge
+   * this state — it is not a detection.
    */
-  aiStatus?: "not-run" | "complete";
+  aiStatus?: "not-run" | "complete" | "simulated";
+  /**
+   * Demographics and anthropometrics for the report's patient column, each
+   * field carrying where it came from. Values the source or the upload form
+   * supplied are badged as such; the rest are deterministic demo values. See
+   * `lib/patient-profile.ts` — and note that `age`/`sex` above stay undefined
+   * for real dataset studies regardless, so nothing reading them sees a
+   * generated number.
+   */
+  patientProfile?: PatientProfile;
 }
+
 
 export interface ReportSection {
   clinicalInformation: string;

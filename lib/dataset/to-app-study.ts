@@ -1,13 +1,17 @@
 import { DatasetSeries, DatasetStudy, DATASET_SOURCE_LABEL } from "./types";
 import { seriesImageAt, seriesImageCount } from "./series-frames";
 import { parseReportSections } from "../report-utils";
+import { buildPatientProfile, extractDemographics } from "../patient-profile";
+import { simulateFindings } from "../simulated-findings";
 import {
+  Finding,
   Report,
   SeriesInfo,
   SourceReport,
   Study,
   ViewerImage,
 } from "@/lib/types";
+
 
 /**
  * Builds the URL the browser will actually load pixels from.
@@ -286,6 +290,7 @@ export function toAppStudy(
 ): Study {
   const series: SeriesInfo[] =
     ds.series.map((s) => ({
+
       id: s.id,
 
       label: s.label,
@@ -307,6 +312,64 @@ export function toAppStudy(
           s
         ),
     }));
+
+  const working =
+    toWorkingReport(ds);
+
+  /*
+   * Real model output, if a model has ever run against this study. Measured
+   * over the v4 manifest that is 0 of 2,314 — but the branch stays first, so
+   * the day `aiFindings` is populated it wins outright and nothing is
+   * simulated over the top of it.
+   */
+  const realFindings: Finding[] =
+    (ds.aiFindings ?? []).map(
+      (f, i) => ({
+        id: `${ds.id}-ai-${i}`,
+        label: f.label,
+        confidence: f.confidence,
+        band: f.band,
+        region: f.region,
+        sliceIndex: f.sliceIndex,
+        seriesId: f.seriesId,
+        description: f.description,
+        status: "pending" as const,
+      })
+    );
+
+  /*
+   * Otherwise: localise the findings the study's *own* report describes. The
+   * text is quoted from that report; only the box and the confidence are
+   * inferred from it. `aiStatus: "simulated"` is what makes the UI say so.
+   *
+   * An entirely negative report yields nothing, and "not-run" stands.
+   */
+  const findings =
+    realFindings.length > 0
+      ? realFindings
+      : simulateFindings({
+          studyId: ds.id,
+          modality: ds.modality,
+          series,
+          reportFindings:
+            working.sections.findings,
+          reportImpression:
+            working.sections.impression,
+        });
+
+  const aiStatus: Study["aiStatus"] =
+    realFindings.length > 0
+      ? "complete"
+      : findings.length > 0
+        ? "simulated"
+        : "not-run";
+
+  /*
+   * Read from the verbatim report rather than the parsed sections, because the
+   * ROCOV2 captions that carry an age are a single unstructured sentence and may
+   * land in any of them.
+   */
+  const quoted = extractDemographics(ds.report?.text);
 
   return {
     id: ds.id,
@@ -352,37 +415,7 @@ export function toAppStudy(
 
     series,
 
-    findings:
-      (ds.aiFindings ?? []).map(
-        (f, i) => ({
-          id:
-            `${ds.id}-ai-${i}`,
-
-          label:
-            f.label,
-
-          confidence:
-            f.confidence,
-
-          band:
-            f.band,
-
-          region:
-            f.region,
-
-          sliceIndex:
-            f.sliceIndex,
-
-          seriesId:
-            f.seriesId,
-
-          description:
-            f.description,
-
-          status:
-            "pending" as const,
-        })
-      ),
+    findings,
 
     thumbnailSeed:
       numericSeed(ds.id),
@@ -392,7 +425,7 @@ export function toAppStudy(
      * in the Report tab.
      */
     report:
-      toWorkingReport(ds),
+      working,
 
     /*
      * Dataset badge, e.g. Perle CT / MR-RATE.
@@ -408,11 +441,31 @@ export function toAppStudy(
     sourceReport:
       toSourceReport(ds),
 
-    aiStatus:
-      ds.aiFindings &&
-      ds.aiFindings.length > 0
-        ? "complete"
-        : "not-run",
+    aiStatus,
+
+    /*
+     * Demographics for the report's patient column. `age`/`sex` above stay
+     * exactly as the dataset left them — undefined for every one of these
+     * studies — so nothing reading `study.age` sees a generated number. The
+     * generated values live here, each badged with where it came from.
+     *
+     * `quoted` is the exception that is not generated at all: a few of these
+     * reports state the patient's age or sex in their own text, and quoting it
+     * is not fabrication. It is passed in as `source`, shown unbadged, and it
+     * keeps the panel from contradicting a sentence printed beside it.
+     */
+    patientProfile:
+      buildPatientProfile({
+        studyId: ds.id,
+        displayName:
+          ds.patientAlias,
+        modality: ds.modality,
+        bodyRegion:
+          ds.bodyRegion,
+        age: ds.age ?? quoted.age,
+        sex: ds.sex ?? quoted.sex,
+        supplied: "source",
+      }),
   };
 }
 
@@ -473,6 +526,27 @@ export function toAppStudySummary(
     },
 
     sourceReport:
+      undefined,
+
+    /*
+     * The card renders `findings.length` and nothing else about them, so the
+     * quoted report sentence in each `description` is dead weight here — about
+     * 390 KB of it across 2,314 studies once findings are simulated for every
+     * study with a report. The count, and therefore the card, is unchanged.
+     */
+    findings:
+      full.findings.map((f) => ({
+        ...f,
+        description: "",
+      })),
+
+    /*
+     * Demographics belong to the report's patient column, which only the detail
+     * route serves. Measured at 1.1 MB across the list, for fields no card or
+     * table reads — the studies list already shows a dash for age and sex, and
+     * `/api/studies/<id>` carries the full profile.
+     */
+    patientProfile:
       undefined,
 
     imageUrls:

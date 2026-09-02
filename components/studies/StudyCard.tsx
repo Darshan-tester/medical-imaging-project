@@ -99,7 +99,10 @@ export function StudyCard({ study }: { study: Study }) {
                 size="sm"
               />
             ) : (
-              <span className="text-[11px] text-ink-muted">{study.aiStatus === "not-run" ? "No AI analysis" : "Pending AI"}</span>
+              <span className="text-[11px] text-ink-muted">
+                {study.aiStatus === "not-run" ? "No AI analysis" : study.aiStatus === "simulated" ? "Simulated AI" : "Pending AI"}
+              </span>
+
             )}
           </div>
         </div>

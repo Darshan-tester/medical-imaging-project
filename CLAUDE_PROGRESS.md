@@ -235,7 +235,23 @@ Then in the Cloudflare dashboard, for the `vedh-medical-imaging` Worker:
 
 It will serve the app against the seeded mock studies. It will **not** serve real scans: Workers have no filesystem, so `SCANLAB_DATA_ROOT`, `.scanlab/manifest.json`, the ZIP extraction cache and the server-side DICOM/NIfTI decode have nothing to read. `readManifest()` swallows ENOENT and returns `undefined`, so the dataset surfaces degrade to "No dataset index has been built yet." rather than erroring. `NEXT_PUBLIC_DATA_MODE` must stay unset (or `mock`) until the R2 work below lands.
 
-### R2 migration — sequenced, not yet started
+That paragraph described the deploy as it stood before the R2 mirror. It is still exactly what happens with no `DATASET` binding attached — see the section below for what changes once one is.
+
+### R2 mirror — implemented and verified
+
+The plan in the next section was written before the work; this is what was actually built, which differs from it in one important way. Rather than teach the app to read the dataset over R2, the dataset layer stays a Windows-only, `fs`-based thing and **Windows precomputes the exact bytes each route would return**. R2 holds finished response bodies and finished pixels; the Worker looks up a key and streams it. No DICOM/NIfTI decode, no manifest parse, no path resolution in the Worker at all.
+
+That choice is what keeps CT safe. `lib/dataset/adapters/ct.ts` and the DICOM half of `lib/dataset/image-render.ts` are byte-for-byte unchanged; the render script *calls* `renderImage`/`exportDicomVolume` rather than reimplementing them, because a second renderer would be free to drift and a drifted reslice is a plausible-looking wrong image, which is worse than a missing one.
+
+Three pieces:
+
+- `lib/dataset/mirror.ts` — the key scheme (`mirrorKeys`) plus `serveMirroredJson`, `serveMirroredPixels`, `serveMirroredVolume`. `getMirror()` returns `undefined` when there is no binding, which is how the Windows path stays untouched.
+- `scripts/mirror-export.ts` (`npm run mirror:export`) — writes the metadata objects: `/api/datasets`, `/api/datasets/status`, `/api/studies`, and per-study `study/<id>.json` + `report/<id>.json`. Measured: **6,958 objects, 201.41 MB**, from the existing `.scanlab/manifest.json` — no manifest was rebuilt and no report text was re-derived.
+- `scripts/mirror-render.ts` (`npm run mirror:render`) — writes the pixels: raw JPEG/PNG passthrough for the 1,510 raster refs, `renderImage` PNGs for DICOM/NIfTI slices, `@96`/`@320` thumbnails, and `exportDicomVolume` scalar volumes with a `.bin.meta.json` sidecar carrying dims/spacing/window.
+
+Each of the eight API routes gained a short-circuit at the top and is otherwise unchanged, so the same route serves Windows-from-disk and Worker-from-R2.
+
+### R2 migration — the original sequence, for contrast
 
 The chosen end state is the full dataset in R2. In dependency order:
 
@@ -246,6 +262,98 @@ The chosen end state is the full dataset in R2. In dependency order:
 5. Pre-compute the CT volume exports rather than decoding DICOM per request; `assertWithinRoot` must stay in the path-resolution chain in whatever form the R2 key mapping takes.
 
 Steps 3–5 are where CT is most at risk. None of it should be started without re-reading the Phase 7 notes above.
+
+Steps 2–5 were **not** done that way and should not be. Precomputing sidesteps all four: there is no manifest in the Worker to shard, no storage interface to dual-implement, no ZIP to extract, and the CT volume export happens on Windows where `dicom-parser` already works. Kept here because the reasoning about *why* each step was risky still applies to anyone tempted to make the Worker read the dataset directly.
+
+### How the mirror is verified
+
+Two harnesses, both run with `SCANLAB_DATA_ROOT` unset, `SCANLAB_CACHE_DIR` unset, the cwd outside the repo and `.scanlab/manifest.json` unreachable — i.e. the Worker's actual conditions, with a fake R2 bucket over a staging directory and the OpenNext context symbol installed by hand.
+
+**Deployed-equivalent routes: 186 checks, 0 failures.** All five datasets named in the request:
+
+- `/api/datasets` → `CHEST_XRAY=1500 MRI=310 PET=490 CT=4 ROCOV2=10 ULTRASOUND=0`, `X-Mirror: hit`.
+- `/api/studies` → all **2,314** studies, real study codes, zero mock/demo ids.
+- `/api/studies/<id>` → real series counts and labels verbatim, including `Thorax Plain 0.80 Br40 S3 · Coronal MPR`, `FLAIR · Coronal (MPR)` and `PET SUV · Sagittal (MPR)` — reconstructed planes, not fabricated ones.
+- `/api/studies/<id>/report` → `available: true` and the report text **sha256-identical to the manifest** for all five, sources MIMIC-CXR / Perle CT / MR-RATE / PETWB-REP / ROCOv2.
+- Images → a mirrored slice returns exact bytes and revalidates to 304; `?w=320` falls back from `@320` to the width-less original with the right content type; an **un-mirrored** slice returns an `image/svg+xml` placeholder saying "image not mirrored" with `X-Mirror: miss`, having probed `.png`/`.jpg`/`.jpeg` in order.
+- Volume → `X-Volume-Dims/Spacing/Window` come from the sidecar and the body is exact; with the sidecar deleted the route returns **422 naming `mirror:render`** rather than guessing a shape.
+- `/api/uploads/match` → all five `<CODE>.png` uploads match the right real study with a valid sha256, with no manifest and no upload index on disk; an unrelated filename returns `unmatched` with the honest reason.
+
+**No-drift check: 40 checks, 0 failures.** The same route modules with **no** binding, run from the repo where the manifest *is* readable, return bodies **byte-identical** to the objects the export wrote. This is the check that matters most: if local and mirrored ever diverge, the deployed site quietly shows different metadata than the local one.
+
+Answering the last part of the request directly: with no binding and no filesystem the routes degrade to their honest empty/`stale` answers, and with a binding they serve real data. Neither path reads `D:\ScanLab_Datasets` at request time in Cloudflare. `SCANLAB_DATA_ROOT` is still server-only and never `NEXT_PUBLIC_*`; `absPath` still never leaves the server; `assertWithinRoot` is still in the local path-resolution chain and is applied by the render script too.
+
+### Mirror sizing — measured on Windows against the v4 index
+
+`npm run mirror:render -- --dry-run --budget-gb 6.5`, with `D:\ScanLab_Datasets` actually mounted, so the raster rows are real file sizes rather than the 160 KB/slice seed:
+
+| DATASET | INDEXED | FITS | SLICES | SIZE |
+| --- | --- | --- | --- | --- |
+| CHEST_XRAY | 1500 | 1500 | 1500 | 36.6 MB |
+| CT | 4 | 4 | 3144 | 509.7 MB |
+| MRI | 310 | 15 | 1235666 | 3485.7 MB |
+| PET | 490 | 14 | 591184 | 2571.1 MB |
+| ROCOV2 | 10 | 10 | 10 | 2.6 MB |
+
+Always-render set **0.54 GB**; planned tree **6.45 GB of 6.50**, with **29 volumetric studies** (15 MRI + 14 PET). R2's free tier is 10 GB, so this costs nothing.
+
+The chest X-rays are the surprise: 1,500 studies for 36.6 MB, because a raster is copied byte-for-byte rather than re-encoded. Nearly all of the always-render set is the 3,144 CT reslices.
+
+Earlier figures for other budgets — 12 studies / 2.93 GB at `--budget-gb 3`, 38 / 8.94 GB at 9 — predate the v4 re-index and were produced without the dataset mounted, so they used the raster seed and overstated the always-render set by 0.19 GB (0.73 against the real 0.54). Indicative only; re-run the dry run to get a real number for a different budget.
+
+### The sequence to run on Windows
+
+From `D:\meridian-scanlab-integration\meridian`, in order. Steps 1–4 touch the dataset read-only and write only into `.scanlab\mirror`; nothing reaches Cloudflare until step 5.
+
+```powershell
+npm run dataset:index                              # required first — see below
+npm run mirror:export                              # ~6,958 metadata objects, ~201 MB
+npm run mirror:render -- --dry-run --budget-gb 6.5 # confirm the plan and real sizes
+npm run mirror:render -- --budget-gb 6.5           # the long one; resumable
+npm run mirror:upload -- --dir .scanlab\mirror     # needs R2 credentials in env
+```
+
+Then create the R2 bucket `vedh-medical-imaging-dataset` if it does not exist and redeploy. `NEXT_PUBLIC_DATA_MODE` needs **no** dashboard variable: `next.config.js` already defaults it to `dataset` when `WORKERS_CI`/`CF_PAGES`/`CI` is set, and to `mock` everywhere else, because it is inlined into the client bundle at build time and `.env.local` is gitignored so the builder never sees it. Setting `NEXT_PUBLIC_DATA_MODE=mock` in the dashboard is the escape hatch that forces the demo data back on without a code change.
+
+`mirror:render` is interruptible and resumable: it skips any object already on disk, so a killed run continues where it stopped. Objects are written to `.scanlab\mirror\.render-tmp\w-<pid>` and renamed into place, so an interruption leaves whole objects or none — never a half-written slice that the skip test would then trust forever and the uploader would publish. The scratch directory is swept at startup, `mirror:upload` refuses to walk any dot-directory, and every PNG/JPEG is checked for its closing marker in the moment before it goes to R2. `--force` re-renders, `--no-thumbs` roughly halves the work, `--only CT` / `--studies <ids>` narrow it, and `--studies` bypasses the budget.
+
+If a run reports `SCANLAB_DATA_ROOT is not set` while `.env.local` plainly sets it, the shell has that variable **defined but empty**: PowerShell 5.1 keeps `$env:SCANLAB_DATA_ROOT=""` as a defined variable, npm hands it to the child, and `scripts/load-env-local.ts` used to treat any defined variable as authoritative and skip the file. It now treats an empty value as absent, so the file wins. In a shell that already has one, `Remove-Item Env:SCANLAB_DATA_ROOT` clears it.
+
+### `Array buffer allocation failed` at the sixth volumetric study — one process per study
+
+A 6.5 GB run cleared all 1,514 required studies and five volumetric ones — 1.14 GB of good output — then died:
+
+```
+[   5/800] MRI        MRI-C8477A      1190 slices  tree 1.14 GB  est 114.8 MB, real 163.1 MB
+
+Mirror render failed:
+Array buffer allocation failed
+```
+
+Sixth in the plan was PET-79610C at 1,140 slices. That message is an external/ArrayBuffer allocation failure rather than V8 old-space exhaustion, so `--max-old-space-size` was never going to help; the machine is simply out of room.
+
+The memory is held by `lib/dataset/image-render.ts`'s module-level caches, which a long-lived process never releases: `VOLUME_CACHE_MAX = 2` decoded NIfTI volumes at up to `SCANLAB_VOLUME_MAX_MB` (384) each, plus one `STACK_CACHE_MAX` DICOM stack. Both are plain constants with no env knob. The knobs that *are* tunable — `SCANLAB_VOLUME_MAX_MB`, `SCANLAB_VOLUME_MAX_EDGE` — decide how much a volume is decimated, so turning them down would change the pixels the mirror serves relative to what the local app serves. That is precisely the drift this design exists to prevent, which leaves process lifetime as the only honest lever.
+
+So the caches are left alone and the process that holds them is made short-lived. The raster and CT phases still run in-process. Each volumetric study now runs in its own child (`--studies <id> --in-process --quiet`), and the parent measures what the child wrote by walking the tree rather than trusting a number the child reports. A study that will not decode now costs only itself: it is listed at the end as un-mirrored and the run carries on, where before it took the whole run down. `--in-process` restores single-process behaviour for debugging, and the parent falls back to it automatically if the very first child cannot start.
+
+Verified without the dataset, on synthetic fixtures over the real manifest:
+
+- Children for two fully pre-rendered studies exited 0 and the parent adopted exactly the 4,762 objects / 304,768 bytes they represented — matching the fixture's pre-created count precisely.
+- A third child exited 1, the first-failure fallback fired, the in-process retry also failed, and the run ended with `! 1 volumetric study could not be rendered: MRI-C8477A — Offset is outside the bounds of the DataView` instead of dying.
+- A second fixture wrote three real objects through temp+rename, swept a planted `.render-tmp/w-999999`, and resumed with `Already on disk: 3 objects`.
+- `collectObjects` in the uploader then returned only the three real pixel keys, with `skipped .../.render-tmp/ — a dot-directory is render scratch space, not mirror keys.`
+- The publish-time image check was unit-tested over 15 cases: whole PNG/JPEG pass, truncated and empty ones are refused by name with the re-render command, trailing padding is tolerated, and `.bin`/JSON keys are left alone.
+- Then the whole uploader was run for real against a stubbed R2 — `globalThis.fetch` replaced via `NODE_OPTIONS=--import`, every HEAD answered 404, every PUT recorded — over a five-object tree containing one 40-byte truncated PNG. The stub received exactly four PUTs; the truncated slice was refused before its PUT, was not retried, and the run exited 1 with the re-render command printed. With that file removed the same tree uploaded all four and exited 0. So the gate is wired into the real publish path, not just unit-tested beside it.
+
+One caveat, stated plainly: the child-spawn path itself could not be exercised end to end here, because `tsx` cannot run in this Linux workspace. It resolves `node_modules/tsx/dist/cli.mjs` (present in the repo) and falls back to the parent's `execArgv`; if it is wrong on the day, the automatic in-process fallback keeps the run alive.
+
+To resume the interrupted run, just re-run the same command — everything already on disk is kept. The earlier advice here was to delete `.scanlab\mirror\pixels\5a497ac7fd7da836` (PET-79610C, the one study mid-flight before atomic writes existed) on the theory that it might hold a half-written slice. That was checked instead of assumed: all **2,281** PNG objects already under that study have both a PNG signature and an `IEND` chunk, so the allocation failure happened while decoding the next plane, not during a write. Deleting the directory would have thrown away 2,281 good objects for nothing. Nothing needs deleting; if a truncated object does exist somewhere in the tree, the uploader refuses it by name before it is published and prints the `--studies <id> --force` command that fixes it.
+
+### Two things that block real data, one that is a security gap
+
+1. ~~**`npm run dataset:index` has to be re-run first.**~~ Done. The index was rebuilt at `builderVersion 4` and `mirror:export` re-run against it — 6,958 objects, 201.41 MB, 2,314 studies, a real report for every one of them, and no stale-version warning. The remaining blocker is the pixel render, not the index.
+2. **The mirror is only as current as the last export.** There is no invalidation. Re-run `mirror:export` after any `dataset:index`, or the deployed site will serve the previous index's metadata while claiming to be current.
+3. **`/api/uploads/match` has no authentication, and it is now on a public `workers.dev` hostname.** Its own docblock says so: the endpoint lets a caller confirm whether a given file is present in the indexed dataset, which is a membership oracle over a medical dataset. Nothing in this app authenticates anything, so this is pre-existing — but it changed from "localhost only" to "internet reachable" the moment the deploy went green. Either put Cloudflare Access in front of the Worker or gate that route before publicising the URL.
 
 ### The Windows OOM on `opennextjs-cloudflare build` — and the corrected commands
 
@@ -435,15 +543,99 @@ git push origin main
 
 `main` is the one that matters — that is the branch Workers Builds is pointed at. The push is a fast-forward, so it needs no `--force`. Then re-run the failed build from the dashboard (or push and let it trigger).
 
-Two things that will *not* be fixed by a green deploy, so they should not be read as regressions: the deployed app serves the seeded mock studies, because Workers have no filesystem for `SCANLAB_DATA_ROOT` (see "What the first successful deploy will and will not show", and Phase 8's R2 sequence for the fix); and locally, nothing in the data layer changes until `npm run dataset:index` is run.
+Two things that will *not* be fixed by a green deploy, so they should not be read as regressions: with no `DATASET` binding attached the deployed app serves the seeded mock studies, because Workers have no filesystem for `SCANLAB_DATA_ROOT` (see "What the first successful deploy will and will not show", then the R2 mirror section for what replaces it); and locally, nothing in the data layer changes until `npm run dataset:index` is run.
 
-If the deploy fails again, the likely causes in order are: worker size over the 3 MiB compressed free-plan limit (`dicom-parser`, `nifti-reader-js`, `pngjs` reach the server bundle via `lib/dataset/image-render.ts`); or a Turbopack failure on the builder, for which the committed knob is `config.buildCommand` in `open-next.config.ts` and the environment knob is a Cloudflare build variable `OPEN_NEXT_BUILD_COMMAND`.
+If the deploy fails again, the likely causes in order are: worker size over the 3 MiB compressed free-plan limit (`dicom-parser`, `nifti-reader-js` and `pngjs` still ship — `lib/dataset/image-render.ts` is reached by `await import()` from the two image routes, so it is a lazily-*evaluated* chunk but still a bundled one, and the R2 path means it is never evaluated on Workers); or a Turbopack failure on the builder, for which the committed knob is `config.buildCommand` in `open-next.config.ts` and the environment knob is a Cloudflare build variable `OPEN_NEXT_BUILD_COMMAND`.
 
+
+## Phase 9 — Patient demographics, and an Original/Annotated view for every modality
+
+Three things were asked for. The report's patient column had to carry name, age, sex, height, weight, BMI, BSA, relevant history and special notes, because the analysis is normalised against them (SUV body-weight for PET, dose and contrast by weight, BSA for cardiothoracic ratios). The annotated-abnormality view that only the seeded X-ray demo had needed to exist for every modality, as an explicit Original / Annotated switch, with the boxes corresponding to the findings the report describes. And the Upload Scan form had to collect the same demographics as typed input.
+
+The obstacle is that none of it exists in the source data. Measured over `.scanlab/manifest.json` (v4, 2,314 studies): **0** studies carry `age`, **0** carry `sex`, **0** carry `aiFindings`, and there is no height, weight, history or notes field anywhere in `DatasetStudy`. The reports are real. The demographics and the model output were never part of these public datasets.
+
+So nothing is invented silently. Every displayed value is one of four things and which one is always visible:
+
+| Badge | Meaning |
+| --- | --- |
+| `source` | the dataset supplied it, or the report states it in its own words — passed through untouched, shown unbadged |
+| `entered` | a human typed it on the Upload Scan form |
+| `simulated` | generated deterministically from the study id, badged `demo` in place |
+| `derived` | computed (BMI, BSA); inherits the **weaker** badge of its inputs |
+
+### New files
+
+| File | Role |
+| --- | --- |
+| `lib/seeded-random.ts` | `streamFor(id, salt)` — a mulberry32 stream seeded per study. Deliberately *not* the single module-level `rand` in `lib/mock-data.ts`, whose draws depend on how many draws preceded them; a per-study stream is the only way a mirrored JSON body and a locally rendered one agree. `Math.imul` and `>>>` are exactly specified on 32-bit ints, so the output is identical across engines and platforms. |
+| `lib/patient-profile.ts` | `buildPatientProfile()`, `extractDemographics()`, `bmiFrom()`, `bsaFrom()`. Pure and client-safe: no `fs`, no `Date.now()`, no `Math.random()`. |
+| `lib/simulated-findings.ts` | `simulateFindings()` — localises the findings the study's *own* report describes. |
+
+### Modified files
+
+`lib/types.ts` (adds `patientProfile`, `aiStatus`), `lib/dataset/to-app-study.ts` (the one junction both API routes pass through), `lib/mock-data.ts`, `app/(portal)/upload/page.tsx`, `components/upload/UploadZone.tsx`, `components/report/StudySummaryCard.tsx`, `components/report/AnalysisTab.tsx`, `components/viewer/FindingsPanel.tsx`, `lib/pdf.ts`.
+
+### What is real and what is generated
+
+The honesty boundary sits *inside* each finding, not around it. The sentence in `description` is quoted verbatim from that study's own report; the box coordinates and the confidence number are inferred from that sentence. So the text is real and the location is a guess, and the UI says so in four places at once: `aiStatus: "simulated"` on the study, a banner at the top of the findings panel, a `demo` tag per row, and "Simulated AI" on the study card.
+
+`simulateFindings` reads the parsed Findings and Impression, splits them into sentences (manually — regex lookbehind is a *parse-time* crash on Safari < 16.4, so the splitter cannot use it), matches each against a pathology vocabulary, and places a box using laterality and zone words from the same sentence. Radiological display convention is respected: on frontal and axial images patient-right is viewer-left, so "right lower lobe" maps to a low x. Verified against real MIMIC-CXR sentences — a right pneumothorax lands at x = 0.1756, a left effusion at x = 0.5857. **An entirely negative report yields nothing**, and `aiStatus` stays `"not-run"`; nothing is drawn on a study whose report found nothing.
+
+`buildPatientProfile` draws every candidate value unconditionally, in a fixed order, whether or not it is used. Otherwise supplying one field would shift the values generated for the others — an entered age would silently change the patient's height, and the same study would look different depending on which boxes someone happened to fill in. Height and weight are drawn as a *pair* via a target BMI rather than independently, because independent draws produce 150 cm at 96 kg often enough to be noticed. Age ranges, history pools and notes pools are keyed to a coarse clinical topic derived from modality and body region, so a screening mammogram is not a 9-year-old and a lumbar-spine MRI does not carry a smoking-and-COPD history.
+
+`Study.age` and `Study.sex` keep their documented never-fabricated contract. A generated age lives in `Study.patientProfile` and nowhere else, so any code reading `study.age` still sees `undefined` and still renders "Not available". The studies table therefore still shows a dash. The profile is what the UI badges.
+
+### Demographics quoted from a report's own text
+
+A few reports state the patient's age or sex in their own sentences — nearly all of them ROCOV2 case-report captions ("3D reformatted CT scan in a 10-years-old-girl showed…"). Quoting that is not fabrication, so `extractDemographics()` lifts it and it is badged `source` and shown unbadged. Measured over the v4 manifest: **3 studies yield an age, 4 a sex**. A tiny number, and exactly the studies where a generated value would have contradicted a sentence printed on the same screen — a panel reading 63 y / Female beside a report reading "7-year old boy" is worse than no demographics at all.
+
+The matcher is deliberately narrow. A bare `M` or `F` token is not accepted, because series labels and units produce those, and an age is only taken from an explicit "*n* year(s) old". MIMIC-CXR's de-identified "\_\_\_-year-old man" therefore yields a sex and no age, which is the truth of it.
+
+A quoted paediatric age then has to drag the rest of the body with it, or the contradiction just moves one field over. Under 18, height comes from an interpolated median-stature table, the BMI band tracks age (`14.6 + 0.3 × age`, ±2 — 18.8 is unremarkable at 40 and near the 97th centile at 7), and the adult history pools are suppressed entirely because there is no honest paediatric list to draw from. The 7-year-old case now reads 120 cm, 25.1 kg, BMI 17.4, BSA 0.91, no history.
+
+### The Original / Annotated switch
+
+`AnalysisTab` holds `annotatedView` (default on) and passes `findings={annotatedView ? visibleFindings : []}` to `ImageViewer`. Hiding the overlay is therefore a matter of handing it an empty array — the radiologist's own strokes, markers and measurements are a separate layer and stay visible in both views. The switch renders whenever the current series has at least one finding and the 3-D volume view is off, which is what makes it appear for MRI, CT, PET, Ultrasound and Mammography and not only for the seeded X-ray demo.
+
+Two details that matter. `visibleFindings` filters on `f.sliceIndex === currentSlice`, so every simulated finding for a study shares one reference slice in the middle third of the series and switching to Annotated jumps there — otherwise the boxes would be invisible on whichever slice happened to be open. And when Annotated is on but the current slice carries nothing, the helper text names the slice that does (`Nothing marked on this slice — findings are on slice N`) rather than leaving an apparently broken overlay.
+
+The exported PDF carries the same information with the same marks: `Age / Sex`, `Height / Weight` and `BMI / BSA` pairs, a `Relevant History` block and a `Special Notes` block, each suffixed `(demo)` or headed `(demo values)` when any input was generated. The badge a screen shows does not survive an export, and an unmarked height in a document headed "Diagnostic Imaging Report" is exactly the kind of number that gets believed, so the marker travels with the value. `lib/pdf.ts` also paginates now — it calls `addPage()` before a heading and per line, and keeps the signature block whole.
+
+### The Upload Scan form
+
+`components/upload/UploadZone.tsx`'s Study Details step now collects Age, Sex, Height, Weight, relevant history (one condition per line) and special notes. BMI and BSA are **computed and displayed live, never typed** — asking for them invites a value that disagrees with the height and weight beside it. Everything is optional; a blank box stays `undefined` all the way through `createDemoStudy` and is filled and badged by `buildPatientProfile`, so a blank box never turns into a number that reads as if it were entered. What *was* typed is badged `entered`.
+
+### Verification — measured against the real manifest, not asserted
+
+`tsc --noEmit` is clean. Beyond that, the two pure modules were compiled to CJS with the repo's own `tsc` and run over all 2,314 real studies (`outputs/simcheck.cjs`, `outputs/profcheck.cjs`, `outputs/projcheck.cjs`):
+
+| Property | Result |
+| --- | --- |
+| studies with ≥ 1 report-quoted annotation | **1,931 of 2,314** — X-Ray 1,192/1,503 (79.3%), MRI 242/311 (77.8%), PET 490/490, CT 7/9, US 0/1 |
+| determinism (same input twice, deep-equal) | **0** mismatches across findings and profiles |
+| boxes / slice indices / confidences in range | **0** out of range |
+| profiles missing a field | **0** |
+| BMI and BSA disagreeing with the height/weight beside them | **0** |
+| sex distribution | F 1,135 / M 1,128 / Other 51 (`Other` was 20% before the fix and read as a data-entry fault; now ~2%) |
+| provenance | age `source` 3 / `simulated` 2,311 · sex `source` 4 / `simulated` 2,310 |
+| plausibility | heights 120–188 cm, weights 25.1–108.9 kg, BMI 17.4–31.4, history present on 80.9% |
+| paediatric cases given an adult body or an adult history | **0** |
+
+The list projection was measured the same way. `/api/studies` is **2.87 MB** across 2,314 studies; leaving `patientProfile` in would have added 1,151 KB and the finding descriptions another 350 KB, for fields no card reads — `StudyCard` reads `study.findings.length` and nothing else about them, and the table shows a dash for age and sex. `lib/data-source.ts` confirms the detail page fetches `/api/studies/[id]`, which is full `toAppStudy`, so `toAppStudySummary` now strips both. Verified end to end: 0 of 2,314 list entries carry a profile, report prose, a source report or a finding description; 0 of 2,314 detail bodies are missing the profile.
+
+One pre-existing data fact surfaced by that run, recorded so it is not mistaken for a regression: only **4** studies carry a `date` (the four DICOM CT ones). The other 2,310 have none, because the source datasets carry no acquisition date, and none was invented.
+
+### Two consequences for the deploy
+
+**`npm run mirror:export` must be re-run.** `NextResponse.json(x)` is a plain `JSON.stringify(x)`, and R2 holds finished JSON bodies. The study JSON now carries `patientProfile`, `findings` and `aiStatus`, so bodies exported before this phase would serve a deployed site with no demographics and no annotations. It is metadata only — roughly 13 s, and **no pixel re-render**.
+
+**No script change was needed.** `scripts/mirror-export.ts` calls `toAppStudy` and `toAppStudySummary` directly, and `write(key, value)` is `JSON.stringify` plus `assertNoLocalPaths`, so the new fields flow into the mirror on their own. That is also why the generators had to be pure: a `Math.random()` anywhere in this path would make the mirrored body and the locally rendered one disagree.
 
 ## How To Continue
 
 1. Read this file top to bottom before touching anything.
-2. Do a manual browser QA pass on `/studies/[id]?tab=analysis` for a CT or MRI study (multi-series, multi-slice) — this exercises series switching, slice navigation, cine, markers, measurements, and AI-finding jump-to all at once.
-3. If persistence is requested next, look at `lib/mock-data.ts`'s stated integration boundary — markers/measurements should follow the same pattern as `onUpdateFinding` in `app/(portal)/studies/[id]/page.tsx` once there's a real backend.
-4. Do not redo the marker/measurement lifting — it's complete and scoped correctly per series+slice.
-5. Run `npx next build` after any further change before considering it done. (`npx next lint` no longer exists — Next 16 removed it. Use `npm run typecheck`.)
+2. **Current top of the queue**, in order: push `cloudflare-next-upgrade` and `main` (above), then run the five commands in "The sequence to run on Windows". The `DATASET` R2 binding is already in `wrangler.jsonc` and `next.config.js` already flips to dataset mode on the builder, so the bucket just has to exist and hold the mirror. Nothing real appears on the deployed site until the upload finishes. `npm run mirror:export` is **not optional any more** — Phase 9 changed the study JSON shape, and a mirror exported before it serves a site with no demographics and no annotations.
+3. Do a manual browser QA pass on `/studies/[id]?tab=analysis` for a CT or MRI study (multi-series, multi-slice) — this exercises series switching, slice navigation, cine, markers, measurements, and AI-finding jump-to all at once.
+4. If persistence is requested next, look at `lib/mock-data.ts`'s stated integration boundary — markers/measurements should follow the same pattern as `onUpdateFinding` in `app/(portal)/studies/[id]/page.tsx` once there's a real backend.
+5. Do not redo the marker/measurement lifting — it's complete and scoped correctly per series+slice.
+6. Run `npx next build` after any further change before considering it done. (`npx next lint` no longer exists — Next 16 removed it. Use `npm run typecheck`.)

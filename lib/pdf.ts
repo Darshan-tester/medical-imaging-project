@@ -1,11 +1,32 @@
 import { jsPDF } from "jspdf";
 import { Study } from "./types";
+import { PatientProfile, ProfileField } from "./patient-profile";
 import { formatDateTime } from "./utils";
 
 const INK = "#0F172A";
 const MUTED = "#55677A";
 const RULE = "#D7DFE7";
 const ACCENT = "#1D4ED8"; // hospital blue letterhead accent
+
+const SEX_LABEL: Record<"M" | "F" | "Other", string> = { M: "Male", F: "Female", Other: "Other" };
+
+/**
+ * Renders two related profile fields as one "a / b" line, with a single
+ * "(demo)" marker if either side was generated.
+ *
+ * The badge the UI shows next to a generated value does not survive an export,
+ * and an unmarked height in a document headed "Diagnostic Imaging Report" is
+ * exactly the kind of number that gets believed. So the marker travels with it.
+ */
+function pairText<A, B>(
+  a: ProfileField<A> | undefined,
+  fa: (v: A) => string,
+  b: ProfileField<B> | undefined,
+  fb: (v: B) => string
+): string {
+  const text = `${a ? fa(a.value) : "Not available"} / ${b ? fb(b.value) : "Not available"}`;
+  return a?.source === "simulated" || b?.source === "simulated" ? `${text} (demo)` : text;
+}
 
 /**
  * Generates a professional clinical report PDF for a study and triggers a
@@ -38,9 +59,22 @@ export function exportStudyReportPDF(study: Study) {
   y += 26;
 
   // --- Patient / study metadata ----------------------------------------
+  /*
+   * Read from the profile first, for the same reason the summary card does: the
+   * profile is the only thing that records where a value came from. `study.age`
+   * / `study.sex` are the fallback for a study built without one.
+   */
+  const p: PatientProfile | undefined = study.patientProfile;
+  const ageField: ProfileField<number> | undefined =
+    p?.age ?? (study.age !== undefined ? { value: study.age, source: "source" } : undefined);
+  const sexField: ProfileField<"M" | "F" | "Other"> | undefined =
+    p?.sex ?? (study.sex !== undefined ? { value: study.sex, source: "source" } : undefined);
+
   const metaLeft: [string, string][] = [
     ["Patient", study.patientAlias],
-    ["Age / Sex", study.age !== undefined || study.sex ? `${study.age !== undefined ? `${study.age}y` : "Not available"} / ${study.sex ?? "Not available"}` : "Not available"],
+    ["Age / Sex", pairText(ageField, (v) => `${v}y`, sexField, (v) => SEX_LABEL[v])],
+    ["Height / Weight", pairText(p?.heightCm, (v) => `${v} cm`, p?.weightKg, (v) => `${v} kg`)],
+    ["BMI / BSA", pairText(p?.bmi, (v) => `${v.toFixed(1)} kg/m²`, p?.bsaM2, (v) => `${v.toFixed(2)} m²`)],
     ["Study ID", study.studyId],
   ];
   const metaRight: [string, string][] = [
@@ -92,7 +126,20 @@ export function exportStudyReportPDF(study: Study) {
     y += 40;
   }
 
+  /*
+   * Lines are written one at a time against a bottom margin so a long section
+   * continues onto a second page instead of running off the first. The report
+   * body is editable and now carries history and notes as well, so overflow is
+   * ordinary rather than exceptional.
+   */
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const bottom = pageHeight - 56;
+
   const section = (title: string, body: string) => {
+    if (y + 16 > bottom) {
+      doc.addPage();
+      y = 56;
+    }
     doc.setTextColor(INK);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11.5);
@@ -101,17 +148,39 @@ export function exportStudyReportPDF(study: Study) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
     doc.setTextColor("#1B2836");
-    const lines = doc.splitTextToSize(body || "—", pageWidth - margin * 2);
-    doc.text(lines, margin, y);
-    y += lines.length * 13.5 + 22;
+    const lines: string[] = doc.splitTextToSize(body || "—", pageWidth - margin * 2);
+    for (const line of lines) {
+      if (y > bottom) {
+        doc.addPage();
+        y = 56;
+      }
+      doc.text(line, margin, y);
+      y += 13.5;
+    }
+    y += 22;
   };
 
   section("Clinical Information", study.report.sections.clinicalInformation);
+  if (p?.history && p.history.value.length > 0) {
+    section(
+      p.history.source === "simulated" ? "Relevant History (demo values)" : "Relevant History",
+      p.history.value.map((h) => `• ${h}`).join("\n")
+    );
+  }
   section("Technique", study.report.sections.technique);
+  if (p?.notes) {
+    section(p.notes.source === "simulated" ? "Special Notes (demo value)" : "Special Notes", p.notes.value);
+  }
   section("Findings", study.report.sections.findings);
   section("Impression", study.report.sections.impression);
 
   // --- Signature / approval block ----------------------------------------
+  // Kept whole: a signature block split across a page break reads as if the
+  // report were approved by nobody.
+  if (y + 90 > bottom) {
+    doc.addPage();
+    y = 56;
+  }
   doc.setDrawColor(RULE);
   doc.line(margin, y, pageWidth - margin, y);
   y += 24;
@@ -144,15 +213,22 @@ export function exportStudyReportPDF(study: Study) {
   doc.text(`Report Version: v${study.report.version}`, margin, y);
 
   // --- Footer -----------------------------------------------------------
-  const pageHeight = doc.internal.pageSize.getHeight();
-  doc.setFontSize(8);
-  doc.setTextColor(MUTED);
-  doc.text(
-    "Generated by Meridian / Vedh Medical Imaging — demo environment. Synthetic data. Not a real clinical document.",
-    margin,
-    pageHeight - 34
-  );
-  doc.text(`Exported ${new Date().toLocaleString()}`, pageWidth - margin, pageHeight - 34, { align: "right" });
+  // Stamped on every page, not just the last one — a page that escapes carrying
+  // no demo-environment notice is the one that causes trouble.
+  const exported = new Date().toLocaleString();
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(MUTED);
+    doc.text(
+      "Generated by Meridian / Vedh Medical Imaging — demo environment. Synthetic data. Not a real clinical document.",
+      margin,
+      pageHeight - 34
+    );
+    doc.text(`Exported ${exported} · Page ${i} of ${pages}`, pageWidth - margin, pageHeight - 34, { align: "right" });
+  }
 
   doc.save(`${study.studyId}-report.pdf`);
 }

@@ -49,8 +49,16 @@ export function FindingsPanel({
   onAddRadiologistFindingToReport?: (id: string) => void;
   /** "ai" = AI Findings tab only. "radiologist" = Annotations tab's finding list only. "both" (default) = original combined layout used by the mobile drawer. */
   mode?: "ai" | "radiologist" | "both";
-  /** "not-run" shows "AI analysis not available for this study." instead of the generic empty state — an untouched study is not the same as a clear result. */
-  aiStatus?: "not-run" | "complete";
+  /**
+   * "not-run" shows "AI analysis not available for this study." instead of the
+   * generic empty state — an untouched study is not the same as a clear result.
+   *
+   * "simulated" means the findings listed below were placed by
+   * `lib/simulated-findings.ts`: their text is quoted from this study's own
+   * report, their boxes and confidences are inferred from that text and not
+   * from the pixels. The banner saying so is not optional.
+   */
+  aiStatus?: "not-run" | "complete" | "simulated";
 }) {
   const reduced = usePrefersReducedMotion();
   const hasRadiologistFindings = radiologistFindings.length > 0;
@@ -70,6 +78,13 @@ export function FindingsPanel({
           </div>
 
           <div className="flex-1 space-y-2.5 overflow-y-auto p-3">
+            {aiStatus === "simulated" && findings.length > 0 && !isProcessing ? (
+              <p className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-[11px] leading-snug text-warning-strong">
+                <span className="font-semibold uppercase tracking-wide">Simulated</span> — no AI model has run on this study. Each item below quotes a
+                sentence from the study&apos;s own radiology report; the box and the confidence are inferred from that wording, not measured from the
+                image.
+              </p>
+            ) : null}
             {isProcessing ? (
               <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
                 <Loader2 className="h-5 w-5 animate-spin text-ai" />

@@ -56,12 +56,35 @@
     "binding": "ASSETS"
   },
 
+  // The real ScanLab_Datasets content. Workers have no filesystem and a 128 MB
+  // isolate ceiling, so the deployed app neither reads SCANLAB_DATA_ROOT nor
+  // renders pixels: every response it serves was precomputed on the machine that
+  // has the data and stored here under a key derived from the request.
+  //
+  //   npm run mirror:export   -> meta/*     precomputed API response bodies
+  //   npm run mirror:render   -> pixels/*   one object per slice per width
+  //                              volume/*   the decimated CT stacks
+  //   npm run mirror:upload   -> ships the staging dir to this bucket
+  //
+  // `lib/dataset/mirror.ts` is the only reader. When this binding is absent —
+  // which is always the case on Windows — every route falls through to its
+  // original filesystem path unchanged, so local development is unaffected.
+  //
+  // Create the bucket once before the first deploy:
+  //   npx wrangler r2 bucket create vedh-medical-imaging-dataset
+  "r2_buckets": [
+    {
+      "binding": "DATASET",
+      "bucket_name": "vedh-medical-imaging-dataset"
+    }
+  ],
+
   "observability": {
     "enabled": true
   }
 
-  // NOTE: no R2/D1/KV bindings yet. The dataset layer still reads the local
-  // filesystem (SCANLAB_DATA_ROOT), which does not exist on Workers, so this
-  // deployment serves the seeded mock studies. Moving the real dataset to R2 is
-  // tracked separately — see the "Cloudflare / R2" section of CLAUDE_PROGRESS.md.
+  // NOTE: no D1/KV bindings. The incremental cache is still the adapter's
+  // "dummy" default (see open-next.config.ts) — that is separate from the
+  // DATASET bucket above, which holds application data rather than Next.js
+  // cache entries.
 }

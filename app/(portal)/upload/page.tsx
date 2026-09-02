@@ -67,6 +67,16 @@ export default function UploadPage() {
         priority: phase.details.priority,
         fileCount: phase.files.length,
         imageUrls,
+        // Demographics as typed. Anything the person left blank stays
+        // `undefined` here and is filled — and badged — by
+        // `buildPatientProfile`, so a blank box never turns into a number
+        // that reads as if it were entered.
+        age: phase.details.age,
+        sex: phase.details.sex,
+        heightCm: phase.details.heightCm,
+        weightKg: phase.details.weightKg,
+        history: phase.details.history,
+        notes: phase.details.notes,
       }),
     });
   };

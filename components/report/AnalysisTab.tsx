@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, type LucideIcon } from "lucide-react";
+import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, Image as ImageIcon, type LucideIcon } from "lucide-react";
 import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage } from "@/lib/types";
 import { CURRENT_USER } from "@/lib/mock-data";
 import { resolveReportPanelContent } from "@/lib/report-utils";
@@ -80,6 +80,18 @@ export function AnalysisTab({
    */
   const [view3D, setView3D] = useState(false);
 
+  /*
+   * Original vs. Annotated. The AI overlay used to be drawn unconditionally,
+   * which left no way to see the unobstructed image — and the boxes sit exactly
+   * over the thing the reader wants to look at. Defaults to Annotated so the
+   * previous behaviour is unchanged for anyone who doesn't touch the switch.
+   *
+   * Note this hides only the *AI* overlay. Radiologist-drawn strokes, markers
+   * and measurements are the user's own work and are never hidden by it.
+   */
+  const [annotatedView, setAnnotatedView] = useState(true);
+
+
   // Markers and measurements live for the whole study session (not persisted to
   // a backend — nothing else in this demo app persists edits either — but
   // scoped in memory to their exact series + slice so they never leak across
@@ -123,6 +135,19 @@ export function AnalysisTab({
         (f) => f.sliceIndex === currentSlice && (!f.seriesId || !activeSeries || f.seriesId === activeSeries.id)
       ),
     [study.findings, currentSlice, activeSeries]
+  );
+
+  /* What the overlay actually draws. Empty in Original view. */
+  const overlayFindings = annotatedView ? visibleFindings : [];
+
+  /*
+   * Findings anywhere on the current series, not just the current slice — what
+   * the Annotated switch needs in order to know whether there is anything to
+   * jump to, and where.
+   */
+  const seriesFindings = useMemo(
+    () => study.findings.filter((f) => !f.seriesId || !activeSeries || f.seriesId === activeSeries.id),
+    [study.findings, activeSeries]
   );
 
   const currentMarkers = useMemo(
@@ -232,6 +257,26 @@ export function AnalysisTab({
       setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));
     },
     [study.findings, activeSeries, activeSeriesId]
+  );
+
+  /*
+   * Turning annotations on has to also *land* on something. `visibleFindings`
+   * filters to the exact slice on screen, so on a 1,140-slice PET stack the
+   * switch would otherwise look broken: every box sits on one reference slice
+   * and the viewer is nowhere near it. If nothing is visible where we are, go
+   * to the first annotated slice on this series.
+   */
+  const onToggleAnnotated = useCallback(
+    (next: boolean) => {
+      setAnnotatedView(next);
+      if (!next || visibleFindings.length > 0) return;
+      const target = seriesFindings[0];
+      if (!target) return;
+      setCurrentSlice(target.sliceIndex);
+      setPlaying(false);
+      setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));
+    },
+    [visibleFindings, seriesFindings]
   );
 
   const onJumpToMarker = useCallback((marker: Marker) => {
@@ -549,6 +594,53 @@ export function AnalysisTab({
         </div>
 
         {/*
+          Original / Annotated. Offered for every modality that has anything to
+          annotate — the switch is driven by `study.findings`, not by a
+          per-modality list, so CT, MRI, PET, ultrasound and mammography get it
+          on exactly the same terms the X-ray demo always had.
+
+          Hidden in 3-D: `Finding.region` is a 2-D bbox on one slice and has no
+          meaning against a ray-marched volume.
+        */}
+        {!view3D && seriesFindings.length > 0 && (
+          <div className="flex items-center gap-2">
+            <div className="flex overflow-hidden rounded-md border border-border-strong">
+              <button
+                onClick={() => onToggleAnnotated(false)}
+                aria-pressed={!annotatedView}
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
+                  !annotatedView ? "bg-[rgb(var(--overlay-hover)/0.10)] text-ink-primary" : "text-ink-muted hover:text-ink-secondary"
+                )}
+              >
+                <ImageIcon className="h-3 w-3" /> Original
+              </button>
+              <button
+                onClick={() => onToggleAnnotated(true)}
+                aria-pressed={annotatedView}
+                className={cn(
+                  "flex items-center gap-1.5 border-l border-border-strong px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
+                  annotatedView ? "bg-[rgb(var(--overlay-hover)/0.10)] text-ink-primary" : "text-ink-muted hover:text-ink-secondary"
+                )}
+              >
+                <Sparkles className="h-3 w-3" /> Annotated
+              </button>
+            </div>
+            <p className="hidden text-[11px] text-ink-muted sm:block">
+              {!annotatedView
+                ? "Unmarked image."
+                : visibleFindings.length === 0
+                  ? /* Annotated is on but this slice carries nothing. Saying so beats an
+                       apparently broken overlay, and naming the slice is the fix. */
+                    `Nothing marked on this slice — findings are on slice ${seriesFindings[0].sliceIndex + 1}.`
+                  : study.aiStatus === "simulated"
+                    ? "Boxes are simulated from the report wording — not a detection."
+                    : "Each box marks a reported finding."}
+            </p>
+          </div>
+        )}
+
+        {/*
           2D / 3D switch. Rendered only for a series the server can actually
           serve a volume for, so it never promises a view the data can't back.
         */}
@@ -615,7 +707,7 @@ export function AnalysisTab({
               seed={study.thumbnailSeed + currentSlice}
               imageUrl={activeImageUrl}
               isProcessing={isProcessing}
-              findings={visibleFindings}
+              findings={overlayFindings}
               activeFindingId={activeFindingId}
               onHoverFinding={setHoveredId}
               onSelectFinding={onSelectFinding}

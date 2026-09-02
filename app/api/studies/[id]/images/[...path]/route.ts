@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { readManifest } from "@/lib/dataset/manifest-store";
-import { renderImageCached } from "@/lib/dataset/image-render";
 import { getDataRoot, getZipExtractCacheDir } from "@/lib/dataset/config";
 import { assertWithinRoot } from "@/lib/dataset/fs-utils";
 import { seriesImageAt } from "@/lib/dataset/series-frames";
+import { serveMirroredPixels } from "@/lib/dataset/mirror";
 import { DicomVolumeRef } from "@/lib/dataset/types";
 
 export const dynamic = "force-dynamic";
@@ -15,11 +15,31 @@ export const dynamic = "force-dynamic";
  * pixels (16-1024, anything else is ignored). Thumbnails and study cards use it
  * so a 44 px box stops downloading a full-resolution reslice. A source JPEG is
  * always returned at full size — see `RenderOptions.maxEdge`.
+ *
+ * Two ways to answer, in order:
+ *
+ *  1. From the R2 mirror, when a DATASET binding exists (i.e. on Workers). The
+ *     bytes were rendered ahead of time by `npm run mirror:render`. This is the
+ *     only path that can work there: a Worker isolate has 128 MB, and one cold
+ *     NIfTI slice costs ~375 MB transient while one CT reslice reads 558 files.
+ *  2. By rendering on demand from `SCANLAB_DATA_ROOT`, unchanged. This is what
+ *     runs on the user's Windows box, and nothing above it alters it.
+ *
+ * `renderImageCached` is imported lazily for that reason: it pulls in
+ * `dicom-parser`, `nifti-reader-js` and `pngjs`, and keeping them off the
+ * statically-reachable graph of a route is what holds the Worker bundle under
+ * the compressed-size limit.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ id: string; path: string[] }> }) {
   const { id, path: pathParts } = await params;
   const [seriesId, indexStr] = pathParts;
   const index = Number(indexStr);
+  const width = parseWidth(req.url);
+
+  if (seriesId && Number.isInteger(index) && index >= 0) {
+    const mirrored = await serveMirroredPixels(id, seriesId, index, width, req);
+    if (mirrored) return mirrored;
+  }
 
   const manifest = readManifest();
   const study = manifest?.studies.find((s) => s.id === id);
@@ -32,8 +52,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // slices as one compact run, not as an array to search.
   const image = seriesImageAt(series, index);
   if (!image) return NextResponse.json({ error: "Image index not found" }, { status: 404 });
-
-  const width = parseWidth(req.url);
 
   // Reconstructed series reslice a stack that is stored once on the study.
   const volume = series.volumeId ? study.volumes?.[series.volumeId] : undefined;
@@ -66,6 +84,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     assertWithinAllowedRoots(image.absPath);
     if (volume) assertVolumeWithinAllowedRoots(`${manifest?.generatedAt ?? "0"}::${series.volumeId}`, volume);
 
+    const { renderImageCached } = await import("@/lib/dataset/image-render");
     const rendered = renderImageCached(etag, image, { volume, maxEdge: width });
     return new NextResponse(rendered.bytes, {
       status: 200,

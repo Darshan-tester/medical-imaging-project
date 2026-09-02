@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { UploadCloud, File as FileIcon, ImageIcon, X, ArrowRight, Eye } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Input, Select } from "@/components/ui/Input";
+import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Modality, StudyPriority } from "@/lib/types";
+import { bmiFrom, bsaFrom } from "@/lib/patient-profile";
 import { cn } from "@/lib/utils";
 
 export interface UploadDetails {
@@ -12,7 +13,22 @@ export interface UploadDetails {
   modality: Modality;
   bodyRegion: string;
   priority: StudyPriority;
+  /*
+   * Demographics and anthropometrics. All optional: the analysis is normalized
+   * against them where they exist (SUV body-weight, contrast and dose by
+   * weight, BSA-indexed measurements), and anything left blank is filled with a
+   * deterministic demo value that the report badges as such rather than being
+   * silently invented here. See `lib/patient-profile.ts`.
+   */
+  age?: number;
+  sex?: "M" | "F" | "Other";
+  heightCm?: number;
+  weightKg?: number;
+  /** One condition per line as typed; empty lines dropped. */
+  history?: string[];
+  notes?: string;
 }
+
 
 const MODALITIES: Modality[] = ["CT", "MRI", "X-Ray", "Ultrasound", "PET", "Mammography"];
 
@@ -42,6 +58,40 @@ export function UploadZone({ onStart, mode = "analyze" }: { onStart: (files: Fil
     bodyRegion: "",
     priority: "routine",
   });
+
+  /*
+   * Numeric and multi-line inputs are held as raw strings while the user types.
+   * Parsing on every keystroke would make "1" out of a half-typed "17", and
+   * clearing a field would snap it back to a number rather than to blank.
+   */
+  const [raw, setRaw] = useState({ age: "", sex: "", heightCm: "", weightKg: "", history: "", notes: "" });
+
+  const num = (s: string): number | undefined => {
+    const n = Number(s.trim());
+    return s.trim() !== "" && Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+
+  const heightCm = num(raw.heightCm);
+  const weightKg = num(raw.weightKg);
+  /* Shown live, so it is obvious these are computed rather than asked for. */
+  const liveBmi = heightCm !== undefined && weightKg !== undefined ? bmiFrom(heightCm, weightKg) : undefined;
+  const liveBsa = heightCm !== undefined && weightKg !== undefined ? bsaFrom(heightCm, weightKg) : undefined;
+
+  const submittedDetails = (): UploadDetails => {
+    const history = raw.history
+      .split("\n")
+      .map((line) => line.replace(/^[-•*\s]+/, "").trim())
+      .filter((line) => line.length > 0);
+    return {
+      ...details,
+      age: num(raw.age),
+      sex: raw.sex === "M" || raw.sex === "F" || raw.sex === "Other" ? raw.sex : undefined,
+      heightCm,
+      weightKg,
+      history: history.length > 0 ? history : undefined,
+      notes: raw.notes.trim() ? raw.notes.trim() : undefined,
+    };
+  };
 
   const addFiles = (list: FileList | null) => {
     if (!list) return;
@@ -227,14 +277,103 @@ export function UploadZone({ onStart, mode = "analyze" }: { onStart: (files: Fil
                 <option value="stat">STAT</option>
               </Select>
             </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Age (years)</label>
+              <Input
+                type="number"
+                min={0}
+                max={120}
+                inputMode="numeric"
+                value={raw.age}
+                onChange={(e) => setRaw((r) => ({ ...r, age: e.target.value }))}
+                placeholder="e.g. 54"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Sex</label>
+              <Select value={raw.sex} onChange={(e) => setRaw((r) => ({ ...r, sex: e.target.value }))}>
+                <option value="">Not specified</option>
+                <option value="M">Male</option>
+                <option value="F">Female</option>
+                <option value="Other">Other</option>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Height (cm)</label>
+              <Input
+                type="number"
+                min={30}
+                max={250}
+                inputMode="decimal"
+                value={raw.heightCm}
+                onChange={(e) => setRaw((r) => ({ ...r, heightCm: e.target.value }))}
+                placeholder="e.g. 172"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Weight (kg)</label>
+              <Input
+                type="number"
+                min={1}
+                max={400}
+                inputMode="decimal"
+                value={raw.weightKg}
+                onChange={(e) => setRaw((r) => ({ ...r, weightKg: e.target.value }))}
+                placeholder="e.g. 78.5"
+              />
+            </div>
+          </div>
+
+          {/*
+            BMI and BSA are computed, never typed — asking for them invites a
+            value that disagrees with the height and weight beside it. BSA uses
+            Mosteller, √(cm × kg / 3600).
+          */}
+          <div className="mt-4 grid grid-cols-2 gap-4">
+            <div className="rounded-lg border border-border bg-panel-alt px-3 py-2">
+              <p className="text-[11px] text-ink-muted">BMI (computed)</p>
+              <p className="mt-0.5 text-[13px] font-semibold text-ink-primary tabular-nums">
+                {liveBmi !== undefined ? `${liveBmi.toFixed(1)} kg/m²` : <span className="font-normal text-ink-muted">Needs height + weight</span>}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-panel-alt px-3 py-2">
+              <p className="text-[11px] text-ink-muted">BSA (computed · Mosteller)</p>
+              <p className="mt-0.5 text-[13px] font-semibold text-ink-primary tabular-nums">
+                {liveBsa !== undefined ? `${liveBsa.toFixed(2)} m²` : <span className="font-normal text-ink-muted">Needs height + weight</span>}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">
+                Relevant history / pre-existing conditions
+              </label>
+              <Textarea
+                rows={3}
+                value={raw.history}
+                onChange={(e) => setRaw((r) => ({ ...r, history: e.target.value }))}
+                placeholder={"One per line, e.g.\nFormer smoker, ~20 pack-years\nHypertension"}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Special notes</label>
+              <Textarea
+                rows={3}
+                value={raw.notes}
+                onChange={(e) => setRaw((r) => ({ ...r, notes: e.target.value }))}
+                placeholder="Anything that changes how the images should be read — e.g. portable AP technique, unable to fully inspire"
+              />
+            </div>
           </div>
           <p className="mt-3 text-[11px] text-ink-muted">
-            This is a demo environment — modality and region are provided manually rather than parsed from real DICOM metadata.
+            This is a demo environment — modality and region are provided manually rather than parsed from real DICOM metadata. Demographics
+            are optional; anything left blank is filled with a deterministic demo value, and the report marks it as one.
           </p>
         </div>
       )}
 
-      <Button variant="primary" size="lg" className="w-full" disabled={!canStart} onClick={() => onStart(files, details)}>
+      <Button variant="primary" size="lg" className="w-full" disabled={!canStart} onClick={() => onStart(files, submittedDetails())}>
         {mode === "match" ? "Match to Indexed Study" : "Start Upload & Analysis"} <ArrowRight className="h-4 w-4" />
       </Button>
     </div>

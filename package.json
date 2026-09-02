@@ -16,6 +16,9 @@
     "dataset:verify": "tsx scripts/dataset-verify.ts",
     "dataset:mpr-check": "tsx scripts/mpr-check.ts",
     "demo:pack": "tsx scripts/demo-pack.ts",
+    "mirror:export": "tsx scripts/mirror-export.ts",
+    "mirror:render": "tsx scripts/mirror-render.ts",
+    "mirror:upload": "node scripts/mirror-upload.mjs",
     "verify:all": "npm run typecheck && npm run dataset:index && npm run dataset:verify && npm run dataset:mpr-check"
   },
   "dependencies": {
