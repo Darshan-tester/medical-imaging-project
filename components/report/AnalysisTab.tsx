@@ -150,6 +150,31 @@ export function AnalysisTab({
     [study.findings, activeSeries]
   );
 
+  /*
+   * Which series the study's boxes are actually on, and whether that is the one
+   * being looked at.
+   *
+   * `simulateFindings` puts every box on a single reference series on purpose: a
+   * region derived from "right lower lobe" describes a frontal or axial image and
+   * would be meaningless replayed onto a sagittal slice, where the horizontal
+   * axis is anterior-posterior and there is no left or right. So on a
+   * multi-series study most series legitimately carry nothing — measured over the
+   * manifest, boxes land on 271 of 3,508 MRI series and 490 of 2,940 PET series.
+   *
+   * The switch used to be gated on the *active* series having findings, which
+   * meant it was absent on almost every MRI and PET series and present on every
+   * X-Ray (those have exactly one series). That is the reason the feature looked
+   * like it existed only for X-Ray. It is now offered whenever the study has any
+   * finding at all, and turning it on navigates to where they are.
+   */
+  const annotatedSeries = useMemo(() => {
+    const first = study.findings[0];
+    if (!first?.seriesId) return undefined;
+    return study.series.find((s) => s.id === first.seriesId);
+  }, [study.findings, study.series]);
+
+  const annotationsElsewhere = seriesFindings.length === 0 && study.findings.length > 0;
+
   const currentMarkers = useMemo(
     () => markers.filter((m) => m.seriesId === activeSeries?.id && m.sliceIndex === currentSlice),
     [markers, activeSeries, currentSlice]
@@ -263,20 +288,29 @@ export function AnalysisTab({
    * Turning annotations on has to also *land* on something. `visibleFindings`
    * filters to the exact slice on screen, so on a 1,140-slice PET stack the
    * switch would otherwise look broken: every box sits on one reference slice
-   * and the viewer is nowhere near it. If nothing is visible where we are, go
-   * to the first annotated slice on this series.
+   * and the viewer is nowhere near it. If nothing is visible where we are, go to
+   * the first annotated slice on this series — and if this series carries none,
+   * switch to the series that does rather than leaving the reader on a blank
+   * overlay with no way to find the marks.
    */
   const onToggleAnnotated = useCallback(
     (next: boolean) => {
       setAnnotatedView(next);
       if (!next || visibleFindings.length > 0) return;
-      const target = seriesFindings[0];
+      const target = seriesFindings[0] ?? study.findings[0];
       if (!target) return;
+      if (target.seriesId && target.seriesId !== activeSeries?.id) {
+        setActiveSeriesId(target.seriesId);
+        // A box is a 2-D region on one slice, so it cannot be shown against the
+        // ray-marched volume; drop out of 3-D as the series changes.
+        setView3D(false);
+        setSelectedAnnotationId(null);
+      }
       setCurrentSlice(target.sliceIndex);
       setPlaying(false);
       setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));
     },
-    [visibleFindings, seriesFindings]
+    [visibleFindings, seriesFindings, study.findings, activeSeries]
   );
 
   const onJumpToMarker = useCallback((marker: Marker) => {
@@ -602,7 +636,7 @@ export function AnalysisTab({
           Hidden in 3-D: `Finding.region` is a 2-D bbox on one slice and has no
           meaning against a ray-marched volume.
         */}
-        {!view3D && seriesFindings.length > 0 && (
+        {!view3D && study.findings.length > 0 && (
           <div className="flex items-center gap-2">
             <div className="flex overflow-hidden rounded-md border border-border-strong">
               <button
@@ -629,13 +663,17 @@ export function AnalysisTab({
             <p className="hidden text-[11px] text-ink-muted sm:block">
               {!annotatedView
                 ? "Unmarked image."
-                : visibleFindings.length === 0
-                  ? /* Annotated is on but this slice carries nothing. Saying so beats an
-                       apparently broken overlay, and naming the slice is the fix. */
-                    `Nothing marked on this slice — findings are on slice ${seriesFindings[0].sliceIndex + 1}.`
-                  : study.aiStatus === "simulated"
-                    ? "Boxes are simulated from the report wording — not a detection."
-                    : "Each box marks a reported finding."}
+                : annotationsElsewhere
+                  ? /* The marks are on another series. Name it, because the reader
+                       otherwise has no way to tell an empty overlay from a broken one. */
+                    `Marked on the ${annotatedSeries?.label ?? "reference"} series — press Annotated to go there.`
+                  : visibleFindings.length === 0
+                    ? /* Annotated is on but this slice carries nothing. Saying so beats an
+                         apparently broken overlay, and naming the slice is the fix. */
+                      `Nothing marked on this slice — findings are on slice ${seriesFindings[0].sliceIndex + 1}.`
+                    : study.aiStatus === "simulated"
+                      ? "Boxes are simulated from the report wording — not a detection."
+                      : "Each box marks a reported finding."}
             </p>
           </div>
         )}

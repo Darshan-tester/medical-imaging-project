@@ -1,4 +1,4 @@
-// Ships the staging mirror to the R2 bucket the deployed Worker reads.
+﻿// Ships the staging mirror to the R2 bucket the deployed Worker reads.
 //
 // Where this sits in the pipeline
 // -------------------------------
@@ -12,12 +12,12 @@
 // script invents: it is whatever path the export/render scripts wrote under the
 // staging dir, and `mirrorKeys` in mirror.ts is the single place that decides
 // what those paths are. This script's only job on that front is to not corrupt
-// them on the way out — see `toObjectKey`.
+// them on the way out â€” see `toObjectKey`.
 //
 // Why the S3 API rather than wrangler
 // -----------------------------------
 // `wrangler r2 object put` is one process per object. The mirror is tens of
-// thousands of objects, which makes that tens of thousands of Node startups —
+// thousands of objects, which makes that tens of thousands of Node startups â€”
 // hours of wall clock spent on spawn alone, and no way to run them in parallel
 // without spawning tens of thousands of processes. R2's S3-compatible endpoint
 // takes the same objects over a handful of keep-alive sockets.
@@ -27,9 +27,10 @@
 // The alternative is @aws-sdk/client-s3: several MB of transitive dependencies
 // added to a repo whose deployed artifact has a 3 MiB compressed budget.
 // Nothing in the Worker would import it, but it would still sit in
+import { S3Client, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 // package.json, in the lockfile, and in every `npm ci` on the Cloudflare
 // builder. A single-part PUT needs one HMAC chain and one canonical string,
-// and node:crypto has both — so this file has no dependencies at all.
+// and node:crypto has both â€” so this file has no dependencies at all.
 //
 // The signing helpers are exported rather than inlined for one reason: a wrong
 // signature is a 403 with an opaque body, and that is the only failure mode
@@ -60,15 +61,15 @@ const SERVICE = "s3";
  */
 const REGION = "auto";
 
-/** SHA-256 of the empty string — every HEAD this script sends has no body. */
+/** SHA-256 of the empty string â€” every HEAD this script sends has no body. */
 const EMPTY_PAYLOAD_SHA256 = createHash("sha256").update("").digest("hex");
 
 /**
  * The extension decides the content type because the reader recovers it the
  * same way: `mirrorKeys.pixels` puts the extension in the key precisely so a
  * chest JPEG copied byte-for-byte and a rendered PNG reslice can share one key
- * scheme. Getting this wrong is not fatal — mirror.ts sets its own
- * Content-Type on the way out — but `wrangler r2 object get` and the R2
+ * scheme. Getting this wrong is not fatal â€” mirror.ts sets its own
+ * Content-Type on the way out â€” but `wrangler r2 object get` and the R2
  * dashboard both show what was stored, and octet-stream PNGs make that
  * needlessly confusing.
  */
@@ -88,7 +89,7 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream";
  *
  * This exists for exactly one consumer today: the CT 3-D volume. Its body is
  * deliberately headerless raw voxels, so `dims`, `spacing` and `window` have to
- * travel beside the bytes — `serveMirroredVolume` 422s without all three.
+ * travel beside the bytes â€” `serveMirroredVolume` 422s without all three.
  */
 const META_SUFFIX = ".meta.json";
 
@@ -116,7 +117,7 @@ const DEFAULTS = {
 
 class HttpError extends Error {
   constructor(status, statusText, body) {
-    super(`HTTP ${status} ${statusText}${body ? ` — ${body}` : ""}`);
+    super(`HTTP ${status} ${statusText}${body ? ` â€” ${body}` : ""}`);
     this.name = "HttpError";
     this.status = status;
     this.body = body;
@@ -148,7 +149,7 @@ const sha256Hex = (data) => createHash("sha256").update(data, "utf8").digest("he
  * required, but it also leaves `! * ' ( )` raw, and those are reserved in 3986.
  * S3 encodes them, so a key containing any of them signs to a different
  * canonical URI in the two implementations and the request 403s. Rare in this
- * mirror — ids are hex — but a filename copied out of a dataset is not something
+ * mirror â€” ids are hex â€” but a filename copied out of a dataset is not something
  * this script gets to assume anything about.
  *
  * Only ever called per segment, so `/` survives as a separator instead of
@@ -173,7 +174,7 @@ export function encodeObjectPath(bucket, key) {
  * Applied to the value that actually goes on the wire too, not just to the
  * copy inside the canonical request. Undici sends header values verbatim, so
  * collapsing only on the signing side would mean signing a string the server
- * never sees — a 403 whose cause is two spaces in a metadata value.
+ * never sees â€” a 403 whose cause is two spaces in a metadata value.
  */
 export function canonicalHeaderValue(value) {
   return String(value).trim().replace(/\s+/g, " ");
@@ -190,7 +191,7 @@ export function amzTimestamp(now = new Date()) {
  * `canonicalRequest` and `stringToSign` come back with them on purpose. R2
  * answers a signing mistake with `SignatureDoesNotMatch` and nothing else
  * usable, so the only way to find the mistake is to read the two strings that
- * produced the signature — which is also what makes this function testable.
+ * produced the signature â€” which is also what makes this function testable.
  *
  * `host` is signed but deliberately not returned in `headers`: undici owns the
  * Host header and rejects an explicit one. Signing it is mandatory (S3 requires
@@ -198,7 +199,7 @@ export function amzTimestamp(now = new Date()) {
  * derives it from the same URL this function is given.
  *
  * `content-length` is intentionally *not* signed either. It is not required to
- * be, and undici sets it itself — signing a value the transport also computes
+ * be, and undici sets it itself â€” signing a value the transport also computes
  * turns any disagreement into an opaque 403.
  */
 export function signS3Request({
@@ -350,6 +351,11 @@ function loadConfig({ strict }) {
     host,
     endpoint: `https://${host}`,
     credentials: { accessKeyId, secretAccessKey },
+    s3: new S3Client({
+      region: "auto",
+      endpoint: `https://${host}`,
+      credentials: { accessKeyId, secretAccessKey },
+    }),
     missing: [],
   };
 }
@@ -453,15 +459,15 @@ export function contentTypeFor(name) {
  *
  * This is the one line where Windows could quietly ruin the whole mirror.
  * `path.relative` returns `pixels\ab12\cd34\0.png` here, and R2 would accept
- * that as a key — a single flat object with backslashes in its name. Nothing
+ * that as a key â€” a single flat object with backslashes in its name. Nothing
  * would error; the reader asks for `pixels/ab12/cd34/0.png` (see
  * `mirrorKeys.pixels`), gets a miss, and every slice renders as the "image not
  * mirrored" tile. So the separator is normalised, and then asserted.
  */
 export function toObjectKey(root, absPath) {
   const key = relative(root, absPath).split(sep).join("/");
-  // `!key` is the root path itself. The walker cannot produce it — it only ever
-  // passes files found *inside* the root — but an empty key would sign and send
+  // `!key` is the root path itself. The walker cannot produce it â€” it only ever
+  // passes files found *inside* the root â€” but an empty key would sign and send
   // `PUT /<bucket>/`, a bucket-level request, so it is refused here rather than
   // left to the caller's discipline.
   if (!key || key.includes("\\") || key.startsWith("/") || key.includes("..")) {
@@ -475,7 +481,7 @@ export function toObjectKey(root, absPath) {
  *
  * Strict about types on purpose. A header can only carry a string, so an array
  * `[128,128,128]` would go out as `128,128,128` and read back as a plausible
- * `dims` — while an object would go out as `[object Object]`. Numbers and
+ * `dims` â€” while an object would go out as `[object Object]`. Numbers and
  * booleans have one unambiguous rendering, so those are coerced; anything
  * structured is refused with the file named, because a wrong `dims` puts a
  * wrongly-shaped volume on screen rather than failing.
@@ -496,14 +502,14 @@ async function readMetadataSidecar(file) {
     // Lowercased because HTTP header names are case-insensitive and R2 hands
     // the binding back a lowercased key. `serveMirroredVolume` reads
     // `meta.dims`, so a sidecar written with `"Dims"` would arrive as `dims`
-    // anyway — doing it here makes that explicit instead of accidental.
+    // anyway â€” doing it here makes that explicit instead of accidental.
     const name = rawName.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
       throw new MirrorError(`${file}: ${JSON.stringify(rawName)} is not usable in an x-amz-meta-* header name.`);
     }
     if (rawValue !== null && typeof rawValue === "object") {
       throw new MirrorError(
-        `${file}: ${JSON.stringify(rawName)} must be a string, number or boolean — got ${Array.isArray(rawValue) ? "an array" : "an object"}.`,
+        `${file}: ${JSON.stringify(rawName)} must be a string, number or boolean â€” got ${Array.isArray(rawValue) ? "an array" : "an object"}.`,
       );
     }
     const value = canonicalHeaderValue(rawValue ?? "");
@@ -523,7 +529,7 @@ async function readMetadataSidecar(file) {
  * content type and any sidecar metadata already resolved.
  *
  * Sidecars are matched per directory rather than through a global index,
- * because "sibling of X" is the whole contract — that keeps an orphaned
+ * because "sibling of X" is the whole contract â€” that keeps an orphaned
  * `X.meta.json` (X deleted, or a render that died between the two writes)
  * detectable exactly where it happens, and it is worth reporting: the volume
  * route 422s without its metadata.
@@ -549,17 +555,17 @@ async function collectDir(dir, root, objects, warnings) {
       // mirror-render.ts writes each object to `.render-tmp/w-<pid>` and renames
       // it into place, so a run that was killed can leave one truncated file
       // there. Uploading it would publish a corrupt object under a key nothing
-      // reads. Reported rather than skipped in silence — a stale one means a
+      // reads. Reported rather than skipped in silence â€” a stale one means a
       // render died.
       if (entry.name.startsWith(".")) {
-        warnings.push(`skipped ${join(dir, entry.name)}/ — a dot-directory is render scratch space, not mirror keys.`);
+        warnings.push(`skipped ${join(dir, entry.name)}/ â€” a dot-directory is render scratch space, not mirror keys.`);
         continue;
       }
       subdirs.push(entry.name);
     } else if (!entry.isFile()) {
       // Sockets, FIFOs, dangling links. Never expected under a staging dir
       // this project generates, so say so rather than skipping in silence.
-      warnings.push(`skipped ${join(dir, entry.name)} — not a regular file.`);
+      warnings.push(`skipped ${join(dir, entry.name)} â€” not a regular file.`);
     } else if (entry.name.endsWith(META_SUFFIX)) {
       sidecars.set(entry.name, join(dir, entry.name));
     } else {
@@ -587,7 +593,7 @@ async function collectDir(dir, root, objects, warnings) {
   }
 
   for (const orphan of sidecars.values()) {
-    warnings.push(`${orphan} has no sibling object — it was not uploaded, and nothing carries its metadata.`);
+    warnings.push(`${orphan} has no sibling object â€” it was not uploaded, and nothing carries its metadata.`);
   }
 
   for (const name of subdirs) await collectDir(join(dir, name), root, objects, warnings);
@@ -604,7 +610,7 @@ async function collectDir(dir, root, objects, warnings) {
  * and the body has to be a Buffer: a stream body makes undici use chunked
  * transfer encoding, which SigV4 treats as an entirely different (aws-chunked)
  * signing scheme. Hashing during the same read that fills the buffer is what
- * makes the two provably describe the same bytes — hash it separately and a
+ * makes the two provably describe the same bytes â€” hash it separately and a
  * file rewritten in between produces a signature for bytes that were never
  * sent, which R2 reports only as an opaque mismatch.
  *
@@ -648,8 +654,8 @@ const JPEG_TAIL = Buffer.from([0xff, 0xd9]);
 /**
  * How far back from the end the closing marker may sit.
  *
- * Wide enough that a legitimate file with a trailer after its final marker — an
- * appended thumbnail, an encoder's padding — still passes, because a raster
+ * Wide enough that a legitimate file with a trailer after its final marker â€” an
+ * appended thumbnail, an encoder's padding â€” still passes, because a raster
  * object is a byte-for-byte copy of a dataset file and a *false* refusal is the
  * one failure this check cannot recover from: re-rendering would copy the same
  * bytes and fail again. Truncation cannot hide in here regardless. The marker is
@@ -665,7 +671,7 @@ const TRAILER_WINDOW = 4096;
  * interrupted render now leaves either a whole object or none. Runs from before
  * that existed had no such guarantee, and a short file survives every later
  * check: the render's `has()` skips any non-empty file, and `readAndHash` above
- * only proves the bytes on the wire are the bytes on disk — which a truncated
+ * only proves the bytes on the wire are the bytes on disk â€” which a truncated
  * file satisfies perfectly.
  *
  * So this is the last gate. Publishing a truncated slice puts a half-drawn image
@@ -674,7 +680,7 @@ const TRAILER_WINDOW = 4096;
  *
  * The trailer is looked for in the last few KB rather than exactly at the end,
  * because a raster object is a byte-for-byte copy of a dataset file and some
- * encoders leave padding after the final marker. Truncation still cannot pass —
+ * encoders leave padding after the final marker. Truncation still cannot pass â€”
  * the marker is the last thing an encoder writes.
  *
  * Only these two containers. `.bin` volumes and JSON bodies have no trailer, and
@@ -694,7 +700,7 @@ export function assertIntactImage(object, body) {
 
   const what = starts ? "has no closing marker at its end" : `does not start like a ${png ? "PNG" : "JPEG"}`;
   throw new MirrorError(
-    `${object.key} ${what} — ${body.length} bytes on disk, so it is not a complete image.\n` +
+    `${object.key} ${what} â€” ${body.length} bytes on disk, so it is not a complete image.\n` +
       "       A render killed before atomic writes existed can leave a file like this, and nothing re-reads it.\n" +
       `       Fix it with:  npm run mirror:render -- --studies ${object.key.split("/")[1] ?? "<studyId>"} --force`,
   );
@@ -723,8 +729,8 @@ function backoffMs(attempt) {
 
 /**
  * 429 and 5xx are worth another attempt; every other 4xx is a fact about the
- * request that will not change on its own — a bad signature, a missing bucket,
- * metadata R2 rejects — and retrying it three more times only delays the
+ * request that will not change on its own â€” a bad signature, a missing bucket,
+ * metadata R2 rejects â€” and retrying it three more times only delays the
  * message that says what is wrong. A thrown fetch never reached R2 at all
  * (DNS, TLS, socket reset), so those are retried.
  */
@@ -778,40 +784,60 @@ function signedFetchArgs(config, { method, key, headers, payloadSha256 }) {
  * signature computed once up front.
  */
 async function headObject(config, key) {
-  const { url, signed } = signedFetchArgs(config, {
-    method: "HEAD",
-    key,
-    headers: {},
-    payloadSha256: EMPTY_PAYLOAD_SHA256,
-  });
-  const res = await fetch(url, { method: "HEAD", headers: signed.headers });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new HttpError(res.status, res.statusText, await errorBody(res));
-  const length = Number(res.headers.get("content-length"));
-  return { size: Number.isFinite(length) ? length : -1 };
-}
+  try {
+    const result = await config.s3.send(
+      new HeadObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+      }),
+    );
 
+    const length = Number(result.ContentLength);
+
+    return {
+      size: Number.isFinite(length) ? length : -1,
+    };
+  } catch (error) {
+    const status = error?.$metadata?.httpStatusCode;
+
+    if (
+      status === 404 ||
+      error?.name === "NotFound" ||
+      error?.name === "NoSuchKey"
+    ) {
+      return null;
+    }
+
+    throw error;
+  }
+}
 async function putObject(config, object, body, payloadSha256) {
-  const headers = { "content-type": object.contentType };
-  for (const [name, value] of Object.entries(object.metadata)) {
-    headers[`x-amz-meta-${name}`] = value;
+  const metadata = {};
+
+  for (const [name, value] of Object.entries(object.metadata ?? {})) {
+    metadata[name] = String(value);
   }
 
-  const { url, signed } = signedFetchArgs(config, {
-    method: "PUT",
-    key: object.key,
-    headers,
-    payloadSha256,
-  });
-  const res = await fetch(url, { method: "PUT", headers: signed.headers, body });
-  if (!res.ok) throw new HttpError(res.status, res.statusText, await errorBody(res));
+  try {
+    await config.s3.send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: object.key,
+        Body: body,
+        ContentType: object.contentType,
+        Metadata: Object.keys(metadata).length ? metadata : undefined,
+      }),
+    );
+  } catch (error) {
+    const status = error?.$metadata?.httpStatusCode;
 
-  // A successful PUT returns an empty body. Reading it anyway releases the
-  // socket back to undici's pool immediately, which is the difference between
-  // reusing 32 connections and opening one per object.
-  await res.arrayBuffer().catch(() => {});
+    throw new HttpError(
+      status ?? 500,
+      error?.name ?? "S3UploadError",
+      error?.message ?? String(error),
+    );
+  }
 }
-
 /* ---------------------------------------------------------------------------
  * Progress
  * ------------------------------------------------------------------------ */
@@ -819,7 +845,7 @@ async function putObject(config, object, body, payloadSha256) {
 function formatBytes(n) {
   // Rounded rather than passed through, because this formats a transfer *rate*
   // as well as byte counts. A rate is fractional, and an unrounded one prints as
-  // "91.74311926605505 B/s" — which on a TTY also makes the line jump around in
+  // "91.74311926605505 B/s" â€” which on a TTY also makes the line jump around in
   // width from frame to frame.
   if (n < 1024) return `${Math.round(n)} B`;
   const units = ["KB", "MB", "GB", "TB"];
@@ -943,7 +969,7 @@ async function runPool(items, concurrency, handler) {
  *
  * Length is the whole resume test. R2 would also hand back an ETag, but for a
  * single-part PUT that is the MD5 of the body, and computing MD5 for every
- * local file to compare would cost a full re-read of the staging directory —
+ * local file to compare would cost a full re-read of the staging directory â€”
  * which is most of the work this skip is meant to avoid. Length catches the case
  * that actually happens (an interrupted run) and misses only a rewrite that
  * kept the byte count identical, which is what --force is for.
@@ -1075,7 +1101,7 @@ async function main() {
   for (const warning of warnings) console.warn(`${TAG} WARNING: ${warning}`);
 
   if (!objects.length) {
-    console.log(`${TAG} ${dir} contains no files — nothing to upload.`);
+    console.log(`${TAG} ${dir} contains no files â€” nothing to upload.`);
     return 0;
   }
 
@@ -1086,7 +1112,7 @@ async function main() {
     if (config.credentials) {
       await printSignaturePreview(config, objects[0]);
     } else {
-      console.log(`${TAG} ${config.missing.join(", ")} not set, so no signature preview — listing only.`);
+      console.log(`${TAG} ${config.missing.join(", ")} not set, so no signature preview â€” listing only.`);
     }
     return 0;
   }
@@ -1099,7 +1125,7 @@ async function main() {
   const result = await uploadAll(config, objects, options);
 
   console.log(
-    `${TAG} done in ${formatDuration(result.elapsed)} — ` +
+    `${TAG} done in ${formatDuration(result.elapsed)} â€” ` +
       `uploaded ${result.uploaded} (${formatBytes(result.uploadedBytes)}), ` +
       `skipped ${result.skipped} (${formatBytes(result.skippedBytes)}), ` +
       `failed ${result.failures.length}, ` +
@@ -1114,7 +1140,7 @@ async function main() {
     }
     // Named here because these two are the ones whose cause is not in the
     // message: R2 reports both as a bare code with no explanation. Printed only
-    // when one actually occurred — appending a signing hint to a "file shrank
+    // when one actually occurred â€” appending a signing hint to a "file shrank
     // mid-run" failure sends the reader after the wrong problem.
     const statuses = new Set(result.failures.map((f) => f.status));
     if (statuses.has(403)) {
@@ -1159,3 +1185,5 @@ if (invokedDirectly) {
     process.exitCode = 1;
   }
 }
+
+

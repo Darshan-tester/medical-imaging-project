@@ -1,90 +1,83 @@
 {
-  // Wrangler config for deploying this Next.js app to Cloudflare Workers via
-  // the OpenNext adapter (@opennextjs/cloudflare).
-  //
-  // This file exists mainly so Wrangler stops *guessing*. With no config in the
-  // repo, `npx wrangler deploy` falls into its automatic-configuration path and
-  // picks an adapter for you — that is what produced the
-  // `runAutoConfigLogic -> npx opennextjs-cloudflare build` failure in the
-  // 21:05 build. Committing the config makes the adapter, the compatibility
-  // date, and the Worker name explicit and reviewable.
-  "$schema": "node_modules/wrangler/config-schema.json",
-
-  // Must match the existing Worker in the Cloudflare dashboard, otherwise
-  // `deploy` creates a second Worker on a new *.workers.dev subdomain instead
-  // of replacing the one that is already wired to the GitHub repo.
-  "name": "vedh-medical-imaging",
-
-  // Built by `opennextjs-cloudflare build`; both paths are generated, never
-  // hand-edited, and .open-next/ is gitignored.
-  "main": ".open-next/worker.js",
-
-  // Wrangler runs this while resolving `main`, on every `deploy` /
-  // `versions upload` / `dev`, and then asserts the entrypoint exists.
-  //
-  // This is a *backstop*, not the main mechanism. Plain `npx wrangler deploy`
-  // never gets here: it detects an OpenNext project and shells out to
-  // `npx opennextjs-cloudflare deploy` before entrypoint resolution
-  // (`maybeDelegateToOpenNextDeployCommand`, wrangler cli.js:407779), and that
-  // command refuses to build — it exits on "Could not find compiled Open Next
-  // config" when `.open-next` is missing. Producing the bundle is therefore
-  // package.json's `postbuild` job, in the Building phase.
-  //
-  // The hook still earns its place for the paths that skip the delegation and
-  // do reach entrypoint resolution: `wrangler dev`, `wrangler versions
-  // upload`, and `deploy --config <path>` / `deploy --no-autoconfig`. The
-  // script is idempotent, so when `.open-next/worker.js` is already there it
-  // costs nothing.
-  "build": {
-    "command": "node scripts/cf-ensure-open-next.mjs"
-  },
-
-  // From 2026-08-04 onward the runtime enables nodejs_compat/_v2 by default,
-  // but the flag is listed anyway: OpenNext requires it, and an explicit flag
-  // survives someone later pinning the date to something older.
-  "compatibility_date": "2026-08-04",
-  "compatibility_flags": [
-    "nodejs_compat",
-    // Makes fetch() to this Worker's own hostname go out to the public
-    // internet rather than looping back internally — what Next.js's server
-    // code assumes when it fetches its own routes.
-    "global_fetch_strictly_public"
-  ],
-
-  "assets": {
-    "directory": ".open-next/assets",
-    "binding": "ASSETS"
-  },
-
-  // The real ScanLab_Datasets content. Workers have no filesystem and a 128 MB
-  // isolate ceiling, so the deployed app neither reads SCANLAB_DATA_ROOT nor
-  // renders pixels: every response it serves was precomputed on the machine that
-  // has the data and stored here under a key derived from the request.
-  //
-  //   npm run mirror:export   -> meta/*     precomputed API response bodies
-  //   npm run mirror:render   -> pixels/*   one object per slice per width
-  //                              volume/*   the decimated CT stacks
-  //   npm run mirror:upload   -> ships the staging dir to this bucket
-  //
-  // `lib/dataset/mirror.ts` is the only reader. When this binding is absent —
-  // which is always the case on Windows — every route falls through to its
-  // original filesystem path unchanged, so local development is unaffected.
-  //
-  // Create the bucket once before the first deploy:
-  //   npx wrangler r2 bucket create vedh-medical-imaging-dataset
-  "r2_buckets": [
+	// Wrangler config for deploying this Next.js app to Cloudflare Workers via
+	// the OpenNext adapter (@opennextjs/cloudflare).
+	//
+	// This file exists mainly so Wrangler stops *guessing*. With no config in the
+	// repo, `npx wrangler deploy` falls into its automatic-configuration path and
+	// picks an adapter for you — that is what produced the
+	// `runAutoConfigLogic -> npx opennextjs-cloudflare build` failure in the
+	// 21:05 build. Committing the config makes the adapter, the compatibility
+	// date, and the Worker name explicit and reviewable.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// Must match the existing Worker in the Cloudflare dashboard, otherwise
+	// `deploy` creates a second Worker on a new *.workers.dev subdomain instead
+	// of replacing the one that is already wired to the GitHub repo.
+	"name": "vedh-medical-imaging",
+	// Built by `opennextjs-cloudflare build`; both paths are generated, never
+	// hand-edited, and .open-next/ is gitignored.
+	"main": ".open-next/worker.js",
+	// Wrangler runs this while resolving `main`, on every `deploy` /
+	// `versions upload` / `dev`, and then asserts the entrypoint exists.
+	//
+	// This is a *backstop*, not the main mechanism. Plain `npx wrangler deploy`
+	// never gets here: it detects an OpenNext project and shells out to
+	// `npx opennextjs-cloudflare deploy` before entrypoint resolution
+	// (`maybeDelegateToOpenNextDeployCommand`, wrangler cli.js:407779), and that
+	// command refuses to build — it exits on "Could not find compiled Open Next
+	// config" when `.open-next` is missing. Producing the bundle is therefore
+	// package.json's `postbuild` job, in the Building phase.
+	//
+	// The hook still earns its place for the paths that skip the delegation and
+	// do reach entrypoint resolution: `wrangler dev`, `wrangler versions
+	// upload`, and `deploy --config <path>` / `deploy --no-autoconfig`. The
+	// script is idempotent, so when `.open-next/worker.js` is already there it
+	// costs nothing.
+	"build": {
+		"command": "node scripts/cf-ensure-open-next.mjs"
+	},
+	// From 2026-08-04 onward the runtime enables nodejs_compat/_v2 by default,
+	// but the flag is listed anyway: OpenNext requires it, and an explicit flag
+	// survives someone later pinning the date to something older.
+	"compatibility_date": "2026-08-04",
+	"compatibility_flags": [
+		"nodejs_compat",
+		// Makes fetch() to this Worker's own hostname go out to the public
+		// internet rather than looping back internally — what Next.js's server
+		// code assumes when it fetches its own routes.
+		"global_fetch_strictly_public"
+	],
+	"assets": {
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
+	},
+	// The real ScanLab_Datasets content. Workers have no filesystem and a 128 MB
+	// isolate ceiling, so the deployed app neither reads SCANLAB_DATA_ROOT nor
+	// renders pixels: every response it serves was precomputed on the machine that
+	// has the data and stored here under a key derived from the request.
+	//
+	//   npm run mirror:export   -> meta/*     precomputed API response bodies
+	//   npm run mirror:render   -> pixels/*   one object per slice per width
+	//                              volume/*   the decimated CT stacks
+	//   npm run mirror:upload   -> ships the staging dir to this bucket
+	//
+	// `lib/dataset/mirror.ts` is the only reader. When this binding is absent —
+	// which is always the case on Windows — every route falls through to its
+	// original filesystem path unchanged, so local development is unaffected.
+	//
+	// Create the bucket once before the first deploy:
+	//   npx wrangler r2 bucket create vedh-medical-imaging-dataset
+	"r2_buckets": [
     {
-      "binding": "DATASET",
-      "bucket_name": "vedh-medical-imaging-dataset"
+        "binding": "DATASET",
+        "bucket_name": "vedh-medical-imaging-dataset",
+        "remote": true
     }
-  ],
-
-  "observability": {
-    "enabled": true
-  }
-
-  // NOTE: no D1/KV bindings. The incremental cache is still the adapter's
-  // "dummy" default (see open-next.config.ts) — that is separate from the
-  // DATASET bucket above, which holds application data rather than Next.js
-  // cache entries.
+],
+	"observability": {
+		"enabled": true
+	}
+	// NOTE: no D1/KV bindings. The incremental cache is still the adapter's
+	// "dummy" default (see open-next.config.ts) — that is separate from the
+	// DATASET bucket above, which holds application data rather than Next.js
+	// cache entries.
 }

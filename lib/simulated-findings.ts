@@ -83,43 +83,131 @@ const CUES: { re: RegExp; label: string }[] = [
   { re: /pneumonia|pneumonic/i, label: "Pneumonia" },
   { re: /pleural effusion|effusion/i, label: "Effusion" },
   { re: /atelectas|collapse/i, label: "Atelectasis" },
-  { re: /cardiomegal|enlarged cardiac|cardiothoracic ratio/i, label: "Cardiomegaly" },
+  {
+    // "The cardiac silhouette is mildly enlarged" is the commonest phrasing in
+    // MIMIC-CXR and matched none of the first three alternatives.
+    re: /cardiomegal|enlarged cardiac|cardiac silhouette[^.]{0,30}enlarg|enlargement of the cardiac|cardiothoracic ratio/i,
+    label: "Cardiomegaly",
+  },
   { re: /ground.?glass/i, label: "Ground-glass opacity" },
   { re: /opacit|opacif/i, label: "Opacity" },
   { re: /infiltrat/i, label: "Infiltrate" },
   { re: /emphysema|emphysematous/i, label: "Emphysema" },
   { re: /bronchiectas/i, label: "Bronchiectasis" },
   { re: /fibrosis|fibrotic|reticulat/i, label: "Fibrosis" },
+  { re: /hyperinflat|hyperexpand/i, label: "Hyperinflation" },
+  { re: /low lung volumes|lung volumes are low(?:er)?|hypoinflat/i, label: "Low lung volumes" },
+  { re: /vascular congestion|pulmonary (?:venous )?congestion|vascular engorgement/i, label: "Vascular congestion" },
   { re: /granulom/i, label: "Granuloma" },
   { re: /metasta/i, label: "Metastatic focus" },
   { re: /carcinoma|tumou?r|malignan|neoplas/i, label: "Neoplastic focus" },
+  // Both before `nodul` and `lesion`, which would otherwise swallow them and
+  // report a pituitary microadenoma as an unnamed "Lesion".
+  { re: /fibroadenoma/i, label: "Fibroadenoma" },
+  { re: /micro-?adenoma|macro-?adenoma|adenoma/i, label: "Adenoma" },
+  // The three BI-RADS features that decide whether a mammogram is suspicious.
+  // "An irregular spiculated mass" must not be flattened to "Lesion" — the
+  // spiculation is the whole reason the sentence matters. `microcalcification`
+  // additionally has to precede the general `calcification` cue further down,
+  // where it previously sat and was unreachable dead code.
+  { re: /micro-?calcification|punctate calcification|pleomorphic calcification/i, label: "Microcalcifications" },
+  { re: /architectural distortion/i, label: "Architectural distortion" },
+  { re: /spiculat|stellate margin/i, label: "Spiculated margin" },
   { re: /nodul/i, label: "Nodule" },
+  // Above `lesion` for the same reason: cystic versus solid is the distinction a
+  // reader is looking for. Plural included — "Bilateral maxillary retention
+  // cysts are observed" is real report language that `cyst\b` did not match.
+  { re: /cysts?\b|cystic/i, label: "Cyst" },
+  { re: /osteolysis|osteolytic|lytic lesion|bone destruction/i, label: "Osteolysis" },
   { re: /\bmass\b|lesion/i, label: "Lesion" },
   { re: /fracture|fractured/i, label: "Fracture" },
   { re: /dislocat|subluxat/i, label: "Dislocation" },
+  { re: /kyphosis|kyphotic|scoliosis|scoliotic|kyphoscolio/i, label: "Spinal deformity" },
+  { re: /osteopeni|osteoporo|demineralis|demineraliz/i, label: "Reduced bone density" },
   { re: /h[ae]morrhage|h[ae]matoma|bleed/i, label: "Haemorrhage" },
   { re: /infarct|isch[ae]mi/i, label: "Infarct" },
   { re: /midline shift|mass effect|herniation of the/i, label: "Mass effect" },
   { re: /hydrocephalus|ventriculomegal/i, label: "Hydrocephalus" },
+  // `multiple sclerosis` lives here rather than with the sclerotic-bone cue: an
+  // MS plaque labelled "Sclerosis" would read as a bone finding.
+  { re: /demyelinat|multiple sclerosis|periventricular plaque|plaques? perpendicular/i, label: "Demyelinating plaque" },
+  { re: /encephalomalac|gliosis|gliotic/i, label: "Gliosis" },
+  // The commonest genuine finding in the cranial-MR set: "Mild widening is noted
+  // in the sulci of the bilateral occipital lobe". Kept as a phrase so it cannot
+  // fire on "assess mediastinal width".
+  { re: /sulcal widening|widening[^.]{0,25}sulci|prominent sulci|sulci are prominent/i, label: "Sulcal widening" },
+  { re: /atroph/i, label: "Atrophy" },
+  { re: /angioma|cavernoma|arteriovenous malformation|\bavm\b/i, label: "Vascular malformation" },
   { re: /hyperintens/i, label: "T2 hyperintensity" },
   { re: /hypointens/i, label: "T1 hypointensity" },
-  { re: /hypodens|hypoattenuat|hypoechoic/i, label: "Hypodensity" },
-  { re: /hyperdens|hyperattenuat|hyperechoic/i, label: "Hyperdensity" },
+  // Attenuation (CT) and echogenicity (US) are different physics and must not
+  // share a label — "Hypodensity" on a sonogram is simply the wrong word, so the
+  // echo terms come first and are named for what they are. Only the three that
+  // describe a discrete focus live here; `echogenic` and `acoustic shadow` are
+  // descriptors of something else and sit below the things they describe.
+  { re: /anechoic/i, label: "Anechoic focus" },
+  { re: /hypoechoic/i, label: "Hypoechoic focus" },
+  { re: /hyperechoic/i, label: "Hyperechoic focus" },
+  { re: /hypodens|hypoattenuat/i, label: "Hypodensity" },
+  { re: /hyperdens|hyperattenuat/i, label: "Hyperdensity" },
   { re: /disc (protrusion|herniation|bulge|extrusion)|disc desiccation/i, label: "Disc protrusion" },
   { re: /stenosis|narrowing|impingement/i, label: "Stenosis" },
   { re: /spondylo|degenerative|osteophyt|osteoarthr/i, label: "Degenerative change" },
+  // Mammography, continued. These are less specific than a mass descriptor but
+  // still ahead of the general cues they would be flattened into: "skin
+  // thickening" would read as generic "Wall thickening" and ductal ectasia as
+  // generic "Dilatation".
+  { re: /bi.?rads/i, label: "BI-RADS category" },
+  { re: /skin thickening|skin retraction|nipple retraction|nipple inversion/i, label: "Skin / nipple change" },
+  { re: /ductal (?:ectasia|dilat)|intraductal|duct dilat/i, label: "Ductal change" },
+  { re: /heterogeneously dense|dense fibroglandular|fibroglandular|breast density/i, label: "Dense fibroglandular tissue" },
+  { re: /asymmetr/i, label: "Asymmetry" },
   { re: /calcification|calcified/i, label: "Calcification" },
-  { re: /microcalcification/i, label: "Microcalcifications" },
+  { re: /sclerotic|sclerosis/i, label: "Sclerosis" },
   { re: /fdg|suv|hypermetabolic|avid uptake|increased uptake|tracer uptake/i, label: "Hypermetabolic focus" },
   { re: /aneurysm|dissection/i, label: "Vascular abnormality" },
+  // Echocardiography and vascular sonography. "Severe tricuspid valve
+  // regurgitation" was the single unmatched Ultrasound sentence in the dataset,
+  // which is why that study had no annotated view at all.
+  { re: /regurgitat|valvular insufficiency|incompetent valve/i, label: "Valvular regurgitation" },
+  { re: /hypokines|akines|dyskines|wall motion|ejection fraction/i, label: "Wall-motion abnormality" },
+  { re: /thromb/i, label: "Thrombus" },
+  { re: /turbulent flow|absent flow|reversed flow|no demonstrable flow|hypervascular|neovascular|increased vascularit/i, label: "Abnormal flow" },
+  // Sinus disease before the generic `thicken` cue, and narrowed to mucosal
+  // thickening *of a sinus* so bowel-wall thickening is not called sinusitis.
+  { re: /sinusitis|sinus opacification|mucosal thickening[^.]{0,40}sinus|sinus[^.]{0,30}mucosal thickening/i, label: "Sinusitis" },
+  { re: /concha bullosa/i, label: "Concha bullosa" },
+  { re: /hypertroph/i, label: "Hypertrophy" },
+  // Abdominal / renal sonography. Each sits above the general cue it would
+  // otherwise be flattened into: a calculus is not a "Calcification", and
+  // hydronephrosis is not an unqualified "Dilatation".
+  { re: /gallstone|cholelith|nephrolith|urolith|calculus|calculi/i, label: "Calculus" },
+  { re: /hydronephro|pyelectasis|pelvicaliectasis/i, label: "Hydronephrosis" },
+  { re: /ascites|free fluid|peritoneal fluid/i, label: "Free fluid" },
+  // Steatosis above organomegaly: "The liver is enlarged and shows increased
+  // echogenicity compatible with hepatic steatosis" is a fatty-liver report, and
+  // the enlargement is a consequence of it.
+  { re: /steatosis|fatty liver|fatty infiltration/i, label: "Hepatic steatosis" },
+  { re: /hepatomegal|splenomegal|nephromegal|organomegal|(?:liver|spleen|kidney)[^.]{0,12}(?:is|are) enlarged/i, label: "Organomegaly" },
+  { re: /septation|septated/i, label: "Septation" },
+  // Descriptors, so they sit below every substantive finding above: "Echogenic
+  // gallstones with posterior acoustic shadowing" is a stone, not an echotexture.
+  { re: /echogenic|echotextur/i, label: "Altered echotexture" },
+  { re: /acoustic shadow|posterior shadowing/i, label: "Acoustic shadowing" },
   { re: /thicken/i, label: "Wall thickening" },
   { re: /dilat|distend|ectasia/i, label: "Dilatation" },
-  { re: /cyst\b|cystic/i, label: "Cyst" },
   { re: /hernia\b/i, label: "Hernia" },
   { re: /oedema|edema|swelling|effusive/i, label: "Oedema" },
   { re: /tear\b|torn\b|rupture/i, label: "Tear" },
   { re: /lymphadenopathy|enlarged (lymph )?node/i, label: "Lymphadenopathy" },
   { re: /abscess|collection/i, label: "Collection" },
+  // Only ever written when something is wrong, so it is safe as a cue; a
+  // correctly sited line is described without any of these words. The tube
+  // clause is spelled out because "tip projecting over the proximal left
+  // mainstem bronchus" is how an over-inserted ET tube is actually reported.
+  { re: /malposition|kink(?:ed|ing)|coiled/i, label: "Device malposition" },
+  { re: /(?:tube|catheter) is (?:too )?(?:low|high)|t(?:ube|ip)[^.]{0,40}mainstem/i, label: "Tube malposition" },
+  { re: /mediastinal widening|widened mediastinum|widening of the mediastinum/i, label: "Mediastinal widening" },
   { re: /scarring|scar\b|sequel/i, label: "Scarring" },
 ];
 
@@ -152,6 +240,11 @@ const LATERALITY: { re: RegExp; cx: number; widen?: boolean }[] = [
   { re: /\bright\b|\brt\b|right-sided/i, cx: 0.33 },
   { re: /\bleft\b|\blt\b|left-sided/i, cx: 0.66 },
   { re: /midline|central|median/i, cx: 0.5 },
+  // Cardiac structures name a side without using the word. Same convention: the
+  // tricuspid valve is right-heart and therefore viewer-left. Appended last so
+  // an explicit "right"/"left" in the same sentence still wins.
+  { re: /tricuspid|right ventric|right atri/i, cx: 0.33 },
+  { re: /mitral|left ventric|left atri/i, cx: 0.66 },
 ];
 
 /** Vertical placement from zone / level words. */
@@ -165,10 +258,42 @@ const ZONES: { re: RegExp; cy: number }[] = [
   { re: /cerebell|posterior fossa|brain ?stem|pons|medulla|occipital/i, cy: 0.68 },
   { re: /temporal|insula|basal ganglia|thalam/i, cy: 0.5 },
   { re: /\bc[1-7]\b|cervical/i, cy: 0.27 },
-  { re: /\bt(1[0-2]|[1-9])\b|thoracic spine/i, cy: 0.47 },
+  // T3-T12 only. Bare "T1" and "T2" in a report are almost always the MRI
+  // sequence, not a vertebral level, and reading them as levels would drag brain
+  // findings down to mid-chest height.
+  { re: /\bt(?:1[0-2]|[3-9])\b|thoracic spine/i, cy: 0.47 },
   { re: /\bl[1-5]\b|lumbar|sacr|coccy/i, cy: 0.68 },
-  { re: /upper outer quadrant|upper quadrant|subareolar/i, cy: 0.33 },
-  { re: /lower quadrant|inframammary/i, cy: 0.67 },
+  // Sinuses and sella, for the cranial MR set. "Frontal sinus" is deliberately
+  // below the brain block, which matches "frontal lobe" and not this.
+  { re: /frontal sinus/i, cy: 0.22 },
+  { re: /sphenoid|ethmoid|middle turbinate|nasopharyn/i, cy: 0.45 },
+  { re: /sella|pituitary|suprasellar|cavernous sinus/i, cy: 0.5 },
+  { re: /maxillary|inferior turbinate|nasal (?:cavity|septum)|concha|palate/i, cy: 0.6 },
+  // Mammography. A quadrant names both a height and a side; the height is here
+  // and the side comes from LATERALITY. "Subareolar" means beneath the areola,
+  // so it is central by definition — it used to be grouped with "upper".
+  { re: /upper (?:outer|inner) quadrant|upper quadrant/i, cy: 0.33 },
+  { re: /lower (?:outer|inner) quadrant|lower quadrant|inframammary/i, cy: 0.67 },
+  { re: /retroareolar|subareolar|periareolar|nipple|central breast/i, cy: 0.5 },
+  { re: /axillary tail|axilla/i, cy: 0.2 },
+  // Clock-face notation, the standard way a breast or thyroid location is
+  // written. 12 is up, 6 is down, 3 and 9 are mid-height. The two-digit
+  // alternatives lead so "11 o'clock" is not read as "1 o'clock".
+  { re: /\b(?:10|11|12|1|2)\s*o.?\s?clock/i, cy: 0.3 },
+  { re: /\b(?:4|5|6|7|8)\s*o.?\s?clock/i, cy: 0.7 },
+  { re: /\b(?:3|9)\s*o.?\s?clock/i, cy: 0.5 },
+  // Echocardiography: on an apical view the valves sit mid-image. The apex
+  // itself is already caught by the chest `apic|apex` entry above.
+  { re: /tricuspid|mitral|aortic valve|pulmonic valve|atrioventricular/i, cy: 0.5 },
+  // Abdominal, renal and pelvic sonography / CT. `\brenal` has a word boundary
+  // so "adrenal" does not match, and `\buter` so "outer" does not.
+  { re: /\bliver|hepatic|gallbladder|biliary|porta hepatis/i, cy: 0.35 },
+  { re: /spleen|splenic|pancrea|epigastr/i, cy: 0.4 },
+  { re: /kidney|\brenal|perinephric|ureter/i, cy: 0.5 },
+  { re: /bladder|prostat|\buter|ovar|adnex|endometri|\bcervix|\bpelvi(?:s|c)\b/i, cy: 0.75 },
+  { re: /thyroid|parathyroid|carotid|jugular|submandibular/i, cy: 0.3 },
+  { re: /scrotum|testic|epididym|inguinal/i, cy: 0.8 },
+  { re: /popliteal|femoral vein|saphenous|\bcalf\b/i, cy: 0.7 },
 ];
 
 const SMALL = /\bsub.?centimet|tiny|punctate|subtle|small|minimal|trace|mild|faint|focal tiny/i;

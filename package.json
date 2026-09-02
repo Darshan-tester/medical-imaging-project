@@ -15,6 +15,7 @@
     "dataset:index": "tsx scripts/dataset-index.ts",
     "dataset:verify": "tsx scripts/dataset-verify.ts",
     "dataset:mpr-check": "tsx scripts/mpr-check.ts",
+    "findings:check": "tsx scripts/findings-check.ts",
     "demo:pack": "tsx scripts/demo-pack.ts",
     "mirror:export": "tsx scripts/mirror-export.ts",
     "mirror:render": "tsx scripts/mirror-render.ts",
@@ -22,6 +23,7 @@
     "verify:all": "npm run typecheck && npm run dataset:index && npm run dataset:verify && npm run dataset:mpr-check"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1124.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/inter": "^5.3.0",
     "@react-three/drei": "10.7.8",

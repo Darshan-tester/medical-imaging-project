@@ -1,0 +1,3227 @@
+﻿==================== mirror-upload.mjs ====================
+// Ships the staging mirror to the R2 bucket the deployed Worker reads.
+//
+// Where this sits in the pipeline
+// -------------------------------
+//   npm run mirror:export  ->  .scanlab/mirror/meta/*    precomputed API bodies
+//   npm run mirror:render  ->  .scanlab/mirror/pixels/*  one object per slice
+//                              .scanlab/mirror/volume/*  the decimated CT stacks
+//   npm run mirror:upload  ->  this script: staging dir -> R2
+//
+// The read side is lib/dataset/mirror.ts, which GETs these keys through the
+// DATASET binding in wrangler.jsonc. So the key layout is not something this
+// script invents: it is whatever path the export/render scripts wrote under the
+// staging dir, and `mirrorKeys` in mirror.ts is the single place that decides
+// what those paths are. This script's only job on that front is to not corrupt
+// them on the way out â€” see `toObjectKey`.
+//
+// Why the S3 API rather than wrangler
+// -----------------------------------
+// `wrangler r2 object put` is one process per object. The mirror is tens of
+// thousands of objects, which makes that tens of thousands of Node startups â€”
+// hours of wall clock spent on spawn alone, and no way to run them in parallel
+// without spawning tens of thousands of processes. R2's S3-compatible endpoint
+// takes the same objects over a handful of keep-alive sockets.
+//
+// Why SigV4 is hand-rolled here
+// -----------------------------
+// The alternative is @aws-sdk/client-s3: several MB of transitive dependencies
+// added to a repo whose deployed artifact has a 3 MiB compressed budget.
+// Nothing in the Worker would import it, but it would still sit in
+// package.json, in the lockfile, and in every `npm ci` on the Cloudflare
+// builder. A single-part PUT needs one HMAC chain and one canonical string,
+// and node:crypto has both â€” so this file has no dependencies at all.
+//
+// The signing helpers are exported rather than inlined for one reason: a wrong
+// signature is a 403 with an opaque body, and that is the only failure mode
+// here that cannot be diagnosed by reading the error. Exported, it can be
+// checked against a known-good signature without a bucket to talk to.
+
+import { createHash, createHmac } from "node:crypto";
+import { createReadStream, realpathSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const TAG = "[mirror-upload]";
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/* ---------------------------------------------------------------------------
+ * Constants
+ * ------------------------------------------------------------------------ */
+
+const ALGORITHM = "AWS4-HMAC-SHA256";
+const SERVICE = "s3";
+
+/**
+ * R2 has no regions, but SigV4's credential scope has a region slot that is
+ * part of the signing key, so writer and service have to agree on a value.
+ * Cloudflare's documented value for the S3 API is "auto"; anything else derives
+ * a different kSigning and fails as SignatureDoesNotMatch, not as a bad region.
+ */
+const REGION = "auto";
+
+/** SHA-256 of the empty string â€” every HEAD this script sends has no body. */
+const EMPTY_PAYLOAD_SHA256 = createHash("sha256").update("").digest("hex");
+
+/**
+ * The extension decides the content type because the reader recovers it the
+ * same way: `mirrorKeys.pixels` puts the extension in the key precisely so a
+ * chest JPEG copied byte-for-byte and a rendered PNG reslice can share one key
+ * scheme. Getting this wrong is not fatal â€” mirror.ts sets its own
+ * Content-Type on the way out â€” but `wrangler r2 object get` and the R2
+ * dashboard both show what was stored, and octet-stream PNGs make that
+ * needlessly confusing.
+ */
+const CONTENT_TYPE_BY_EXT = {
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".bin": "application/octet-stream",
+};
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
+/**
+ * A file `X` may be accompanied by `X.meta.json`, whose entries become
+ * `x-amz-meta-*` headers on X's PUT and reappear as `customMetadata` on the
+ * binding side. The sidecar is never uploaded as an object of its own.
+ *
+ * This exists for exactly one consumer today: the CT 3-D volume. Its body is
+ * deliberately headerless raw voxels, so `dims`, `spacing` and `window` have to
+ * travel beside the bytes â€” `serveMirroredVolume` 422s without all three.
+ */
+const META_SUFFIX = ".meta.json";
+
+/** Per-object attempts, including the first. */
+const MAX_ATTEMPTS = 4;
+
+/** How often to print progress when stdout is not a TTY (a CI log). */
+const PROGRESS_EVERY = 250;
+
+const DEFAULTS = {
+  dir: ".scanlab/mirror",
+  bucket: "vedh-medical-imaging-dataset",
+  concurrency: 32,
+};
+
+/* ---------------------------------------------------------------------------
+ * Errors
+ *
+ * Three kinds, because the retry policy is a function of which one it is:
+ *  - HttpError      R2 answered. Retryable only for 429 and 5xx.
+ *  - MirrorError    something is wrong locally (unreadable sidecar, short
+ *                   read). Retrying re-reads the same bad state, so never.
+ *  - anything else  a thrown fetch, i.e. DNS/TLS/socket. Always retryable.
+ * ------------------------------------------------------------------------ */
+
+class HttpError extends Error {
+  constructor(status, statusText, body) {
+    super(`HTTP ${status} ${statusText}${body ? ` â€” ${body}` : ""}`);
+    this.name = "HttpError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+class MirrorError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "MirrorError";
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * SigV4
+ *
+ * Exported so it can be signed off against a reference implementation. The
+ * shape here is deliberately narrow: path-style S3, no query string, no
+ * multipart, single-chunk signed payload.
+ * ------------------------------------------------------------------------ */
+
+const hmac = (key, data) => createHmac("sha256", key).update(data, "utf8").digest();
+const sha256Hex = (data) => createHash("sha256").update(data, "utf8").digest("hex");
+
+/**
+ * Percent-encodes one path segment per RFC 3986.
+ *
+ * `encodeURIComponent` is *almost* right: it leaves the unreserved set alone as
+ * required, but it also leaves `! * ' ( )` raw, and those are reserved in 3986.
+ * S3 encodes them, so a key containing any of them signs to a different
+ * canonical URI in the two implementations and the request 403s. Rare in this
+ * mirror â€” ids are hex â€” but a filename copied out of a dataset is not something
+ * this script gets to assume anything about.
+ *
+ * Only ever called per segment, so `/` survives as a separator instead of
+ * becoming %2F. And exactly once: S3 is the documented exception to SigV4's
+ * double-encoding rule.
+ */
+export function encodeRfc3986(segment) {
+  return encodeURIComponent(segment).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/** `bucket/some/key.png` -> `/bucket/some/key.png`, each segment encoded. */
+export function encodeObjectPath(bucket, key) {
+  return `/${[bucket, ...key.split("/")].map(encodeRfc3986).join("/")}`;
+}
+
+/**
+ * Canonical header value: trimmed, with internal whitespace runs collapsed.
+ *
+ * Applied to the value that actually goes on the wire too, not just to the
+ * copy inside the canonical request. Undici sends header values verbatim, so
+ * collapsing only on the signing side would mean signing a string the server
+ * never sees â€” a 403 whose cause is two spaces in a metadata value.
+ */
+export function canonicalHeaderValue(value) {
+  return String(value).trim().replace(/\s+/g, " ");
+}
+
+/** `20260902T013200Z`. Seconds resolution, which is what SigV4 specifies. */
+export function amzTimestamp(now = new Date()) {
+  return now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+}
+
+/**
+ * Signs one path-style S3 request and returns the headers to send.
+ *
+ * `canonicalRequest` and `stringToSign` come back with them on purpose. R2
+ * answers a signing mistake with `SignatureDoesNotMatch` and nothing else
+ * usable, so the only way to find the mistake is to read the two strings that
+ * produced the signature â€” which is also what makes this function testable.
+ *
+ * `host` is signed but deliberately not returned in `headers`: undici owns the
+ * Host header and rejects an explicit one. Signing it is mandatory (S3 requires
+ * host in SignedHeaders), and the value is safe to predict because the runtime
+ * derives it from the same URL this function is given.
+ *
+ * `content-length` is intentionally *not* signed either. It is not required to
+ * be, and undici sets it itself â€” signing a value the transport also computes
+ * turns any disagreement into an opaque 403.
+ */
+export function signS3Request({
+  method,
+  bucket,
+  key,
+  host,
+  headers = {},
+  payloadSha256,
+  accessKeyId,
+  secretAccessKey,
+  amzDate,
+}) {
+  const dateStamp = amzDate.slice(0, 8);
+  const scope = `${dateStamp}/${REGION}/${SERVICE}/aws4_request`;
+  const canonicalUri = encodeObjectPath(bucket, key);
+
+  // Lowercased and sorted, per spec. The caller's headers come first so a
+  // caller cannot accidentally shadow the three this function owns.
+  const toSign = new Map();
+  for (const [name, value] of Object.entries(headers)) {
+    toSign.set(name.toLowerCase(), canonicalHeaderValue(value));
+  }
+  toSign.set("host", canonicalHeaderValue(host));
+  toSign.set("x-amz-content-sha256", payloadSha256);
+  toSign.set("x-amz-date", amzDate);
+
+  const names = [...toSign.keys()].sort();
+  const canonicalHeaders = names.map((n) => `${n}:${toSign.get(n)}\n`).join("");
+  const signedHeaders = names.join(";");
+
+  // The empty line between the query string and the headers is the (absent)
+  // query string; the one after the header block is required by the spec even
+  // though every header line already ends in \n.
+  const canonicalRequest = [
+    method,
+    canonicalUri,
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    payloadSha256,
+  ].join("\n");
+
+  const stringToSign = [ALGORITHM, amzDate, scope, sha256Hex(canonicalRequest)].join("\n");
+
+  const kDate = hmac(`AWS4${secretAccessKey}`, dateStamp);
+  const kRegion = hmac(kDate, REGION);
+  const kService = hmac(kRegion, SERVICE);
+  const kSigning = hmac(kService, "aws4_request");
+  const signature = hmac(kSigning, stringToSign).toString("hex");
+
+  const sendHeaders = {};
+  for (const name of names) {
+    if (name === "host") continue;
+    sendHeaders[name] = toSign.get(name);
+  }
+  sendHeaders.authorization =
+    `${ALGORITHM} Credential=${accessKeyId}/${scope}, ` +
+    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  return { headers: sendHeaders, canonicalRequest, stringToSign, signature, canonicalUri };
+}
+
+/* ---------------------------------------------------------------------------
+ * Config
+ * ------------------------------------------------------------------------ */
+
+const CREDENTIAL_HELP = `Create an S3-compatible key pair in the Cloudflare dashboard:
+  R2 > Manage API tokens > Create API token
+  Permission "Object Read & Write", scoped to the bucket you are uploading to.
+CF_ACCOUNT_ID is the hex id in the dashboard URL, and is also the first label of
+the S3 endpoint shown on the bucket's settings page.
+
+Then, in the shell you run this from:
+  PowerShell   $env:CF_ACCOUNT_ID="..."; $env:R2_ACCESS_KEY_ID="..."; $env:R2_SECRET_ACCESS_KEY="..."
+  bash         export CF_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=...`;
+
+/**
+ * Same trick `scripts/dataset-index.ts` uses: this runs outside the Next.js
+ * process, so nothing has loaded `.env.local` for us. Reading it here is what
+ * lets the R2 keys live in the one file this repo already gitignores instead of
+ * in a shell history. Real environment variables win, so CI is unaffected.
+ *
+ * Resolved against the repo root rather than cwd because, unlike dataset-index,
+ * this script is also a plausible thing to run from another directory.
+ *
+ * A real environment variable wins only if it is non-empty. PowerShell 5.1 keeps
+ * `$env:R2_ACCESS_KEY_ID=""` as a defined variable, and treating that as
+ * authoritative would report a missing credential while `.env.local` sits there
+ * holding it. `scripts/load-env-local.ts` carries the same rule for the same
+ * reason.
+ */
+async function loadDotEnvLocal() {
+  const file = resolve(repoRoot, ".env.local");
+  let text;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    return;
+  }
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
+
+/**
+ * `strict: false` is the --dry-run path: enumerating the staging dir is useful
+ * before any key exists, so missing credentials are reported as `null` there
+ * instead of aborting.
+ */
+function loadConfig({ strict }) {
+  const accountId = process.env.CF_ACCOUNT_ID?.trim();
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID?.trim();
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY?.trim();
+  const bucket = process.env.R2_BUCKET?.trim() || DEFAULTS.bucket;
+
+  const missing = [
+    ["CF_ACCOUNT_ID", accountId],
+    ["R2_ACCESS_KEY_ID", accessKeyId],
+    ["R2_SECRET_ACCESS_KEY", secretAccessKey],
+  ]
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+
+  if (missing.length) {
+    if (!strict) return { bucket, credentials: null, missing };
+    const plural = missing.length === 1 ? "is not set" : "are not set";
+    throw new MirrorError(
+      `${missing.join(", ")} ${plural}.\n\n${CREDENTIAL_HELP}\n\n` +
+        "Or run with --dry-run to check the staging directory without credentials.",
+    );
+  }
+
+  // Path-style, not virtual-host style: R2's endpoint is per *account*, and the
+  // bucket is the first path segment. A virtual-host URL would need a DNS name
+  // that does not exist.
+  const host = `${accountId}.r2.cloudflarestorage.com`;
+  return {
+    bucket,
+    host,
+    endpoint: `https://${host}`,
+    credentials: { accessKeyId, secretAccessKey },
+    missing: [],
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * Arguments
+ * ------------------------------------------------------------------------ */
+
+const USAGE = `${TAG} upload a staging mirror directory to Cloudflare R2.
+
+  node scripts/mirror-upload.mjs [options]
+  npm run mirror:upload -- [options]     (the -- is what gets flags past npm)
+
+  --dir <path>       Directory to upload (default ${DEFAULTS.dir}).
+                     Relative paths resolve against the repo root.
+  --concurrency <n>  Uploads in flight (default ${DEFAULTS.concurrency}).
+  --force            Re-upload every object, even ones already in the bucket at
+                     the same size. Use after changing an object's *contents*
+                     without changing its length.
+  --dry-run          List what would be uploaded, then exit 0. Needs no
+                     credentials. Uploads nothing.
+  -h, --help         This text.
+
+Environment:
+  CF_ACCOUNT_ID         Cloudflare account id; the R2 endpoint is
+                        https://<CF_ACCOUNT_ID>.r2.cloudflarestorage.com
+  R2_ACCESS_KEY_ID      R2 API token access key id.
+  R2_SECRET_ACCESS_KEY  R2 API token secret.
+  R2_BUCKET             Bucket name (default ${DEFAULTS.bucket}).
+
+Read from .env.local if present, so the keys can live there instead of in a
+shell. Real environment variables take precedence.`;
+
+/**
+ * Unknown flags are a hard error rather than a warning. This script's whole
+ * risk profile is "issues tens of thousands of writes"; a typo'd `--forse` that
+ * silently means "not forced" is cheap, but a typo'd `--dry-runn` that silently
+ * means "actually upload" is not.
+ */
+export function parseArgs(argv) {
+  const options = { ...DEFAULTS, force: false, dryRun: false, help: false };
+
+  const takeValue = (flag, inline, next) => {
+    const value = inline ?? next;
+    if (value === undefined || value.startsWith("--")) {
+      throw new MirrorError(`${flag} needs a value.`);
+    }
+    return value;
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const eq = arg.indexOf("=");
+    const flag = eq === -1 ? arg : arg.slice(0, eq);
+    const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+
+    switch (flag) {
+      case "--dir":
+        options.dir = takeValue(flag, inline, argv[eq === -1 ? ++i : i]);
+        break;
+      case "--concurrency": {
+        const raw = takeValue(flag, inline, argv[eq === -1 ? ++i : i]);
+        const n = Number(raw);
+        // Capped because each slot is one undici socket to a single origin;
+        // past a few hundred the bottleneck moves from R2 to local sockets and
+        // 429s start costing more than the parallelism gains.
+        if (!Number.isInteger(n) || n < 1 || n > 512) {
+          throw new MirrorError(`--concurrency must be an integer from 1 to 512, got ${JSON.stringify(raw)}.`);
+        }
+        options.concurrency = n;
+        break;
+      }
+      case "--force":
+        options.force = true;
+        break;
+      case "--dry-run":
+        options.dryRun = true;
+        break;
+      case "-h":
+      case "--help":
+        options.help = true;
+        break;
+      default:
+        throw new MirrorError(`Unknown argument ${JSON.stringify(arg)}.\n\n${USAGE}`);
+    }
+  }
+
+  return options;
+}
+
+/* ---------------------------------------------------------------------------
+ * Walking the staging directory
+ * ------------------------------------------------------------------------ */
+
+export function contentTypeFor(name) {
+  return CONTENT_TYPE_BY_EXT[extname(name).toLowerCase()] ?? DEFAULT_CONTENT_TYPE;
+}
+
+/**
+ * Relative path -> R2 key, with forward slashes on every platform.
+ *
+ * This is the one line where Windows could quietly ruin the whole mirror.
+ * `path.relative` returns `pixels\ab12\cd34\0.png` here, and R2 would accept
+ * that as a key â€” a single flat object with backslashes in its name. Nothing
+ * would error; the reader asks for `pixels/ab12/cd34/0.png` (see
+ * `mirrorKeys.pixels`), gets a miss, and every slice renders as the "image not
+ * mirrored" tile. So the separator is normalised, and then asserted.
+ */
+export function toObjectKey(root, absPath) {
+  const key = relative(root, absPath).split(sep).join("/");
+  // `!key` is the root path itself. The walker cannot produce it â€” it only ever
+  // passes files found *inside* the root â€” but an empty key would sign and send
+  // `PUT /<bucket>/`, a bucket-level request, so it is refused here rather than
+  // left to the caller's discipline.
+  if (!key || key.includes("\\") || key.startsWith("/") || key.includes("..")) {
+    throw new MirrorError(`Refusing to upload ${absPath}: it produced the unusable key ${JSON.stringify(key)}.`);
+  }
+  return key;
+}
+
+/**
+ * Reads `X.meta.json` into the `x-amz-meta-*` values for X.
+ *
+ * Strict about types on purpose. A header can only carry a string, so an array
+ * `[128,128,128]` would go out as `128,128,128` and read back as a plausible
+ * `dims` â€” while an object would go out as `[object Object]`. Numbers and
+ * booleans have one unambiguous rendering, so those are coerced; anything
+ * structured is refused with the file named, because a wrong `dims` puts a
+ * wrongly-shaped volume on screen rather than failing.
+ */
+async function readMetadataSidecar(file) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    throw new MirrorError(`${file} is not readable JSON: ${error.message}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new MirrorError(`${file} must contain a flat JSON object of string values.`);
+  }
+
+  const metadata = {};
+  for (const [rawName, rawValue] of Object.entries(parsed)) {
+    // Lowercased because HTTP header names are case-insensitive and R2 hands
+    // the binding back a lowercased key. `serveMirroredVolume` reads
+    // `meta.dims`, so a sidecar written with `"Dims"` would arrive as `dims`
+    // anyway â€” doing it here makes that explicit instead of accidental.
+    const name = rawName.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+      throw new MirrorError(`${file}: ${JSON.stringify(rawName)} is not usable in an x-amz-meta-* header name.`);
+    }
+    if (rawValue !== null && typeof rawValue === "object") {
+      throw new MirrorError(
+        `${file}: ${JSON.stringify(rawName)} must be a string, number or boolean â€” got ${Array.isArray(rawValue) ? "an array" : "an object"}.`,
+      );
+    }
+    const value = canonicalHeaderValue(rawValue ?? "");
+    // Non-ASCII in a header value is either rejected by undici or silently
+    // mangled by an intermediary, and either way the signature no longer
+    // matches the bytes on the wire.
+    if (!/^[\x20-\x7E]*$/.test(value)) {
+      throw new MirrorError(`${file}: value of ${JSON.stringify(rawName)} has characters that cannot go in an HTTP header.`);
+    }
+    metadata[name] = value;
+  }
+  return metadata;
+}
+
+/**
+ * Enumerates every object to upload, depth-first, sorted, with its size,
+ * content type and any sidecar metadata already resolved.
+ *
+ * Sidecars are matched per directory rather than through a global index,
+ * because "sibling of X" is the whole contract â€” that keeps an orphaned
+ * `X.meta.json` (X deleted, or a render that died between the two writes)
+ * detectable exactly where it happens, and it is worth reporting: the volume
+ * route 422s without its metadata.
+ */
+export async function collectObjects(root) {
+  const objects = [];
+  const warnings = [];
+  await collectDir(root, root, objects, warnings);
+  return { objects, warnings };
+}
+
+async function collectDir(dir, root, objects, warnings) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+  const subdirs = [];
+  const files = [];
+  const sidecars = new Map();
+
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      // A dot-directory under the staging tree is scratch space, not keys:
+      // mirror-render.ts writes each object to `.render-tmp/w-<pid>` and renames
+      // it into place, so a run that was killed can leave one truncated file
+      // there. Uploading it would publish a corrupt object under a key nothing
+      // reads. Reported rather than skipped in silence â€” a stale one means a
+      // render died.
+      if (entry.name.startsWith(".")) {
+        warnings.push(`skipped ${join(dir, entry.name)}/ â€” a dot-directory is render scratch space, not mirror keys.`);
+        continue;
+      }
+      subdirs.push(entry.name);
+    } else if (!entry.isFile()) {
+      // Sockets, FIFOs, dangling links. Never expected under a staging dir
+      // this project generates, so say so rather than skipping in silence.
+      warnings.push(`skipped ${join(dir, entry.name)} â€” not a regular file.`);
+    } else if (entry.name.endsWith(META_SUFFIX)) {
+      sidecars.set(entry.name, join(dir, entry.name));
+    } else {
+      files.push(entry.name);
+    }
+  }
+
+  // Sizes come from stat because readdir cannot supply them. Issued together
+  // per directory: a series directory holds hundreds of slices, and awaiting
+  // each stat in turn is what makes a naive walk of this tree take minutes.
+  const stats = await Promise.all(files.map((name) => stat(join(dir, name))));
+
+  for (const [i, name] of files.entries()) {
+    const absPath = join(dir, name);
+    const sidecar = sidecars.get(`${name}${META_SUFFIX}`);
+    if (sidecar) sidecars.delete(`${name}${META_SUFFIX}`);
+    objects.push({
+      absPath,
+      key: toObjectKey(root, absPath),
+      size: stats[i].size,
+      contentType: contentTypeFor(name),
+      metadata: sidecar ? await readMetadataSidecar(sidecar) : {},
+      hasMetadata: Boolean(sidecar),
+    });
+  }
+
+  for (const orphan of sidecars.values()) {
+    warnings.push(`${orphan} has no sibling object â€” it was not uploaded, and nothing carries its metadata.`);
+  }
+
+  for (const name of subdirs) await collectDir(join(dir, name), root, objects, warnings);
+}
+
+/* ---------------------------------------------------------------------------
+ * Transfer
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Reads a file into a Buffer while hashing it, in one pass.
+ *
+ * A signed single-part PUT needs the payload hash *before* the body goes out,
+ * and the body has to be a Buffer: a stream body makes undici use chunked
+ * transfer encoding, which SigV4 treats as an entirely different (aws-chunked)
+ * signing scheme. Hashing during the same read that fills the buffer is what
+ * makes the two provably describe the same bytes â€” hash it separately and a
+ * file rewritten in between produces a signature for bytes that were never
+ * sent, which R2 reports only as an opaque mismatch.
+ *
+ * The size check is the other half of that. `--dry-run` and the resume HEAD
+ * both work off the stat size; if the read comes up short, the digest matches
+ * the truncated bytes perfectly and R2 stores a truncated object without
+ * complaint. Refusing here is the difference between a failure and a corrupt
+ * mirror.
+ */
+async function readAndHash(absPath, expectedSize) {
+  const hash = createHash("sha256");
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of createReadStream(absPath)) {
+    hash.update(chunk);
+    chunks.push(chunk);
+    bytes += chunk.length;
+  }
+  if (bytes !== expectedSize) {
+    throw new MirrorError(
+      `${absPath} read ${bytes} bytes but its directory entry said ${expectedSize}. ` +
+        "Is a mirror:export / mirror:render still writing? Re-run once it has finished.",
+    );
+  }
+  return {
+    body: chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, bytes),
+    sha256: hash.digest("hex"),
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * Integrity
+ * ------------------------------------------------------------------------ */
+
+/** An 8-byte PNG signature and its IEND chunk type; JPEG's SOI and EOI. */
+const PNG_HEAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_TAIL = Buffer.from("IEND", "ascii");
+const JPEG_HEAD = Buffer.from([0xff, 0xd8, 0xff]);
+const JPEG_TAIL = Buffer.from([0xff, 0xd9]);
+
+/**
+ * How far back from the end the closing marker may sit.
+ *
+ * Wide enough that a legitimate file with a trailer after its final marker â€” an
+ * appended thumbnail, an encoder's padding â€” still passes, because a raster
+ * object is a byte-for-byte copy of a dataset file and a *false* refusal is the
+ * one failure this check cannot recover from: re-rendering would copy the same
+ * bytes and fail again. Truncation cannot hide in here regardless. The marker is
+ * the last thing an encoder writes, and JPEG byte-stuffs `FF` inside scan data,
+ * so an unfinished file does not end in one by accident.
+ */
+const TRAILER_WINDOW = 4096;
+
+/**
+ * Refuses a half-written image, using the buffer that is already in hand.
+ *
+ * `mirror-render` writes to `.render-tmp/w-<pid>` and renames into place, so an
+ * interrupted render now leaves either a whole object or none. Runs from before
+ * that existed had no such guarantee, and a short file survives every later
+ * check: the render's `has()` skips any non-empty file, and `readAndHash` above
+ * only proves the bytes on the wire are the bytes on disk â€” which a truncated
+ * file satisfies perfectly.
+ *
+ * So this is the last gate. Publishing a truncated slice puts a half-drawn image
+ * of a real patient's scan on the deployed viewer, and nothing downstream can
+ * tell; refusing costs one object and prints the command that fixes it.
+ *
+ * The trailer is looked for in the last few KB rather than exactly at the end,
+ * because a raster object is a byte-for-byte copy of a dataset file and some
+ * encoders leave padding after the final marker. Truncation still cannot pass â€”
+ * the marker is the last thing an encoder writes.
+ *
+ * Only these two containers. `.bin` volumes and JSON bodies have no trailer, and
+ * a heuristic for them would trade a real guarantee for a guess.
+ */
+export function assertIntactImage(object, body) {
+  const dot = object.key.lastIndexOf(".");
+  const ext = dot === -1 ? "" : object.key.slice(dot + 1).toLowerCase();
+  const png = ext === "png";
+  if (!png && ext !== "jpg" && ext !== "jpeg") return;
+
+  const head = png ? PNG_HEAD : JPEG_HEAD;
+  const tail = png ? PNG_TAIL : JPEG_TAIL;
+  const starts = body.length >= head.length && body.subarray(0, head.length).equals(head);
+  const ends = body.subarray(Math.max(0, body.length - TRAILER_WINDOW)).includes(tail);
+  if (starts && ends) return;
+
+  const what = starts ? "has no closing marker at its end" : `does not start like a ${png ? "PNG" : "JPEG"}`;
+  throw new MirrorError(
+    `${object.key} ${what} â€” ${body.length} bytes on disk, so it is not a complete image.\n` +
+      "       A render killed before atomic writes existed can leave a file like this, and nothing re-reads it.\n" +
+      `       Fix it with:  npm run mirror:render -- --studies ${object.key.split("/")[1] ?? "<studyId>"} --force`,
+  );
+}
+
+/** R2's errors are short XML documents; the useful part is always near the front. */
+async function errorBody(res) {
+  try {
+    return (await res.text()).trim().replace(/\s+/g, " ").slice(0, 800);
+  } catch {
+    return "";
+  }
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * Exponential, with jitter. The jitter is not decoration: 32 workers that hit
+ * the same rate limit at the same moment would otherwise all come back at the
+ * same moment and be limited again in lockstep.
+ */
+function backoffMs(attempt) {
+  const base = Math.min(400 * 2 ** (attempt - 1), 8000);
+  return base + Math.random() * base * 0.5;
+}
+
+/**
+ * 429 and 5xx are worth another attempt; every other 4xx is a fact about the
+ * request that will not change on its own â€” a bad signature, a missing bucket,
+ * metadata R2 rejects â€” and retrying it three more times only delays the
+ * message that says what is wrong. A thrown fetch never reached R2 at all
+ * (DNS, TLS, socket reset), so those are retried.
+ */
+function isRetryable(error) {
+  if (error instanceof MirrorError) return false;
+  if (error instanceof HttpError) return error.status === 429 || error.status >= 500;
+  return true;
+}
+
+async function withRetries(fn) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt >= MAX_ATTEMPTS || !isRetryable(error)) throw error;
+      await sleep(backoffMs(attempt));
+    }
+  }
+}
+
+function objectUrl(config, key) {
+  return `${config.endpoint}${encodeObjectPath(config.bucket, key)}`;
+}
+
+/**
+ * The URL is built from the same encoder as the canonical URI, not from
+ * `new URL(base + key)`. If the two disagreed by one character the request
+ * would be signed for a path other than the one it is sent to.
+ */
+function signedFetchArgs(config, { method, key, headers, payloadSha256 }) {
+  const signed = signS3Request({
+    method,
+    bucket: config.bucket,
+    key,
+    host: config.host,
+    headers,
+    payloadSha256,
+    accessKeyId: config.credentials.accessKeyId,
+    secretAccessKey: config.credentials.secretAccessKey,
+    amzDate: amzTimestamp(),
+  });
+  return { url: objectUrl(config, key), signed };
+}
+
+/**
+ * `null` means "not in the bucket". Anything else is its stored length.
+ *
+ * Signed fresh on every call, which matters because these run inside
+ * `withRetries`: a SigV4 signature is only accepted within 15 minutes of its
+ * x-amz-date, and a queue of 50,000 objects plus backoff can outlive a
+ * signature computed once up front.
+ */
+async function headObject(config, key) {
+  const { url, signed } = signedFetchArgs(config, {
+    method: "HEAD",
+    key,
+    headers: {},
+    payloadSha256: EMPTY_PAYLOAD_SHA256,
+  });
+  const res = await fetch(url, { method: "HEAD", headers: signed.headers });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new HttpError(res.status, res.statusText, await errorBody(res));
+  const length = Number(res.headers.get("content-length"));
+  return { size: Number.isFinite(length) ? length : -1 };
+}
+
+async function putObject(config, object, body, payloadSha256) {
+  const headers = { "content-type": object.contentType };
+  for (const [name, value] of Object.entries(object.metadata)) {
+    headers[`x-amz-meta-${name}`] = value;
+  }
+
+  const { url, signed } = signedFetchArgs(config, {
+    method: "PUT",
+    key: object.key,
+    headers,
+    payloadSha256,
+  });
+  const res = await fetch(url, { method: "PUT", headers: signed.headers, body });
+  if (!res.ok) throw new HttpError(res.status, res.statusText, await errorBody(res));
+
+  // A successful PUT returns an empty body. Reading it anyway releases the
+  // socket back to undici's pool immediately, which is the difference between
+  // reusing 32 connections and opening one per object.
+  await res.arrayBuffer().catch(() => {});
+}
+
+/* ---------------------------------------------------------------------------
+ * Progress
+ * ------------------------------------------------------------------------ */
+
+function formatBytes(n) {
+  // Rounded rather than passed through, because this formats a transfer *rate*
+  // as well as byte counts. A rate is fractional, and an unrounded one prints as
+  // "91.74311926605505 B/s" â€” which on a TTY also makes the line jump around in
+  // width from frame to frame.
+  if (n < 1024) return `${Math.round(n)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n / 1024;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  return `${value.toFixed(value < 10 ? 2 : 1)} ${units[i]}`;
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "unknown";
+  const total = Math.round(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+/**
+ * One updating line on a TTY, a line every PROGRESS_EVERY objects otherwise.
+ * The second mode exists because `\r` in a CI log produces one enormous line
+ * that no log viewer will render.
+ *
+ * Rate is measured over uploaded bytes only, while the completion fraction
+ * counts skipped bytes as done. That asymmetry is deliberate: on a resumed run
+ * most objects are skipped in milliseconds, and folding those bytes into the
+ * rate would print a transfer speed of several GB/s and an ETA of zero right
+ * up until the first real upload.
+ */
+function createProgress({ totalObjects, totalBytes }) {
+  const startedAt = Date.now();
+  const tty = Boolean(process.stdout.isTTY);
+  let done = 0;
+  let uploadedBytes = 0;
+  let skippedBytes = 0;
+  let lastPrintAt = 0;
+  let lastWidth = 0;
+
+  const render = () => {
+    const elapsed = Date.now() - startedAt;
+    const bytesDone = uploadedBytes + skippedBytes;
+    const rate = elapsed > 0 ? uploadedBytes / (elapsed / 1000) : 0;
+    const remaining = Math.max(totalBytes - bytesDone, 0);
+    const eta = rate > 0 ? formatDuration((remaining / rate) * 1000) : "unknown";
+    return (
+      `${TAG} ${done}/${totalObjects} objects  ` +
+      `${formatBytes(bytesDone)}/${formatBytes(totalBytes)}  ` +
+      `${formatBytes(rate)}/s  ETA ${eta}`
+    );
+  };
+
+  const print = (force) => {
+    const now = Date.now();
+    if (tty) {
+      if (!force && now - lastPrintAt < 100) return;
+      const text = render();
+      // Pad to the previous width so a shrinking line does not leave the tail
+      // of the old one behind.
+      process.stdout.write(`\r${text.padEnd(lastWidth)}`);
+      lastWidth = text.length;
+    } else {
+      if (!force && done % PROGRESS_EVERY !== 0) return;
+      process.stdout.write(`${render()}\n`);
+    }
+    lastPrintAt = now;
+  };
+
+  return {
+    startedAt,
+    uploaded(bytes) {
+      done++;
+      uploadedBytes += bytes;
+      print(false);
+    },
+    skipped(bytes) {
+      done++;
+      skippedBytes += bytes;
+      print(false);
+    },
+    failed() {
+      done++;
+      print(true);
+    },
+    finish() {
+      if (tty && lastWidth) process.stdout.write(`\r${"".padEnd(lastWidth)}\r`);
+      return { uploadedBytes, skippedBytes, elapsed: Date.now() - startedAt };
+    },
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * The pool
+ * ------------------------------------------------------------------------ */
+
+/**
+ * N workers pulling from one shared cursor, rather than N slices of the list.
+ * Object sizes here span four orders of magnitude (a 300-byte report JSON next
+ * to a 3 MB reslice), so fixed slices would leave most workers idle waiting for
+ * whichever one drew the heavy directory.
+ *
+ * `items[cursor++]` looks like a race and is not: the read and the increment
+ * happen in one synchronous step, and nothing between them yields.
+ */
+async function runPool(items, concurrency, handler) {
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      await handler(items[cursor++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+}
+
+/**
+ * HEAD-then-PUT for one object, or a skip.
+ *
+ * Length is the whole resume test. R2 would also hand back an ETag, but for a
+ * single-part PUT that is the MD5 of the body, and computing MD5 for every
+ * local file to compare would cost a full re-read of the staging directory â€”
+ * which is most of the work this skip is meant to avoid. Length catches the case
+ * that actually happens (an interrupted run) and misses only a rewrite that
+ * kept the byte count identical, which is what --force is for.
+ *
+ * The retry wraps the read as well as the requests, so a retried attempt
+ * re-reads the file and re-hashes it rather than re-sending a payload whose
+ * hash was computed minutes earlier.
+ */
+async function transferOne(config, object, force) {
+  return withRetries(async () => {
+    if (!force) {
+      const existing = await headObject(config, object.key);
+      if (existing && existing.size === object.size) return "skipped";
+    }
+    const { body, sha256 } = await readAndHash(object.absPath, object.size);
+    assertIntactImage(object, body);
+    await putObject(config, object, body, sha256);
+    return "uploaded";
+  });
+}
+
+async function uploadAll(config, objects, options) {
+  const totalBytes = objects.reduce((sum, object) => sum + object.size, 0);
+  const progress = createProgress({ totalObjects: objects.length, totalBytes });
+  const failures = [];
+  let uploaded = 0;
+  let skipped = 0;
+
+  // The handler swallows its own errors on purpose. Letting one rejection out
+  // would settle Promise.all while the other workers keep uploading, and the
+  // summary would then be written over a run that is still in flight.
+  await runPool(objects, options.concurrency, async (object) => {
+    try {
+      if ((await transferOne(config, object, options.force)) === "skipped") {
+        skipped++;
+        progress.skipped(object.size);
+      } else {
+        uploaded++;
+        progress.uploaded(object.size);
+      }
+    } catch (error) {
+      failures.push({
+        key: object.key,
+        status: error instanceof HttpError ? error.status : undefined,
+        message: error.message,
+      });
+      progress.failed();
+    }
+  });
+
+  return { uploaded, skipped, failures, totalBytes, ...progress.finish() };
+}
+
+/* ---------------------------------------------------------------------------
+ * Entry point
+ * ------------------------------------------------------------------------ */
+
+function printDryRun(objects, config) {
+  const keyWidth = Math.min(Math.max(...objects.map((o) => o.key.length), 3), 72);
+  for (const object of objects) {
+    const meta = object.hasMetadata ? `  meta: ${Object.keys(object.metadata).join(",")}` : "";
+    console.log(
+      `  ${object.key.padEnd(keyWidth)}  ${formatBytes(object.size).padStart(10)}  ${object.contentType}${meta}`,
+    );
+  }
+
+  const totalBytes = objects.reduce((sum, object) => sum + object.size, 0);
+  console.log(`${TAG} would upload ${objects.length} objects, ${formatBytes(totalBytes)} to bucket ${config.bucket}.`);
+}
+
+/**
+ * Prints the exact canonical request and string-to-sign for one real object.
+ *
+ * A SignatureDoesNotMatch from R2 says nothing about *what* differed, so the
+ * only way to debug one is to read these two strings and compare them against
+ * the AWS spec line by line. The object is read and hashed for real so the
+ * preview is the request that would actually go out, not an approximation of it.
+ */
+async function printSignaturePreview(config, object) {
+  const { sha256 } = await readAndHash(object.absPath, object.size);
+  const headers = { "content-type": object.contentType };
+  for (const [name, value] of Object.entries(object.metadata)) {
+    headers[`x-amz-meta-${name}`] = value;
+  }
+
+  const signed = signS3Request({
+    method: "PUT",
+    bucket: config.bucket,
+    key: object.key,
+    host: config.host,
+    headers,
+    payloadSha256: sha256,
+    accessKeyId: config.credentials.accessKeyId,
+    secretAccessKey: config.credentials.secretAccessKey,
+    amzDate: amzTimestamp(),
+  });
+
+  console.log(`\n${TAG} signature preview for ${object.key}`);
+  console.log(`  PUT ${objectUrl(config, object.key)}`);
+  console.log("\n--- canonical request ---");
+  console.log(signed.canonicalRequest);
+  console.log("--- string to sign ---");
+  console.log(signed.stringToSign);
+  console.log("--- authorization ---");
+  console.log(signed.headers.authorization);
+  console.log();
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(USAGE);
+    return 0;
+  }
+
+  await loadDotEnvLocal();
+  const config = loadConfig({ strict: !options.dryRun });
+
+  const dir = resolve(repoRoot, options.dir);
+  const dirStat = await stat(dir).catch(() => null);
+  if (!dirStat?.isDirectory()) {
+    throw new MirrorError(
+      `${dir} is not a directory.\n` +
+        "Build the staging mirror first (`npm run mirror:export`, `npm run mirror:render`), or point --dir at it.",
+    );
+  }
+
+  const { objects, warnings } = await collectObjects(dir);
+  for (const warning of warnings) console.warn(`${TAG} WARNING: ${warning}`);
+
+  if (!objects.length) {
+    console.log(`${TAG} ${dir} contains no files â€” nothing to upload.`);
+    return 0;
+  }
+
+  const totalBytes = objects.reduce((sum, object) => sum + object.size, 0);
+
+  if (options.dryRun) {
+    printDryRun(objects, config);
+    if (config.credentials) {
+      await printSignaturePreview(config, objects[0]);
+    } else {
+      console.log(`${TAG} ${config.missing.join(", ")} not set, so no signature preview â€” listing only.`);
+    }
+    return 0;
+  }
+
+  console.log(
+    `${TAG} ${objects.length} objects, ${formatBytes(totalBytes)} -> ` +
+      `${config.endpoint}/${config.bucket} (concurrency ${options.concurrency}${options.force ? ", forced" : ""})`,
+  );
+
+  const result = await uploadAll(config, objects, options);
+
+  console.log(
+    `${TAG} done in ${formatDuration(result.elapsed)} â€” ` +
+      `uploaded ${result.uploaded} (${formatBytes(result.uploadedBytes)}), ` +
+      `skipped ${result.skipped} (${formatBytes(result.skippedBytes)}), ` +
+      `failed ${result.failures.length}, ` +
+      `${formatBytes(result.totalBytes)} in the staging dir.`,
+  );
+
+  if (result.failures.length) {
+    const shown = result.failures.slice(0, 10);
+    console.error(`${TAG} ${result.failures.length} failed. First ${shown.length}:`);
+    for (const failure of shown) {
+      console.error(`  ${String(failure.status ?? "ERR").padStart(3)}  ${failure.key}\n       ${failure.message}`);
+    }
+    // Named here because these two are the ones whose cause is not in the
+    // message: R2 reports both as a bare code with no explanation. Printed only
+    // when one actually occurred â€” appending a signing hint to a "file shrank
+    // mid-run" failure sends the reader after the wrong problem.
+    const statuses = new Set(result.failures.map((f) => f.status));
+    if (statuses.has(403)) {
+      console.error(
+        `${TAG} a 403 on every object means the token, the bucket scope, or a clock more than 15 minutes out. ` +
+          "`--dry-run` prints the canonical request for the first object.",
+      );
+    }
+    if (statuses.has(400)) {
+      console.error(`${TAG} a 400 on the volume objects means R2 rejected the sidecar metadata.`);
+    }
+    return 1;
+  }
+
+  return 0;
+}
+
+/**
+ * Only runs main() when this file *is* the program. Everything above is
+ * importable, which is what allows the signing to be checked against a
+ * reference implementation without a bucket, an account, or a key pair.
+ */
+const invokedDirectly = (() => {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  try {
+    return resolve(realpathSync(entry)) === resolve(realpathSync(self));
+  } catch {
+    return resolve(entry) === resolve(self);
+  }
+})();
+
+if (invokedDirectly) {
+  try {
+    process.exitCode = await main();
+  } catch (error) {
+    // MirrorError messages are written for the person running this; a stack
+    // trace on top of them is noise. Anything else gets the stack, because an
+    // unexpected throw is a bug in this script.
+    console.error(`${TAG} ${error instanceof MirrorError ? error.message : (error.stack ?? error.message)}`);
+    process.exitCode = 1;
+  }
+}
+
+
+==================== mirror-export.ts ====================
+/**
+ * ---------------------------------------------------------------------------
+ * Precomputes every JSON API response body into the R2 mirror staging tree.
+ * ---------------------------------------------------------------------------
+ *
+ * Run with: npm run mirror:export   (then npm run mirror:render, mirror:upload)
+ *
+ * Why this exists
+ * ---------------
+ * `lib/dataset/mirror.ts` documents the runtime side. The short version: a
+ * Cloudflare Worker has no filesystem, so `readManifest()` returns undefined
+ * there and every dataset surface degrades to "No dataset index has been built
+ * yet". Shipping the manifest instead would not help â€” it is 5.5 MB, and
+ * `JSON.parse` of it alone exceeds the Workers Free plan's 10 ms CPU budget for
+ * a request.
+ *
+ * So the deployed app answers from bodies computed here, on the machine that
+ * actually has `.scanlab/manifest.json`, and streams them without parsing.
+ *
+ * The one rule that matters
+ * ------------------------
+ * Every body is produced by calling the *same* function the local route calls â€”
+ * `toAppStudy`, `toAppStudySummary`, `countByDataset`, `getManifestStatus`,
+ * `matchUpload`. Nothing is re-derived here. That is deliberate: a second
+ * implementation of the projection would be free to drift, and the failure mode
+ * of drift is a deployed site showing different metadata for a study than the
+ * local one does, which is indistinguishable from fabricated data at a glance.
+ *
+ * Reports come straight out of the manifest, verbatim, for all 2,314 studies â€”
+ * including studies whose pixels are left out of the mirror. A report is a few
+ * hundred bytes; there is no reason for any of them to be missing.
+ *
+ * What this script refuses to do
+ * ------------------------------
+ * Absolute paths never reach a mirrored body. The projections already strip
+ * them, but "already" is an assumption with a 5.5 MB blast radius, so
+ * `assertNoLocalPaths` re-checks every serialised body for `absPath`,
+ * `scanRoot`, a drive-letter path, or the dataset root's name, and aborts the
+ * whole export on a hit rather than uploading a leak. See the SERVER-ONLY note
+ * in lib/dataset/config.ts.
+ */
+
+// Must stay the first import: SCANLAB_CACHE_DIR decides which .scanlab tree is
+// read and written, and it lives in .env.local.
+import "./load-env-local";
+
+import fs from "fs";
+import path from "path";
+
+import { getCacheDir } from "../lib/dataset/config";
+import { countByDataset } from "../lib/dataset/counts";
+import { MANIFEST_BUILDER_VERSION, getManifestStatus, readManifest } from "../lib/dataset/manifest-store";
+import { mirrorKeys } from "../lib/dataset/mirror";
+import { toAppStudy, toAppStudySummary } from "../lib/dataset/to-app-study";
+import { matchUpload, readUploadIndex, studyCodeFromFileName } from "../lib/dataset/upload-match";
+import { DATASET_SOURCE_LABEL, DatasetSourceId } from "../lib/dataset/types";
+
+/* -------------------------------------------------------------------------
+ * Upload-match key scheme
+ *
+ * `/api/uploads/match` is the one route whose mirrored form is not simply a
+ * copy of a route body. Locally it calls `matchUpload(sha256, fileName)`, which
+ * reads the 3.3 KB upload index *and* resolves the study code against the 5.5 MB
+ * manifest â€” two filesystem reads, one of them far too expensive to parse per
+ * request even if Workers had a disk.
+ *
+ * So the *outcomes* are precomputed instead of the index, sharded one object per
+ * lookup key, which turns a match into a single small GET and no parsing of
+ * anything large. The keys come from `mirrorKeys` like every other family; the
+ * regexes below are the stricter, meaning-carrying check that the segments really
+ * are a content hash and a study code before either becomes part of a key.
+ * ---------------------------------------------------------------------- */
+
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const STUDY_CODE_RE = /^[A-Z][A-Z0-9]{1,7}-[0-9A-F]{6}$/;
+
+/* -------------------------------------------------------------------------
+ * CLI
+ * ---------------------------------------------------------------------- */
+
+interface Options {
+  out: string;
+  dryRun: boolean;
+  prune: boolean;
+}
+
+const USAGE = `Usage: npm run mirror:export -- [options]
+
+Writes the precomputed JSON bodies of every dataset API route into a staging
+tree whose layout is exactly the R2 key layout, ready for npm run mirror:upload.
+
+Options:
+  --out <dir>     Staging directory. Default: <cache>/mirror  (SCANLAB_CACHE_DIR
+                  moves <cache>; it defaults to ./.scanlab)
+  --dry-run       Build and validate every body, report the totals, write nothing.
+  --no-prune      Keep meta/ objects from an earlier export that this run did not
+                  write. Default is to delete them, so a study dropped from the
+                  index stops being reachable on the deployed site.
+  -h, --help      Show this message.
+`;
+
+function parseArgs(argv: string[]): Options {
+  const opts: Options = { out: path.join(getCacheDir(), "mirror"), dryRun: false, prune: true };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "-h" || arg === "--help") {
+      process.stdout.write(USAGE);
+      process.exit(0);
+    } else if (arg === "--dry-run") {
+      opts.dryRun = true;
+    } else if (arg === "--no-prune") {
+      opts.prune = false;
+    } else if (arg === "--out") {
+      const value = argv[++i];
+      if (!value) throw new Error("--out needs a directory.");
+      opts.out = path.resolve(value);
+    } else {
+      throw new Error(`Unknown argument ${JSON.stringify(arg)}. Run with --help.`);
+    }
+  }
+
+  return opts;
+}
+
+/* -------------------------------------------------------------------------
+ * Leak check
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Patterns that must never appear in a body that is about to be made public.
+ *
+ * Checked against the *serialised* JSON, not the object graph, because that is
+ * what actually gets uploaded â€” a path hiding in an unexpected field, or inside
+ * a string that some projection built by concatenation, still shows up here.
+ *
+ * `JSON.stringify` escapes a Windows separator, so `D:\ScanLab_Datasets` is the
+ * eight characters `D:\\Scan...` in the text; both the escaped and the raw form
+ * are matched so this keeps working if a body is ever written some other way.
+ */
+const LEAK_PATTERNS: [RegExp, string][] = [
+  [/"absPath"/, "an absPath field"],
+  [/"scanRoot"/, "a scanRoot field"],
+  [/ScanLab_Datasets/i, "the dataset root's name"],
+  [/[A-Za-z]:\\\\/, "a Windows drive-letter path"],
+  [/[A-Za-z]:\//, "a drive-letter path with forward slashes"],
+  [/\/sessions\//, "a session mount path"],
+];
+
+function assertNoLocalPaths(key: string, json: string): void {
+  for (const [pattern, what] of LEAK_PATTERNS) {
+    const hit = pattern.exec(json);
+    if (!hit) continue;
+    const at = Math.max(0, hit.index - 60);
+    throw new Error(
+      `Refusing to export ${key}: it contains ${what}.\n` +
+        `  ...${json.slice(at, hit.index + 90)}...\n` +
+        "  A filesystem path must never reach the client. Fix the projection in lib/dataset/, not this check.",
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Writer
+ * ---------------------------------------------------------------------- */
+
+/** One entry per key family, for the summary. Order here is the order printed. */
+const FAMILIES = ["meta/datasets", "meta/studies.json", "meta/study/", "meta/report/", "meta/upload-match/", "meta/other"] as const;
+type Family = (typeof FAMILIES)[number];
+
+function familyOf(key: string): Family {
+  if (key.startsWith("meta/study/")) return "meta/study/";
+  if (key.startsWith("meta/report/")) return "meta/report/";
+  if (key.startsWith("meta/upload-match/")) return "meta/upload-match/";
+  if (key === "meta/studies.json") return "meta/studies.json";
+  if (key.startsWith("meta/datasets")) return "meta/datasets";
+  return "meta/other";
+}
+
+class MirrorWriter {
+  readonly counts = new Map<Family, { objects: number; bytes: number }>();
+  readonly written = new Set<string>();
+  private readonly dirs = new Set<string>();
+
+  constructor(private readonly opts: Options) {}
+
+  /**
+   * `NextResponse.json(x)` serialises with a plain `JSON.stringify(x)`, so the
+   * mirrored object has to be exactly that â€” no pretty-printing, no added
+   * envelope, no reordered keys. A byte-identical body is what makes the
+   * mirrored response indistinguishable from the local one.
+   */
+  write(key: string, value: unknown): void {
+    const json = JSON.stringify(value);
+    assertNoLocalPaths(key, json);
+
+    const bytes = Buffer.byteLength(json);
+    const family = familyOf(key);
+    const tally = this.counts.get(family) ?? { objects: 0, bytes: 0 };
+    tally.objects++;
+    tally.bytes += bytes;
+    this.counts.set(family, tally);
+    this.written.add(key);
+
+    if (this.opts.dryRun) return;
+
+    const file = path.join(this.opts.out, key);
+    const dir = path.dirname(file);
+    if (!this.dirs.has(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      this.dirs.add(dir);
+    }
+    fs.writeFileSync(file, json);
+  }
+
+  total(): { objects: number; bytes: number } {
+    let objects = 0;
+    let bytes = 0;
+    for (const t of this.counts.values()) {
+      objects += t.objects;
+      bytes += t.bytes;
+    }
+    return { objects, bytes };
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Export
+ * ---------------------------------------------------------------------- */
+
+function exportMeta(writer: MirrorWriter): { studies: number; reports: number } {
+  const manifest = readManifest();
+  if (!manifest) {
+    throw new Error(
+      "No dataset index to export. Run `npm run dataset:index` against SCANLAB_DATA_ROOT first â€” " +
+        "this script reads .scanlab/manifest.json and never touches the dataset itself.",
+    );
+  }
+
+  if (manifest.builderVersion !== MANIFEST_BUILDER_VERSION) {
+    console.warn(
+      `! The index was built by version ${manifest.builderVersion}, but this code is at ${MANIFEST_BUILDER_VERSION}.\n` +
+        "  Exporting it anyway â€” the deployed site will then show exactly what the local one shows, stale labels\n" +
+        "  included. Re-run `npm run dataset:index` first if that is not what you want.",
+    );
+  }
+
+  /*
+   * `/api/datasets/status` reports the index the app is actually serving, so a
+   * stale or missing index shows as a banner rather than looking like "this
+   * dataset has no reports". Exported verbatim: rewriting `stale` to `current`
+   * here would be lying to the deployed UI.
+   */
+  writer.write(mirrorKeys.datasetsStatus(), getManifestStatus());
+
+  const perDataset = countByDataset(manifest.studies);
+  const ids = Object.keys(perDataset) as DatasetSourceId[];
+  writer.write(
+    mirrorKeys.datasets(),
+    ids.map((id) => ({ dataset: id, label: DATASET_SOURCE_LABEL[id], ...perDataset[id] })),
+  );
+
+  // The list projection, all studies, manifest order â€” `/api/studies` does not
+  // sort or filter, and the client does its own sorting.
+  writer.write(
+    mirrorKeys.studies(),
+    manifest.studies.map(toAppStudySummary),
+  );
+
+  let reports = 0;
+  for (const ds of manifest.studies) {
+    // Written and released one at a time: `toAppStudy` expands a series' frame
+    // run into one URL per slice, which for the largest MRI study is ~9,600
+    // strings. Accumulating 2,314 of those before writing is how this script
+    // would run out of heap.
+    writer.write(mirrorKeys.study(ds.id), toAppStudy(ds));
+
+    if (ds.report) {
+      reports++;
+      writer.write(mirrorKeys.report(ds.id), { available: true, report: ds.report });
+    } else {
+      writer.write(mirrorKeys.report(ds.id), { available: false });
+    }
+  }
+
+  return { studies: manifest.studies.length, reports };
+}
+
+/**
+ * Precomputes the outcome of every upload lookup that can succeed.
+ *
+ * Produced by calling the real `matchUpload`, for the same reason the rest of
+ * this script calls the real projections: a reimplementation of the match rules
+ * could attach one patient's report to another patient's image, which is the
+ * exact failure the report matcher was fixed to avoid.
+ *
+ * Two shard families, matching the two lookups in `matchUpload`:
+ *
+ *   by-hash/<sha256>  content match, carries the pack's `sourceLabel`
+ *   by-code/<CODE>    filename match, for a file that was renamed or converted
+ *
+ * A code shard exists for every indexed study, not only the packed ones â€” the
+ * filename path resolves through the manifest and never touches the pack, so it
+ * works for any study whose code appears in the uploaded filename.
+ *
+ * Anything not found by either lookup is `unmatched` at runtime, with the same
+ * wording `matchUpload` uses. That branch needs no object.
+ */
+function exportUploadMatches(writer: MirrorWriter): { hashes: number; codes: number; skipped: string[] } {
+  const manifest = readManifest();
+  const index = readUploadIndex();
+  const skipped: string[] = [];
+  let hashes = 0;
+  let codes = 0;
+
+  if (index) {
+    // Kept as a plain object for debugging coverage â€” 3.3 KB, and it is the only
+    // way to see which slices a pack actually contains without re-running it.
+    writer.write(mirrorKeys.uploadIndex(), index);
+
+    for (const entry of index.entries) {
+      const sha = entry.sha256?.toLowerCase();
+      if (!sha || !SHA256_RE.test(sha)) {
+        skipped.push(`upload index entry with unusable sha256 ${JSON.stringify(entry.sha256)}`);
+        continue;
+      }
+      // The real function, with the real filename, so a content hit carries the
+      // same `sourceLabel` the local route would return.
+      writer.write(mirrorKeys.uploadMatchByHash(sha), matchUpload(sha, entry.fileName ?? ""));
+      hashes++;
+    }
+  } else {
+    console.log("- No export pack index (.scanlab/upload-index.json). Skipping by-hash shards; run `npm run demo:pack` to create one.");
+  }
+
+  for (const ds of manifest?.studies ?? []) {
+    const code = ds.studyCode;
+    if (!code || !STUDY_CODE_RE.test(code)) {
+      skipped.push(`study ${ds.id} has an unusable studyCode ${JSON.stringify(code)}`);
+      continue;
+    }
+    /*
+     * Routed through `studyCodeFromFileName` on the way in so the shard key is
+     * derived by the same regex the runtime uses. If the two ever disagree the
+     * mismatch surfaces here, at export time, instead of as a silent miss.
+     */
+    const viaFileName = studyCodeFromFileName(`${code}.png`);
+    if (viaFileName !== code) {
+      skipped.push(`study code ${code} is not recoverable from a filename by studyCodeFromFileName`);
+      continue;
+    }
+    writer.write(mirrorKeys.uploadMatchByCode(code), matchUpload("", `${code}.png`));
+    codes++;
+  }
+
+  return { hashes, codes, skipped };
+}
+
+/* -------------------------------------------------------------------------
+ * Prune
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Deletes `meta/` objects left over from an earlier export.
+ *
+ * Without this, a study dropped from the index keeps its `meta/study/<id>.json`
+ * in the staging tree, the uploader ships it again, and the deployed site keeps
+ * serving a study the current index no longer contains.
+ *
+ * Scoped to `<out>/meta` and to files this script is responsible for. `pixels/`
+ * and `volume/` belong to mirror-render and are never touched here â€” a render
+ * run takes hours and must not be invalidated by a two-second metadata export.
+ */
+function prune(out: string, written: Set<string>): string[] {
+  const root = path.join(out, "meta");
+  if (!fs.existsSync(root)) return [];
+
+  const removed: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+        if (fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
+        continue;
+      }
+      const key = path.relative(out, abs).split(path.sep).join("/");
+      if (written.has(key)) continue;
+      fs.unlinkSync(abs);
+      removed.push(key);
+    }
+  };
+  walk(root);
+  return removed;
+}
+
+/* -------------------------------------------------------------------------
+ * Main
+ * ---------------------------------------------------------------------- */
+
+function mb(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function main(): void {
+  const opts = parseArgs(process.argv.slice(2));
+  const started = Date.now();
+
+  console.log(`Mirror export -> ${opts.out}${opts.dryRun ? "  (dry run, nothing will be written)" : ""}`);
+
+  const writer = new MirrorWriter(opts);
+  const meta = exportMeta(writer);
+  const uploads = exportUploadMatches(writer);
+
+  const removed = opts.prune && !opts.dryRun ? prune(opts.out, writer.written) : [];
+
+  const nameWidth = Math.max(...FAMILIES.map((f) => f.length));
+  console.log("");
+  console.log(`${"KEY FAMILY".padEnd(nameWidth)}  OBJECTS      BYTES`);
+  for (const family of FAMILIES) {
+    const tally = writer.counts.get(family);
+    if (!tally) continue;
+    console.log(`${family.padEnd(nameWidth)}  ${String(tally.objects).padStart(7)}  ${mb(tally.bytes).padStart(9)}`);
+  }
+  const total = writer.total();
+  console.log("-".repeat(nameWidth + 20));
+  console.log(`${"TOTAL".padEnd(nameWidth)}  ${String(total.objects).padStart(7)}  ${mb(total.bytes).padStart(9)}`);
+
+  console.log("");
+  console.log(`Studies exported:      ${meta.studies}`);
+  console.log(`Real reports exported: ${meta.reports}${meta.reports === meta.studies ? " (every study)" : ` of ${meta.studies}`}`);
+  console.log(`Upload-match shards:   ${uploads.hashes} by hash, ${uploads.codes} by study code`);
+  if (removed.length) console.log(`Pruned stale objects:  ${removed.length} (${removed.slice(0, 3).join(", ")}${removed.length > 3 ? ", ..." : ""})`);
+  for (const s of uploads.skipped.slice(0, 10)) console.log(`! skipped: ${s}`);
+  if (uploads.skipped.length > 10) console.log(`! ...and ${uploads.skipped.length - 10} more skips.`);
+  console.log(`Elapsed:               ${((Date.now() - started) / 1000).toFixed(1)}s`);
+
+  if (!opts.dryRun) {
+    console.log("");
+    console.log("Next: npm run mirror:render   (pixels; needs SCANLAB_DATA_ROOT)");
+    console.log("      npm run mirror:upload   (ships this tree to R2)");
+  }
+}
+
+try {
+  main();
+} catch (err) {
+  console.error(`\nMirror export failed:\n${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+}
+
+
+==================== mirror-render.ts ====================
+/**
+ * ---------------------------------------------------------------------------
+ * Pre-renders every pixel the deployed app can ask for into the R2 mirror tree.
+ * ---------------------------------------------------------------------------
+ *
+ * Run with: npm run mirror:render   (after mirror:export, before mirror:upload)
+ *
+ * Why this exists
+ * ---------------
+ * `lib/dataset/mirror.ts` has the long version. The short one: a Worker isolate
+ * has a hard 128 MB ceiling, and one cold slice out of the largest MRI container
+ * costs ~375 MB transient across readFileSync -> toArrayBuffer -> gzip inflate ->
+ * readImage. One coronal CT reslice is worse in a different shape: it reads all
+ * 558 instances of CT-C48B2F into a 146 MB Float32Array. Neither can happen in a
+ * request. So the pixels are rendered here, once, on the machine that has
+ * `SCANLAB_DATA_ROOT`, and the Worker only streams bytes.
+ *
+ * The one rule that matters
+ * ------------------------
+ * Every byte written here comes from `renderImage` / `exportDicomVolume` â€” the
+ * same functions `app/api/studies/[id]/images/...` and `.../volume/...` call.
+ * Nothing is re-decoded, re-windowed or re-scaled by this script. A second
+ * renderer would be free to drift, and a drifted reslice is a *plausible-looking
+ * wrong image*, which is worse than a missing one.
+ *
+ * A slice is either copied byte for byte (an already-encoded JPEG/PNG in the
+ * dataset) or produced by the real renderer. There is no third path, and nothing
+ * here invents a slice that the index does not contain.
+ *
+ * What lands where
+ * ----------------
+ *   pixels/<studyId>/<seriesId>/<index>.<ext>        full size, main viewer
+ *   pixels/<studyId>/<seriesId>/<index>@96.png       thumbnail strip
+ *   pixels/<studyId>/<seriesId>/<index>@320.png      study-card cover slice
+ *   volume/<studyId>/<seriesId>.bin                  8-bit scalar volume, 3-D view
+ *   volume/<studyId>/<seriesId>.bin.meta.json        its dims/spacing/window
+ *
+ * The path relative to `--out` *is* the R2 key: `mirrorKeys` builds it, and
+ * `scripts/mirror-upload.mjs` ships the tree verbatim.
+ *
+ * Budget
+ * ------
+ * Raster passthrough (all 1,510 chest/ROCOv2 frames) and all 4 CT studies are
+ * always rendered â€” that is the approved scope. Volumetric MRI/PET studies are
+ * then added, fewest slices first, alternating modalities, until `--budget-gb`
+ * is reached. Whole studies only: a half-mirrored series would show the
+ * "image not mirrored" tile partway through a scroll, which reads as data loss.
+ *
+ * Memory: one child process per volumetric study
+ * ---------------------------------------------
+ * The raster and CT phases run in this process. The volumetric phase does not:
+ * each MRI/PET study is rendered by a child process that exits when the study is
+ * done, and the parent measures what it wrote from disk.
+ *
+ * That is not tidiness, it is the only lever available. Peak memory here is held
+ * by `lib/dataset/image-render.ts`'s module-level caches â€” `VOLUME_CACHE_MAX = 2`
+ * decoded NIfTI volumes at up to `SCANLAB_VOLUME_MAX_MB` (384) each, plus one
+ * `STACK_CACHE_MAX` DICOM stack â€” and those two are plain constants, not env
+ * knobs. The knobs that *are* tunable, `SCANLAB_VOLUME_MAX_MB` and
+ * `SCANLAB_VOLUME_MAX_EDGE`, decide how much a volume is decimated, so turning
+ * them down would change the pixels this mirror serves relative to what the
+ * local app serves. That is exactly the drift this script exists to prevent.
+ *
+ * So the caches are left alone and the process that holds them is made
+ * short-lived. A run that previously died at the sixth volumetric study with
+ * "Array buffer allocation failed" â€” after ~1.14 GB of good output â€” now loses at
+ * most the one study that overflowed, and continues. Failures are listed at the
+ * end and the study is left un-mirrored rather than half-mirrored.
+ *
+ * `--in-process` restores the old single-process behaviour for debugging. The
+ * parent also falls back to it automatically if the very first child cannot even
+ * start, so a machine where the child runner is wrong still renders.
+ */
+
+// Must stay the first import: it populates process.env from .env.local, and
+// image-render reads its cache/decimation settings at module load time.
+import "./load-env-local";
+
+import { spawnSync } from "child_process";
+import fs from "fs";
+import path from "path";
+
+import { getCacheDir, getDataRoot, getZipExtractCacheDir } from "../lib/dataset/config";
+import { assertWithinRoot } from "../lib/dataset/fs-utils";
+import { exportDicomVolume, renderImage } from "../lib/dataset/image-render";
+import { readManifest } from "../lib/dataset/manifest-store";
+import { mirrorKeys } from "../lib/dataset/mirror";
+import { seriesImageAt, seriesImageCount } from "../lib/dataset/series-frames";
+import type { DatasetSeries, DatasetStudy, DicomVolumeRef } from "../lib/dataset/types";
+
+/**
+ * Widths the client actually requests, copied from the components that request
+ * them rather than invented here.
+ *
+ *   96  â€” `THUMB_EDGE` in components/viewer/ThumbnailStrip.tsx
+ *   320 â€” `COVER_WIDTH` in lib/dataset/to-app-study.ts, used for the card cover
+ *
+ * Both are optional objects. `serveMirroredPixels` falls back from `<i>@96.png`
+ * to `<i>.png`, so a missing thumbnail costs transfer size, never correctness â€”
+ * which is what makes `--no-thumbs` a safe way to halve a long render.
+ */
+const THUMB_EDGE = 96;
+const COVER_WIDTH = 320;
+
+/** Volumetric studies are added until this much has been written. 0 = no cap. */
+const DEFAULT_BUDGET_GB = 3;
+
+/**
+ * Seed for "will this study fit", used only until the first real study has been
+ * measured, after which the running average takes over. Deliberately on the high
+ * side: overestimating stops one study early, underestimating overshoots the
+ * budget by a whole study.
+ */
+const SEED_BYTES_PER_SLICE = 160 * 1024;
+
+/**
+ * How many raster files `estimateStudyBytes` could not stat. A dry run on a box
+ * where the dataset is reachable leaves this at 0 and its raster totals are the
+ * real file sizes; anything above 0 means part of the table is the seed guess,
+ * and the report has to say so instead of printing "exact".
+ */
+let rasterStatMisses = 0;
+
+/**
+ * `renderImage` returns a content type; an R2 key needs an extension. Only these
+ * three exist in `CONTENT_TYPE_BY_EXT` on the read side, so anything else is
+ * refused by name instead of being written under a lying extension.
+ */
+const EXT_BY_CONTENT_TYPE: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+};
+
+/**
+ * Scratch directory for the write-then-rename in `RenderWriter.write`.
+ *
+ * Inside `--out` so the rename stays on one volume, and named with a leading dot
+ * so `collectObjects` in mirror-upload.mjs skips it â€” a leftover scratch file
+ * from a killed run must not become an R2 object. Swept at startup as well.
+ */
+const TEMP_DIR = ".render-tmp";
+
+/* -------------------------------------------------------------------------
+ * CLI
+ * ---------------------------------------------------------------------- */
+
+interface Options {
+  out: string;
+  budgetBytes: number;
+  dryRun: boolean;
+  thumbs: boolean;
+  force: boolean;
+  only: Set<string> | undefined;
+  studies: Set<string> | undefined;
+  /** Render volumetric studies here instead of in one child process each. */
+  inProcess: boolean;
+  /** Suppress the header and the end-of-run tables. Warnings still print. */
+  quiet: boolean;
+}
+
+const USAGE = `Usage: npm run mirror:render -- [options]
+
+Renders every slice the deployed app can request into a staging tree whose
+layout is exactly the R2 key layout, ready for npm run mirror:upload.
+
+Needs SCANLAB_DATA_ROOT and a built index (npm run dataset:index). Reads the
+dataset read-only; writes only under --out.
+
+Options:
+  --out <dir>       Staging directory. Default: <cache>/mirror  (same tree
+                    mirror:export writes into; the two never share a key.)
+  --budget-gb <n>   Stop adding volumetric studies past this size. Default ${DEFAULT_BUDGET_GB}.
+                    0 renders every indexed study â€” that is >1 TB, so don't.
+  --dry-run         Plan and report only. Renders nothing, writes nothing.
+  --no-thumbs       Skip the @${THUMB_EDGE} and @${COVER_WIDTH} objects. Roughly halves the run;
+                    the read side falls back to the full-size object.
+  --force           Re-render slices whose output file already exists.
+  --only <ids>      Comma-separated dataset ids (CHEST_XRAY,CT,MRI,PET,ROCOV2).
+  --studies <ids>   Comma-separated study ids. Bypasses the budget entirely â€”
+                    for topping up one study that was left out.
+  --in-process      Render volumetric studies in this process instead of one
+                    child process each. Uses far more peak memory; the default
+                    exists because that is what "Array buffer allocation failed"
+                    on a long run means.
+  --quiet           Skip the header and the summary tables. Set on the children.
+  -h, --help        Show this message.
+`;
+
+function parseList(value: string | undefined, flag: string): Set<string> {
+  if (!value) throw new Error(`${flag} needs a comma-separated list.`);
+  const items = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (items.length === 0) throw new Error(`${flag} needs at least one value.`);
+  return new Set(items);
+}
+
+function parseArgs(argv: string[]): Options {
+  const opts: Options = {
+    out: path.join(getCacheDir(), "mirror"),
+    budgetBytes: DEFAULT_BUDGET_GB * 1024 * 1024 * 1024,
+    dryRun: false,
+    thumbs: true,
+    force: false,
+    only: undefined,
+    studies: undefined,
+    inProcess: false,
+    quiet: false,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "-h" || arg === "--help") {
+      process.stdout.write(USAGE);
+      process.exit(0);
+    } else if (arg === "--dry-run") {
+      opts.dryRun = true;
+    } else if (arg === "--no-thumbs") {
+      opts.thumbs = false;
+    } else if (arg === "--force") {
+      opts.force = true;
+    } else if (arg === "--in-process") {
+      opts.inProcess = true;
+    } else if (arg === "--quiet") {
+      opts.quiet = true;
+    } else if (arg === "--out") {
+      const value = argv[++i];
+      if (!value) throw new Error("--out needs a directory.");
+      opts.out = path.resolve(value);
+    } else if (arg === "--budget-gb") {
+      const value = Number(argv[++i]);
+      if (!Number.isFinite(value) || value < 0) throw new Error("--budget-gb needs a non-negative number.");
+      opts.budgetBytes = value === 0 ? Number.POSITIVE_INFINITY : value * 1024 * 1024 * 1024;
+    } else if (arg === "--only") {
+      opts.only = parseList(argv[++i], "--only");
+    } else if (arg === "--studies") {
+      opts.studies = parseList(argv[++i], "--studies");
+    } else {
+      throw new Error(`Unknown argument ${JSON.stringify(arg)}. Run with --help.`);
+    }
+  }
+
+  return opts;
+}
+
+/* -------------------------------------------------------------------------
+ * Path safety
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The same dual-root check both image routes do, for the same reason.
+ *
+ * These paths come out of our own manifest, so this is defense in depth rather
+ * than validation â€” but a script that walks 2,314 studies unattended is exactly
+ * where a stale manifest entry pointing outside the dataset would go unnoticed.
+ * `getZipExtractCacheDir()` is the second root because an archived source is
+ * expanded there at index time.
+ */
+function assertWithinAllowedRoots(absPath: string): void {
+  try {
+    assertWithinRoot(getDataRoot(), absPath);
+    return;
+  } catch (dataRootErr) {
+    try {
+      assertWithinRoot(getZipExtractCacheDir(), absPath);
+      return;
+    } catch {
+      throw dataRootErr;
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Writer
+ * ---------------------------------------------------------------------- */
+
+type Family = "pixels/raster" | "pixels/rendered" | "pixels/thumb" | "volume/";
+
+interface Tally {
+  objects: number;
+  bytes: number;
+}
+
+/**
+ * Writes one object per key and keeps the byte accounting the budget runs on.
+ *
+ * `skipped` counts objects that already existed on disk. Their bytes still count
+ * toward the total, because the budget is about the size of the tree that gets
+ * uploaded, not about how much this particular run did.
+ */
+class RenderWriter {
+  readonly counts = new Map<Family, Tally>();
+  skipped = 0;
+  private readonly dirs = new Set<string>();
+  private tmp: string | undefined;
+
+  constructor(private readonly opts: Options) {}
+
+  private tally(family: Family, bytes: number): void {
+    const t = this.counts.get(family) ?? { objects: 0, bytes: 0 };
+    t.objects++;
+    t.bytes += bytes;
+    this.counts.set(family, t);
+  }
+
+  /**
+   * True when this key already has bytes on disk, so the caller can skip the
+   * render that would produce them.
+   *
+   * This is what makes a run resumable. A render of the full curated set takes
+   * hours; losing all of it to one crash, or to a re-run for one extra study,
+   * is not acceptable, so an existing non-empty object is trusted. `--force`
+   * exists for when the renderer itself changed.
+   */
+  has(key: string, family: Family): boolean {
+    if (this.opts.force) return false;
+    const file = path.join(this.opts.out, key);
+    let size = 0;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      return false;
+    }
+    if (size <= 0) return false;
+    this.tally(family, size);
+    this.skipped++;
+    return true;
+  }
+
+  /**
+   * Folds objects some *other* process wrote into this process's accounting.
+   *
+   * The volumetric phase renders each study in a child, so without this the tree
+   * total printed after each study would only count what the parent wrote â€” which
+   * is nothing â€” and the budget would never advance. The numbers come from a walk
+   * of the finished study's directories, so they are measured file sizes, exactly
+   * like the in-process path.
+   */
+  adopt(family: Family, t: Tally): void {
+    if (t.objects === 0) return;
+    const cur = this.counts.get(family) ?? { objects: 0, bytes: 0 };
+    cur.objects += t.objects;
+    cur.bytes += t.bytes;
+    this.counts.set(family, cur);
+  }
+
+  /**
+   * Writes to a scratch file and renames it into place.
+   *
+   * `writeFileSync` straight to the key is not safe for a script that is expected
+   * to be killed: this run died once with "Array buffer allocation failed", and a
+   * process killed between two write chunks leaves a *truncated* PNG on disk.
+   * `has()` trusts any non-empty file, so that truncated object would be skipped
+   * by every later run and then uploaded â€” a corrupt slice on the deployed site,
+   * which is the one failure mode worse than a missing one.
+   *
+   * A rename is atomic within a volume, and `<out>/.render-tmp` is inside `--out`
+   * to guarantee they are on the same one. `renameSync` replaces an existing
+   * destination on Windows too (libuv passes MOVEFILE_REPLACE_EXISTING), so
+   * `--force` needs no special case.
+   */
+  write(key: string, family: Family, bytes: Buffer | Uint8Array): void {
+    this.tally(family, bytes.byteLength);
+    if (this.opts.dryRun) return;
+
+    const file = path.join(this.opts.out, key);
+    const dir = path.dirname(file);
+    if (!this.dirs.has(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      this.dirs.add(dir);
+    }
+
+    const tmp = this.tempFile();
+    fs.writeFileSync(tmp, bytes);
+    fs.renameSync(tmp, file);
+  }
+
+  /** One reused scratch path per process, so a kill leaves at most one file. */
+  private tempFile(): string {
+    if (!this.tmp) {
+      const dir = path.join(this.opts.out, TEMP_DIR);
+      fs.mkdirSync(dir, { recursive: true });
+      this.tmp = path.join(dir, `w-${process.pid}`);
+    }
+    return this.tmp;
+  }
+
+  /** The sidecar `mirror-upload.mjs` turns into `x-amz-meta-*` headers. */
+  writeJson(key: string, family: Family, value: unknown): void {
+    this.write(key, family, Buffer.from(JSON.stringify(value)));
+  }
+
+  total(): Tally {
+    let objects = 0;
+    let bytes = 0;
+    for (const t of this.counts.values()) {
+      objects += t.objects;
+      bytes += t.bytes;
+    }
+    return { objects, bytes };
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Rendering
+ * ---------------------------------------------------------------------- */
+
+/** The kind every slice of a series has, in whichever form the series was indexed. */
+function seriesKind(series: DatasetSeries): string | undefined {
+  return series.frames ? series.frames.kind : series.images[0]?.kind;
+}
+
+/**
+ * Which slice the study card shows.
+ *
+ * Reproduces `coverImageUrl` in lib/dataset/to-app-study.ts â€” middle slice of the
+ * first series that has any â€” because that is the one URL the studies list
+ * requests for all 2,314 cards, and a miss there is 2,314 placeholder tiles.
+ */
+function coverTarget(study: DatasetStudy): { seriesId: string; index: number } | undefined {
+  for (const series of study.series) {
+    const count = seriesImageCount(series);
+    if (count > 0) return { seriesId: series.id, index: Math.floor(count / 2) };
+  }
+  return undefined;
+}
+
+function extFor(contentType: string, absPath: string): string {
+  const ext = EXT_BY_CONTENT_TYPE[contentType];
+  if (!ext) {
+    throw new Error(
+      `Refusing to mirror ${path.basename(absPath)}: the renderer returned ${contentType}, which has no key extension ` +
+        "on the read side. Add it to CONTENT_TYPE_BY_EXT in lib/dataset/mirror.ts first, or leave this source out.",
+    );
+  }
+  return ext;
+}
+
+/**
+ * Renders one series into the tree and returns how many slices it wrote.
+ *
+ * A `raster` series is the dataset's own JPEG/PNG. It gets exactly one object â€”
+ * the width-less key â€” because the local route returns those bytes untouched
+ * whatever `?w=` says, so a width-specific copy would be a byte-identical
+ * duplicate. For all 1,510 raster frames that is ~225 MB of nothing.
+ *
+ * Everything else is decoded by the real renderer, and gets the full-size object
+ * plus a @96 thumbnail. Both come from `renderImage`, one call each: there is no
+ * downscale-a-Buffer path in that module, and adding one here would be the second
+ * renderer this script exists to avoid.
+ */
+function renderSeries(
+  writer: RenderWriter,
+  study: DatasetStudy,
+  series: DatasetSeries,
+  cover: { seriesId: string; index: number } | undefined,
+  opts: Options,
+): number {
+  const count = seriesImageCount(series);
+  if (count === 0) return 0;
+
+  const volume: DicomVolumeRef | undefined = series.volumeId ? study.volumes?.[series.volumeId] : undefined;
+  if (series.volumeId && !volume) {
+    throw new Error(
+      `Series ${series.id} of study ${study.studyCode ?? study.id} references volume ${series.volumeId}, which is not ` +
+        "in the index. Re-run `npm run dataset:index` â€” rendering it would need a stack this script cannot reconstruct.",
+    );
+  }
+
+  const raster = seriesKind(series) === "raster";
+  let wrote = 0;
+
+  for (let index = 0; index < count; index++) {
+    const ref = seriesImageAt(series, index);
+    if (!ref) throw new Error(`Series ${series.id} reports ${count} slices but has no ref at index ${index}.`);
+    assertWithinAllowedRoots(ref.absPath);
+
+    const isCover = cover !== undefined && cover.seriesId === series.id && cover.index === index;
+
+    // The extension has to be known *before* rendering, so an already-rendered
+    // slice can be skipped without decoding it. It is knowable: a raster keeps
+    // its source extension, and every decoded slice is encoded as PNG.
+    const ext = raster ? rasterExt(ref.absPath) : "png";
+    const family: Family = raster ? "pixels/raster" : "pixels/rendered";
+
+    // Full size: what the viewer's main canvas requests.
+    const fullKey = mirrorKeys.pixels(study.id, series.id, index, ext);
+    if (!writer.has(fullKey, family)) {
+      const rendered = renderImage(ref, { volume });
+      const actual = extFor(rendered.contentType, ref.absPath);
+      if (actual !== ext) {
+        throw new Error(
+          `${path.basename(ref.absPath)} was expected to mirror as .${ext} but the renderer produced ${rendered.contentType}. ` +
+            "Writing it under the predicted key would serve it with the wrong content type.",
+        );
+      }
+      writer.write(fullKey, family, rendered.bytes);
+      wrote++;
+    }
+
+    // A raster is returned at full size whatever `?w=` says, so `@96`/`@320`
+    // would be duplicates; the read side's width fallback already covers them.
+    if (opts.thumbs && !raster) {
+      const thumbKey = mirrorKeys.pixels(study.id, series.id, index, "png", THUMB_EDGE);
+      if (!writer.has(thumbKey, "pixels/thumb")) {
+        writer.write(thumbKey, "pixels/thumb", renderImage(ref, { volume, maxEdge: THUMB_EDGE }).bytes);
+      }
+      if (isCover) {
+        const coverKey = mirrorKeys.pixels(study.id, series.id, index, "png", COVER_WIDTH);
+        if (!writer.has(coverKey, "pixels/thumb")) {
+          writer.write(coverKey, "pixels/thumb", renderImage(ref, { volume, maxEdge: COVER_WIDTH }).bytes);
+        }
+      }
+    }
+  }
+
+  return wrote;
+}
+
+/**
+ * A raster's mirror extension, from its source filename.
+ *
+ * `renderRaster` derives its content type the same way â€” from the path â€” so this
+ * agrees with it by construction. Anything the read side has no content type for
+ * is refused here rather than uploaded as a mislabelled PNG.
+ */
+function rasterExt(absPath: string): string {
+  const raw = path.extname(absPath).slice(1).toLowerCase();
+  const ext = raw === "jpeg" ? "jpg" : raw;
+  if (!Object.values(EXT_BY_CONTENT_TYPE).includes(ext)) {
+    throw new Error(
+      `Cannot mirror ${path.basename(absPath)}: .${raw} is not a format the deployed reader can serve. ` +
+        "The indexed dataset should only contain .jpg and .png rasters.",
+    );
+  }
+  return ext;
+}
+
+/**
+ * Exports the 8-bit scalar volume behind every reconstructed series of a study.
+ *
+ * Decoded once per `volumeId`, written once per *series*, because the 3-D route
+ * is keyed by series id and the coronal and sagittal series of a CT study share
+ * one stack. Re-decoding for the second one would mean reading all 558 instances
+ * of CT-C48B2F twice for 0.3 MB of identical output.
+ *
+ * The three sidecar fields are the exact strings the local route puts in its
+ * `X-Volume-*` headers, and `serveMirroredVolume` refuses a volume that is
+ * missing any of them â€” without the shape the bytes are unusable, and guessing
+ * would put a wrong volume on screen.
+ */
+function renderVolumes(writer: RenderWriter, study: DatasetStudy, opts: Options): number {
+  const cache = new Map<string, { bytes: Uint8Array; meta: Record<string, string> } | undefined>();
+  let wrote = 0;
+
+  for (const series of study.series) {
+    if (!series.volumeId) continue;
+    const ref = study.volumes?.[series.volumeId];
+    if (!ref) continue;
+
+    const key = mirrorKeys.volume(study.id, series.id);
+    const metaKey = `${key}.meta.json`;
+    if (writer.has(key, "volume/") && writer.has(metaKey, "volume/")) continue;
+
+    if (!cache.has(series.volumeId)) {
+      for (const file of ref.files) assertWithinAllowedRoots(file);
+      if (opts.dryRun) {
+        // Cheap, honest placeholder: the real export needs the whole stack in
+        // memory, which is the one thing a plan must not do.
+        cache.set(series.volumeId, undefined);
+      } else {
+        const exported = exportDicomVolume(ref);
+        cache.set(
+          series.volumeId,
+          exported
+            ? {
+                bytes: exported.bytes,
+                meta: {
+                  dims: exported.dims.join(","),
+                  spacing: exported.spacingMm.map((v) => v.toFixed(4)).join(","),
+                  window: `${Math.round(exported.windowLo)},${Math.round(exported.windowHi)}`,
+                },
+              }
+            : undefined,
+        );
+      }
+    }
+
+    const exported = cache.get(series.volumeId);
+    if (!exported) {
+      // Not fatal, and not silent: `exportDicomVolume` returns undefined for a
+      // stack whose instances are inconsistent or compressed, which is exactly
+      // what the local route reports as 422. The 2-D planes still mirror fine,
+      // and the client gates the 3-D toggle on `volumeAvailable`.
+      if (!opts.dryRun) console.log(`  ! no 3-D volume for series ${series.id} â€” its stack could not be reconstructed`);
+      continue;
+    }
+
+    writer.write(key, "volume/", exported.bytes);
+    writer.writeJson(metaKey, "volume/", exported.meta);
+    wrote++;
+  }
+
+  return wrote;
+}
+
+/* -------------------------------------------------------------------------
+ * Selection
+ * ---------------------------------------------------------------------- */
+
+interface Candidate {
+  study: DatasetStudy;
+  slices: number;
+  /** True for the always-included half of the approved scope. */
+  required: boolean;
+}
+
+/**
+ * Splits the index into "always mirror this" and "mirror it if it fits".
+ *
+ * Required: every raster study (1,500 chest + 10 ROCOv2 â€” a passthrough copy, no
+ * decode, and they are the studies the demo is most likely to open) and all 4 CT
+ * studies (3,144 reslices plus the 3-D volumes, and CT is the modality whose
+ * reconstruction this project spent the most effort getting right).
+ *
+ * Optional: the volumetric MRI/PET studies, ordered fewest slices first and
+ * alternating the two modalities. Fewest-first maximizes how many studies fit,
+ * and alternating keeps both modalities present on the deployed site instead of
+ * filling the budget with whichever one happens to have smaller volumes.
+ */
+function plan(studies: DatasetStudy[], opts: Options): { required: Candidate[]; optional: Candidate[] } {
+  const required: Candidate[] = [];
+  const perDataset = new Map<string, Candidate[]>();
+
+  for (const study of studies) {
+    if (opts.only && !opts.only.has(study.dataset)) continue;
+    if (opts.studies && !opts.studies.has(study.id)) continue;
+
+    let slices = 0;
+    let allRaster = true;
+    for (const series of study.series) {
+      slices += seriesImageCount(series);
+      if (seriesKind(series) !== "raster") allRaster = false;
+    }
+    if (slices === 0) continue;
+
+    // `--studies` is the escape hatch for topping up one study by hand, so it
+    // opts out of the budget rather than being re-ranked by it.
+    const candidate: Candidate = { study, slices, required: allRaster || study.dataset === "CT" || Boolean(opts.studies) };
+    if (candidate.required) {
+      required.push(candidate);
+      continue;
+    }
+    const bucket = perDataset.get(study.dataset) ?? [];
+    bucket.push(candidate);
+    perDataset.set(study.dataset, bucket);
+  }
+
+  // Deterministic: slice count, then study id. Two runs of the same index pick
+  // the same studies, so a resumed run tops up the same set instead of starting
+  // a different one.
+  const buckets = [...perDataset.keys()].sort();
+  for (const key of buckets) {
+    perDataset.get(key)!.sort((a, b) => a.slices - b.slices || a.study.id.localeCompare(b.study.id));
+  }
+
+  const optional: Candidate[] = [];
+  for (let round = 0; ; round++) {
+    let added = false;
+    for (const key of buckets) {
+      const item = perDataset.get(key)![round];
+      if (!item) continue;
+      optional.push(item);
+      added = true;
+    }
+    if (!added) break;
+  }
+
+  return { required, optional };
+}
+
+/* -------------------------------------------------------------------------
+ * Estimation (dry run and budget checks only)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * How big a study is likely to be, without decoding anything.
+ *
+ * Exact for a raster study â€” the mirrored object *is* the source file, so a
+ * `stat` is the answer. An estimate for everything else, because the only way to
+ * know how many bytes a windowed 8-bit PNG of an MR slice takes is to encode it,
+ * and encoding 1.2 M slices to plan a run defeats the point of planning.
+ *
+ * The estimate is only ever used to decide whether to *start* a study. Every
+ * number this script reports as written is measured.
+ */
+function estimateStudyBytes(candidate: Candidate, bytesPerSlice: number, opts: Options): number {
+  let total = 0;
+  for (const series of candidate.study.series) {
+    const count = seriesImageCount(series);
+    if (count === 0) continue;
+
+    if (seriesKind(series) === "raster") {
+      for (let i = 0; i < count; i++) {
+        const ref = seriesImageAt(series, i);
+        if (!ref) continue;
+        try {
+          total += fs.statSync(ref.absPath).size;
+        } catch {
+          rasterStatMisses++;
+          total += bytesPerSlice;
+        }
+      }
+      continue;
+    }
+
+    total += count * bytesPerSlice;
+    // A @96 PNG of an 8-bit slice is a few KB whatever the source resolution is.
+    if (opts.thumbs) total += count * 6 * 1024;
+  }
+  return total;
+}
+
+function mb(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function gb(bytes: number): string {
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/* -------------------------------------------------------------------------
+ * Per-study child processes
+ *
+ * Only the volumetric phase uses these. See the "Memory" section at the top for
+ * why: the decoded-volume caches in image-render.ts are module constants, so the
+ * only way to release them is to end the process that holds them.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The tsx CLI this script is running under, so a child can be launched the same
+ * way `npm run mirror:render` launched the parent.
+ *
+ * Only when this file really is TypeScript: if it has been compiled ahead of
+ * time, the child must be plain node, and going through tsx would fail for a
+ * reason that has nothing to do with rendering.
+ *
+ * Resolved by path rather than `require.resolve` because this file is loaded as
+ * TypeScript â€” and checked for existence rather than assumed, because the
+ * fallback (reuse the parent's `execArgv`, which carries a `--import` loader when
+ * one was passed that way) is the only other thing that can work.
+ */
+function tsxCli(): string | undefined {
+  const script = path.resolve(process.argv[1] ?? ".");
+  if (!script.endsWith(".ts")) return undefined;
+
+  const roots = [process.cwd(), path.dirname(path.dirname(script))];
+  for (const root of roots) {
+    const cli = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
+    if (fs.existsSync(cli)) return cli;
+  }
+  return undefined;
+}
+
+/**
+ * Renders one study in a child process and waits for it.
+ *
+ * `--studies <id>` is what makes this work without a second code path: it forces
+ * the study into the child's `required` set and bypasses the budget, so the child
+ * renders exactly this study and nothing else. The parent keeps the budget.
+ *
+ * `stdio: "inherit"` on purpose â€” a child's `! no 3-D volume for series ...`
+ * warning and any stack trace belong in the same log as everything else. `--quiet`
+ * is what keeps that from also meaning 29 copies of the summary table.
+ *
+ * Deliberately sequential (`spawnSync`): the point is to bound peak memory, and
+ * two children at once would double it.
+ */
+function renderStudyInChild(studyId: string, opts: Options): { ok: boolean; detail: string } {
+  // `--budget-gb 0` because `--studies` already bypasses the budget; passing the
+  // parent's would only let the child print a warning about a limit it ignores.
+  const args = ["--studies", studyId, "--out", opts.out, "--budget-gb", "0", "--in-process", "--quiet"];
+  if (!opts.thumbs) args.push("--no-thumbs");
+  if (opts.force) args.push("--force");
+
+  const cli = tsxCli();
+  const script = process.argv[1] ?? "";
+  const argv = cli ? [cli, script, ...args] : [...process.execArgv, script, ...args];
+
+  const res = spawnSync(process.execPath, argv, { stdio: "inherit", env: process.env, windowsHide: true });
+
+  if (res.error) return { ok: false, detail: `could not start: ${res.error.message}` };
+  if (res.signal) return { ok: false, detail: `killed by ${res.signal}` };
+  if (res.status !== 0) return { ok: false, detail: `exit ${res.status}` };
+  return { ok: true, detail: "" };
+}
+
+/** Visits every regular file under `dir`. An absent directory visits nothing. */
+function walkFiles(dir: string, visit: (name: string, bytes: number) => void): void {
+  const walk = (d: string): void => {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const abs = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else if (entry.isFile()) visit(entry.name, fs.statSync(abs).size);
+    }
+  };
+
+  try {
+    walk(dir);
+  } catch {
+    // Nothing rendered for this study â€” a failed child, or a study whose series
+    // all produced no slices. Zero is the honest answer either way.
+  }
+}
+
+/**
+ * Folds a finished child's output into the parent's tally and returns its size.
+ *
+ * Sizes are stat'd, so the parent's running total and the budget it drives are
+ * measured bytes, exactly as in the in-process path.
+ *
+ * The family split is by filename: `@` means a thumbnail, `.jpg` means a
+ * passthrough raster, anything else under `pixels/` was decoded. That is exact
+ * for this phase â€” `plan()` routes every all-raster study into `required`, which
+ * never uses a child â€” and at worst would file a raster PNG inside a mixed study
+ * under `pixels/rendered`. Only the per-family breakdown in the summary could
+ * shift; the total cannot, so this is not worth a sidecar protocol.
+ */
+function adoptChildOutput(writer: RenderWriter, out: string, studyId: string): number {
+  const tallies = new Map<Family, Tally>();
+  const add = (family: Family, bytes: number): void => {
+    const t = tallies.get(family) ?? { objects: 0, bytes: 0 };
+    t.objects++;
+    t.bytes += bytes;
+    tallies.set(family, t);
+  };
+
+  walkFiles(path.join(out, "pixels", studyId), (name, bytes) => {
+    add(name.includes("@") ? "pixels/thumb" : name.endsWith(".jpg") ? "pixels/raster" : "pixels/rendered", bytes);
+  });
+  walkFiles(path.join(out, "volume", studyId), (_name, bytes) => add("volume/", bytes));
+
+  let total = 0;
+  for (const [family, t] of tallies) {
+    writer.adopt(family, t);
+    total += t.bytes;
+  }
+  return total;
+}
+
+/**
+ * Deletes scratch files left by an earlier run that was killed.
+ *
+ * Own-pid file excluded so this is safe to call from a child while the parent
+ * has one open. Cheap: at most a handful of entries.
+ */
+function sweepTemp(out: string): void {
+  const dir = path.join(out, TEMP_DIR);
+  const mine = `w-${process.pid}`;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name === mine) continue;
+      try {
+        fs.unlinkSync(path.join(dir, name));
+      } catch {
+        // A concurrent run still holds it. Not ours to force.
+      }
+    }
+  } catch {
+    // No scratch directory yet. Nothing to sweep.
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Driver
+ * ---------------------------------------------------------------------- */
+
+function renderStudy(writer: RenderWriter, candidate: Candidate, opts: Options): void {
+  const { study } = candidate;
+  const cover = coverTarget(study);
+  // Manifest order, deliberately: the three planes of one NIfTI file are adjacent
+  // in it, and `renderImage` keeps only the last two decoded volumes, so walking
+  // them in order is what turns 3 decodes into 1.
+  for (const series of study.series) renderSeries(writer, study, series, cover, opts);
+  renderVolumes(writer, study, opts);
+}
+
+function main(): void {
+  const opts = parseArgs(process.argv.slice(2));
+  const started = Date.now();
+
+  const manifest = readManifest();
+  if (!manifest) {
+    throw new Error(
+      "No dataset index to render from. Run `npm run dataset:index` against SCANLAB_DATA_ROOT first â€” this script " +
+        "reads .scanlab/manifest.json for the slice list and the dataset itself read-only.",
+    );
+  }
+
+  // Fails fast and by name if the dataset root is unset or gone, rather than
+  // after an hour of ENOENTs.
+  const root = getDataRoot();
+  if (!fs.existsSync(root)) {
+    throw new Error(`SCANLAB_DATA_ROOT points at ${root}, which does not exist. Nothing can be rendered from it.`);
+  }
+
+  const { required, optional } = plan(manifest.studies, opts);
+  if (!opts.quiet) {
+    console.log(`Mirror render -> ${opts.out}${opts.dryRun ? "  (dry run, nothing will be written)" : ""}`);
+    console.log(
+      `Budget: ${opts.budgetBytes === Number.POSITIVE_INFINITY ? "unlimited" : gb(opts.budgetBytes)}   ` +
+        `always-render: ${required.length} studies   candidates: ${optional.length} studies` +
+        `${opts.thumbs ? "" : "   (thumbnails skipped)"}` +
+        `${optional.length > 0 && !opts.inProcess ? "   (one child process per volumetric study)" : ""}`,
+    );
+    console.log("");
+  }
+
+  if (opts.dryRun) {
+    reportPlan(required, optional, opts);
+    console.log(`\nElapsed: ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    return;
+  }
+
+  sweepTemp(opts.out);
+
+  const writer = new RenderWriter(opts);
+  const done = new Map<string, number>();
+  const tick = (c: Candidate, n: number, of: number, note: string): void => {
+    if (opts.quiet) return;
+    const t = writer.total();
+    console.log(
+      `[${String(n).padStart(4)}/${of}] ${c.study.dataset.padEnd(10)} ${(c.study.studyCode ?? c.study.id).padEnd(14)} ` +
+        `${String(c.slices).padStart(5)} slices  tree ${gb(t.bytes)}  ${note}`,
+    );
+  };
+
+  required.forEach((c, i) => {
+    renderStudy(writer, c, opts);
+    done.set(c.study.dataset, (done.get(c.study.dataset) ?? 0) + 1);
+    if (i % 50 === 0 || i === required.length - 1) tick(c, i + 1, required.length, "required");
+  });
+
+  const requiredBytes = writer.total().bytes;
+  if (requiredBytes > opts.budgetBytes && !opts.quiet) {
+    console.log(
+      `\n! The always-render set alone is ${gb(requiredBytes)}, past the ${gb(opts.budgetBytes)} budget. It was rendered anyway â€”\n` +
+        "  it is the approved scope. No volumetric study will be added; raise --budget-gb to add some.",
+    );
+  }
+
+  let n = 0;
+  let skippedForBudget = 0;
+  let volBytes = 0;
+  let volSlices = 0;
+  const failures: string[] = [];
+  /*
+   * Children unless told otherwise, and it can turn itself off: if the very first
+   * child fails *without writing anything*, the likely cause is that the child
+   * runner is wrong for this machine rather than that the study is too big, and
+   * rendering in-process is strictly better than rendering nothing.
+   */
+  let shard = !opts.inProcess;
+  let childRuns = 0;
+
+  for (const c of optional) {
+    n++;
+    const before = writer.total().bytes;
+    // Measured average as soon as one volumetric study has landed; the seed only
+    // ever decides the very first one.
+    const perSlice = volSlices > 0 ? volBytes / volSlices : SEED_BYTES_PER_SLICE;
+    const estimate = estimateStudyBytes(c, perSlice, opts);
+    if (before + estimate > opts.budgetBytes) {
+      skippedForBudget++;
+      continue;
+    }
+
+    /*
+     * A throw here is this study's problem, not the run's. The required set
+     * still fails fast â€” a missing raster or CT instance means the index is
+     * wrong and should stop everything â€” but a volumetric study that will not
+     * decode on this machine costs that study only. Whole-study granularity is
+     * what keeps that honest: the tree never holds half a series.
+     */
+    const renderHere = (): { ok: boolean; detail: string } => {
+      try {
+        renderStudy(writer, c, opts);
+        return { ok: true, detail: "" };
+      } catch (err) {
+        return { ok: false, detail: (err instanceof Error ? err.message : String(err)).split("\n")[0] };
+      }
+    };
+
+    let outcome: { ok: boolean; detail: string };
+    let wrote: number;
+
+    if (shard) {
+      outcome = renderStudyInChild(c.study.id, opts);
+      childRuns++;
+      wrote = adoptChildOutput(writer, opts.out, c.study.id);
+
+      if (!outcome.ok && wrote === 0 && failures.length === 0) {
+        shard = false;
+        console.log(
+          `  ! The child process for ${c.study.studyCode ?? c.study.id} ${outcome.detail} and wrote nothing.\n` +
+            "    Falling back to rendering volumetric studies in this process. That is the configuration that\n" +
+            "    can exhaust memory on a long run â€” if it dies, re-run to resume, or pass --studies <id> per study.",
+        );
+        outcome = renderHere();
+        wrote = writer.total().bytes - before;
+      }
+    } else {
+      outcome = renderHere();
+      wrote = writer.total().bytes - before;
+    }
+
+    if (!outcome.ok) {
+      failures.push(`${c.study.studyCode ?? c.study.id} â€” ${outcome.detail}`);
+      tick(c, n, optional.length, `FAILED (${outcome.detail}), left un-mirrored`);
+      continue;
+    }
+
+    volBytes += wrote;
+    volSlices += c.slices;
+    done.set(c.study.dataset, (done.get(c.study.dataset) ?? 0) + 1);
+    tick(c, n, optional.length, `est ${mb(estimate)}, real ${mb(wrote)}`);
+  }
+
+  report(writer, done, skippedForBudget, failures, childRuns, started, opts);
+}
+
+/**
+ * The dry-run answer to the only question that matters before an hours-long run:
+ * how many studies actually fit, per modality.
+ *
+ * Raster totals are exact (they are file sizes). Volumetric totals are the seed
+ * estimate, and are labelled as such â€” the real number arrives during the run,
+ * where every printed figure is measured.
+ */
+function reportPlan(required: Candidate[], optional: Candidate[], opts: Options): void {
+  const rows = new Map<string, { studies: number; slices: number; bytes: number; fits: number }>();
+  const add = (dataset: string, slices: number, bytes: number, fits: boolean): void => {
+    const r = rows.get(dataset) ?? { studies: 0, slices: 0, bytes: 0, fits: 0 };
+    r.studies++;
+    r.slices += slices;
+    if (fits) {
+      r.bytes += bytes;
+      r.fits++;
+    }
+    rows.set(dataset, r);
+  };
+
+  let running = 0;
+  for (const c of required) {
+    const bytes = estimateStudyBytes(c, SEED_BYTES_PER_SLICE, opts);
+    running += bytes;
+    add(c.study.dataset, c.slices, bytes, true);
+  }
+  const requiredBytes = running;
+
+  for (const c of optional) {
+    const bytes = estimateStudyBytes(c, SEED_BYTES_PER_SLICE, opts);
+    const fits = running + bytes <= opts.budgetBytes;
+    if (fits) running += bytes;
+    add(c.study.dataset, c.slices, bytes, fits);
+  }
+
+  const names = [...rows.keys()].sort();
+  console.log(`${"DATASET".padEnd(10)}  INDEXED   FITS     SLICES        SIZE`);
+  for (const name of names) {
+    const r = rows.get(name)!;
+    console.log(
+      `${name.padEnd(10)}  ${String(r.studies).padStart(7)}  ${String(r.fits).padStart(5)}  ${String(r.slices).padStart(9)}  ${mb(r.bytes).padStart(10)}`,
+    );
+  }
+  console.log("-".repeat(52));
+  console.log(
+    `Always-render set: ${gb(requiredBytes)} ` +
+      (rasterStatMisses === 0
+        ? "(raster sizes exact, CT estimated)"
+        : `(CT estimated, and ${rasterStatMisses} raster files could not be read â€” those are the ${mb(SEED_BYTES_PER_SLICE)}/slice seed, not real sizes)`),
+  );
+  console.log(`Planned tree:      ${gb(running)} of ${opts.budgetBytes === Number.POSITIVE_INFINITY ? "unlimited" : gb(opts.budgetBytes)}`);
+  console.log(`Volumetric studies that fit: ${names.reduce((n, k) => n + (k === "MRI" || k === "PET" ? rows.get(k)!.fits : 0), 0)}`);
+  console.log("Volumetric sizes are the seed estimate; the run replaces it with measured bytes as it goes.");
+}
+
+const FAMILIES: Family[] = ["pixels/raster", "pixels/rendered", "pixels/thumb", "volume/"];
+
+function report(
+  writer: RenderWriter,
+  done: Map<string, number>,
+  skippedForBudget: number,
+  failures: string[],
+  childRuns: number,
+  started: number,
+  opts: Options,
+): void {
+  if (opts.quiet) return;
+
+  const width = Math.max(...FAMILIES.map((f) => f.length));
+  console.log("");
+  console.log(`${"KEY FAMILY".padEnd(width)}  OBJECTS        BYTES`);
+  for (const family of FAMILIES) {
+    const t = writer.counts.get(family);
+    if (!t) continue;
+    console.log(`${family.padEnd(width)}  ${String(t.objects).padStart(7)}  ${mb(t.bytes).padStart(11)}`);
+  }
+  const total = writer.total();
+  console.log("-".repeat(width + 24));
+  console.log(`${"TOTAL".padEnd(width)}  ${String(total.objects).padStart(7)}  ${gb(total.bytes).padStart(11)}`);
+
+  console.log("");
+  for (const dataset of [...done.keys()].sort()) console.log(`Studies mirrored, ${dataset.padEnd(10)} ${done.get(dataset)}`);
+  if (skippedForBudget) {
+    console.log(`Left out for budget:  ${skippedForBudget} volumetric studies`);
+    console.log("  Their metadata and reports are still deployed; their slices show the \"image not mirrored\" tile.");
+  }
+  if (writer.skipped) {
+    console.log(
+      `Already on disk:      ${writer.skipped} objects (re-run with --force to redo them)` +
+        // Each child keeps its own count and exits, so the parent only sees skips
+        // from the phases it rendered itself. Saying so beats printing a number
+        // that looks like it covers the whole tree.
+        (childRuns > 0 ? "   [raster/CT phase only; per-study children keep their own count]" : ""),
+    );
+  }
+  if (failures.length) {
+    console.log("");
+    console.log(`! ${failures.length} volumetric ${failures.length === 1 ? "study" : "studies"} could not be rendered:`);
+    for (const f of failures) console.log(`    ${f}`);
+    console.log(
+      "  Each was rendered in its own process, so the rest of the tree is unaffected and nothing partial was\n" +
+        "  written. Re-running resumes and retries them; a study that fails again is one this machine cannot\n" +
+        "  decode, and its slices will show the \"image not mirrored\" tile while its report still works.",
+    );
+  }
+  console.log(`Elapsed:              ${((Date.now() - started) / 1000 / 60).toFixed(1)} min`);
+
+  console.log("");
+  console.log(`Next: npm run mirror:upload -- --dir ${opts.out}`);
+}
+
+try {
+  main();
+} catch (err) {
+  // A child renders one study and is always launched with --quiet, so say which
+  // it was: "Mirror render failed" from a child would otherwise read as the whole
+  // run dying, when the parent goes on to report it and continue.
+  const studies = process.argv.includes("--quiet") ? process.argv[process.argv.indexOf("--studies") + 1] : undefined;
+  const banner = studies ? `Rendering study ${studies} failed:` : "Mirror render failed:";
+  console.error(`\n${banner}\n${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+}
+
+
+==================== mirror.ts ====================
+/**
+ * ---------------------------------------------------------------------------
+ * SERVER-ONLY. The read side of the R2 dataset mirror.
+ * ---------------------------------------------------------------------------
+ *
+ * Why this module exists
+ * ----------------------
+ * On Windows the app reads `D:\ScanLab_Datasets` through `SCANLAB_DATA_ROOT`
+ * and renders pixels on demand. On Cloudflare Workers neither half of that is
+ * possible, and not for want of configuration:
+ *
+ *  - There is no filesystem, so `readManifest()` returns `undefined` (its
+ *    ENOENT is swallowed) and every dataset surface degrades to "No dataset
+ *    index has been built yet."
+ *  - Even with the files somewhere reachable, on-demand rendering does not fit.
+ *    A Worker isolate has a hard 128 MB ceiling (Cloudflare error 1102) shared
+ *    across the requests it is handling. One cold slice out of the largest MRI
+ *    container (512x512x256 uint16) costs roughly 375 MB transient across
+ *    `readFileSync` -> `toArrayBuffer` copy -> gzip inflate -> `readImage`
+ *    copy, settling at ~134 MB retained. One coronal CT reslice is worse in a
+ *    different way: `buildDicomStack` reads all 558 instances of CT-C48B2F
+ *    into a 146 MB Float32Array, which on Workers would be 558 sequential R2
+ *    GETs to answer a single PNG.
+ *  - And the manifest itself is 5.5 MB of JSON. Parsing it per request is well
+ *    past the 10 ms CPU budget of the Workers Free plan.
+ *
+ * So the deployed app does not render and does not parse. Every response it
+ * serves was computed once on the machine that already has the data, and is
+ * stored in R2 under a key derived from the request. This module is the lookup.
+ *
+ * What that buys beyond correctness: `dicom-parser`, `nifti-reader-js` and
+ * `pngjs` stop being reachable from the Worker entrypoint, which is what keeps
+ * the bundle under the compressed-size limit.
+ *
+ * Invariants
+ * ----------
+ *  - No binding present => `getMirror()` returns undefined => every caller
+ *    falls through to its existing filesystem path, byte for byte. This module
+ *    can only ever add a code path, never alter the local one.
+ *  - Keys are derived from request parameters only. No absolute path from the
+ *    manifest is ever part of a key, so `absPath` still cannot reach the
+ *    client (see the SERVER-ONLY note in config.ts).
+ *  - Study and series ids are 16-char lowercase hex (`stableId`), and slice
+ *    indices are integers, so keys need no escaping. `assertKeySegment` holds
+ *    that assumption to the wall rather than trusting it.
+ */
+
+import { getCloudflareContext } from "@opennextjs/cloudflare/cloudflare-context";
+
+/**
+ * The parts of R2's binding API this module uses, declared structurally.
+ *
+ * Deliberately not `R2Bucket` from `@cloudflare/workers-types`: that package is
+ * not a dependency of this project, and the two functions used here are stable
+ * enough that a 6-line interface is cheaper than pulling an ambient type
+ * package into a program that also compiles for Node.
+ */
+export interface MirrorObject {
+  body: ReadableStream | null;
+  size: number;
+  httpEtag: string;
+  /**
+   * R2 surfaces whatever `x-amz-meta-*` headers the uploader set. Used only by
+   * the 3-D volume route, whose shape and voxel spacing have to travel with the
+   * bytes â€” see `serveMirroredVolume`.
+   */
+  customMetadata?: Record<string, string>;
+}
+
+export interface MirrorBucket {
+  get(key: string): Promise<MirrorObject | null>;
+  head(key: string): Promise<{ size: number } | null>;
+}
+
+/**
+ * Resolved once per isolate. `undefined` means "not running on Workers, or the
+ * DATASET binding is absent" â€” both of which mean "use the filesystem".
+ *
+ * `null` is not used as a sentinel here because `false` distinguishes "looked
+ * and found nothing" from "not looked yet" without a second variable.
+ */
+let resolved: { bucket: MirrorBucket | undefined } | undefined;
+
+export function getMirror(): MirrorBucket | undefined {
+  if (resolved) return resolved.bucket;
+  resolved = { bucket: lookupBucket() };
+  return resolved.bucket;
+}
+
+function lookupBucket(): MirrorBucket | undefined {
+  try {
+    /*
+     * In sync mode this reads a symbol off `globalThis` that the generated
+     * Worker entrypoint sets. Off Workers the symbol is absent and the call
+     * throws a long "did you call initOpenNextCloudflareForDev" message â€” which
+     * is the expected, correct outcome on the user's Windows box, so it is
+     * swallowed rather than logged. Memoized by the caller, so the throw
+     * happens at most once per process.
+     *
+     * Imported from the deep subpath rather than the package root on purpose:
+     * the root barrel also re-exports `config.js` (`defineCloudflareConfig`),
+     * whereas `cloudflare-context.js` has nothing but `import type` at module
+     * scope. Nothing extra is pulled onto the module graph of a route.
+     */
+    const env = getCloudflareContext({ async: false }).env as unknown as Record<string, unknown>;
+    const candidate = env?.[MIRROR_BINDING];
+    return isBucket(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Name of the R2 bucket binding in wrangler.jsonc. */
+export const MIRROR_BINDING = "DATASET";
+
+function isBucket(v: unknown): v is MirrorBucket {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as MirrorBucket).get === "function" &&
+    typeof (v as MirrorBucket).head === "function"
+  );
+}
+
+/* -------------------------------------------------------------------------
+ * Key scheme
+ *
+ * One key per response the app can produce, so a request is a single R2 GET
+ * with no parsing and no branching. `mirrorKeys` is the only place that knows
+ * the layout; the export script imports the same functions, which is what stops
+ * writer and reader from drifting apart.
+ * ---------------------------------------------------------------------- */
+
+export const mirrorKeys = {
+  /** Body of `/api/datasets`. */
+  datasets: () => "meta/datasets.json",
+
+  /** Body of `/api/datasets/status`. */
+  datasetsStatus: () => "meta/datasets-status.json",
+
+  /** Body of `/api/studies` â€” every indexed study, summary projection. */
+  studies: () => "meta/studies.json",
+
+  /** Body of `/api/studies/<id>`. */
+  study: (studyId: string) => `meta/study/${assertKeySegment(studyId)}.json`,
+
+  /** Body of `/api/studies/<id>/report`. */
+  report: (studyId: string) => `meta/report/${assertKeySegment(studyId)}.json`,
+
+  /** The upload hash index, for `/api/uploads/match`. */
+  uploadIndex: () => "meta/upload-index.json",
+
+  /*
+   * `/api/uploads/match` is the one route whose mirrored form is not a copy of a
+   * route body. Locally it calls `matchUpload`, which reads the 3.3 KB export
+   * pack index *and* resolves the study code against the 5.5 MB manifest. So the
+   * export precomputes the *outcomes* instead, one small object per lookup key,
+   * and the route does at most two GETs and no large parse.
+   *
+   * Both segment kinds are already constrained by regexes in upload-match.ts â€”
+   * sha256 is lowercase hex, a study code is `[A-Z][A-Z0-9]{1,7}-[0-9A-F]{6}` â€”
+   * so `assertKeySegment` is a backstop rather than the guarantee.
+   */
+  uploadMatchByHash: (sha256: string) => `meta/upload-match/by-hash/${assertKeySegment(sha256)}.json`,
+  uploadMatchByCode: (studyCode: string) => `meta/upload-match/by-code/${assertKeySegment(studyCode)}.json`,
+
+  /**
+   * The decimated 8-bit scalar volume behind the CT 3-D view, as produced by
+   * `exportDicomVolume`. Only the four indexed CT stacks have one.
+   *
+   * `dims`, `spacingMm` and the window travel as R2 custom metadata rather than
+   * in the body, because the body format is deliberately headerless â€” see the
+   * docblock on the volume route.
+   */
+  volume: (studyId: string, seriesId: string) =>
+    `volume/${assertKeySegment(studyId)}/${assertKeySegment(seriesId)}.bin`,
+
+  /**
+   * Pixels for one slice. `width` is the `?w=` the UI asked for â€” omitted for a
+   * full-size render, which is the only case the viewer's main canvas uses.
+   *
+   * The extension is part of the key rather than side-channel metadata so the
+   * content type can be recovered from the key alone: chest X-ray and ROCOv2
+   * frames are copied out of the dataset byte for byte and stay JPEG/PNG, while
+   * every reslice is written as PNG.
+   */
+  pixels: (studyId: string, seriesId: string, index: number, ext: string, width?: number) =>
+    `pixels/${assertKeySegment(studyId)}/${assertKeySegment(seriesId)}/${assertIndex(index)}${
+      width ? `@${assertIndex(width)}` : ""
+    }.${assertExt(ext)}`,
+
+  /**
+   * Directory-ish prefix for one slice, without the extension. The read side
+   * does not know whether a given slice was copied as a JPEG or rendered to
+   * PNG, so it probes the candidate extensions in `PIXEL_EXTENSIONS` order.
+   */
+  pixelsPrefix: (studyId: string, seriesId: string, index: number, width?: number) =>
+    `pixels/${assertKeySegment(studyId)}/${assertKeySegment(seriesId)}/${assertIndex(index)}${
+      width ? `@${assertIndex(width)}` : ""
+    }.`,
+};
+
+/**
+ * Probed in this order. PNG first because it is the overwhelming majority
+ * (every reslice) and because probing costs a GET.
+ */
+export const PIXEL_EXTENSIONS = ["png", "jpg", "jpeg"] as const;
+
+export const CONTENT_TYPE_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+};
+
+function assertKeySegment(v: string): string {
+  if (!/^[a-zA-Z0-9._-]+$/.test(v)) {
+    throw new Error(`Refusing to build an R2 key from ${JSON.stringify(v)}: unexpected characters.`);
+  }
+  return v;
+}
+
+function assertIndex(v: number): number {
+  if (!Number.isInteger(v) || v < 0) {
+    throw new Error(`Refusing to build an R2 key from index ${v}: expected a non-negative integer.`);
+  }
+  return v;
+}
+
+function assertExt(v: string): string {
+  if (!Object.prototype.hasOwnProperty.call(CONTENT_TYPE_BY_EXT, v)) {
+    throw new Error(`Unsupported mirror image extension ${JSON.stringify(v)}.`);
+  }
+  return v;
+}
+
+/* -------------------------------------------------------------------------
+ * Serving
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Long, because a mirrored object is immutable in practice: re-exporting after a
+ * re-index rewrites the key's *contents*, and the ETag comes from R2 itself, so
+ * a conditional request still revalidates correctly. The local route keeps its
+ * own shorter `max-age=60` â€” there, a re-index really can change pixels behind
+ * a URL within one browsing session.
+ */
+const MIRROR_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
+
+/**
+ * Streams a precomputed JSON response body straight out of R2.
+ *
+ * Returns `undefined` when there is no mirror or the key is absent, which the
+ * callers treat as "fall through to the filesystem". The body is passed through
+ * as a stream and never parsed â€” that is the whole point, since parsing is what
+ * does not fit in the Free plan's 10 ms CPU budget.
+ */
+export async function serveMirroredJson(key: string, req?: Request): Promise<Response | undefined> {
+  const bucket = getMirror();
+  if (!bucket) return undefined;
+
+  const object = await bucket.get(key).catch(() => null);
+  if (!object) return undefined;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Cache-Control": MIRROR_CACHE_CONTROL,
+    ETag: object.httpEtag,
+    "X-Mirror": "hit",
+  };
+
+  if (req?.headers.get("if-none-match") === object.httpEtag) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(object.body, { status: 200, headers });
+}
+
+/**
+ * Reads and parses one small mirrored object.
+ *
+ * The counterpart to `serveMirroredJson`, for the one caller that has to *use* a
+ * mirrored value rather than pass it through: `/api/uploads/match` needs the
+ * matched study to build its response. Parsing is acceptable here and nowhere
+ * else because these objects are a few hundred bytes â€” the thing that does not
+ * fit the CPU budget is the 5.5 MB manifest, not a single match outcome.
+ *
+ * `undefined` means no mirror, no such object, or unparseable content; every
+ * caller must already have a sensible answer for "not found", so a malformed
+ * object is deliberately not distinguished from a missing one.
+ */
+export async function readMirroredJson<T>(key: string): Promise<T | undefined> {
+  const bucket = getMirror();
+  if (!bucket) return undefined;
+
+  const object = await bucket.get(key).catch(() => null);
+  if (!object || !object.body) return undefined;
+
+  try {
+    return (await new Response(object.body).json()) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Streams one mirrored slice.
+ *
+ * The extension is not known from the request â€” a chest frame is the dataset's
+ * own JPEG copied byte for byte, while a reslice is a PNG this project rendered
+ * â€” so the candidates are probed in `PIXEL_EXTENSIONS` order. That is up to
+ * three R2 GETs in the worst case, but only for a miss; PNG is checked first and
+ * covers every rendered slice.
+ *
+ * A `?w=` request falls back to the width-less object when no width-specific one
+ * exists, which is what makes the raster half of the mirror affordable: the local
+ * route ignores `maxEdge` for a source JPEG and returns the original bytes, so
+ * storing a second identical copy under `<index>@320.jpg` for all 1,500 chest
+ * studies would add ~225 MB of duplicates to say nothing new. Rendered slices are
+ * unaffected â€” their width-specific object exists and is found first.
+ *
+ * A miss is *not* a fallthrough. The filesystem path cannot succeed on Workers
+ * either, and a study that was left out of the mirror is a known, expected state
+ * for this deployment â€” so it gets an explicit "not mirrored" tile rather than a
+ * broken image. See `notMirroredTile`.
+ */
+export async function serveMirroredPixels(
+  studyId: string,
+  seriesId: string,
+  index: number,
+  width: number | undefined,
+  req: Request,
+): Promise<Response | undefined> {
+  const bucket = getMirror();
+  if (!bucket) return undefined;
+
+  // `undefined` last: a width-specific render is preferred when it exists, and
+  // the original is the honest answer when it does not.
+  const widths = width === undefined ? [undefined] : [width, undefined];
+
+  for (const w of widths) {
+    for (const ext of PIXEL_EXTENSIONS) {
+      const key = mirrorKeys.pixels(studyId, seriesId, index, ext, w);
+      const object = await bucket.get(key).catch(() => null);
+      if (!object) continue;
+
+      const headers: Record<string, string> = {
+        "Content-Type": CONTENT_TYPE_BY_EXT[ext],
+        "Cache-Control": MIRROR_CACHE_CONTROL,
+        ETag: object.httpEtag,
+        "X-Mirror": "hit",
+      };
+      if (req.headers.get("if-none-match") === object.httpEtag) {
+        return new Response(null, { status: 304, headers });
+      }
+      return new Response(object.body, { status: 200, headers });
+    }
+  }
+
+  return notMirroredTile();
+}
+
+/**
+ * The placeholder for a slice that exists in the index but whose pixels were not
+ * included in the mirror.
+ *
+ * SVG rather than a stored PNG for three reasons: it needs no image library in
+ * the Worker (`pngjs` is exactly what this design removes from the bundle), it
+ * needs no object in R2, and it can say in words what happened instead of being
+ * an ambiguous grey square. It is flat colour and text â€” deliberately nothing
+ * that could be mistaken for anatomy.
+ *
+ * Status is 200 so the viewer's layout is preserved, and `no-store` means the
+ * tile disappears as soon as the study is added to the mirror rather than
+ * sticking around in a browser cache. `X-Mirror: miss` is the machine-readable
+ * half, for checking coverage with curl.
+ */
+export function notMirroredTile(): Response {
+  return new Response(NOT_MIRRORED_SVG, {
+    status: 200,
+    headers: {
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Mirror": "miss",
+    },
+  });
+}
+
+const NOT_MIRRORED_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Image not mirrored to this deployment">
+  <rect width="512" height="512" fill="#0b1220"/>
+  <rect x="8" y="8" width="496" height="496" fill="none" stroke="#1e293b" stroke-width="2" stroke-dasharray="10 8"/>
+  <g fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+    <text x="256" y="248" font-size="22">image not mirrored</text>
+    <text x="256" y="282" font-size="15" fill="#475569">this study is indexed, pixels are not deployed</text>
+  </g>
+</svg>`;
+
+/**
+ * Streams the mirrored 3-D volume for one reconstructed series.
+ *
+ * `exportDicomVolume` reads every instance of the stack â€” 558 files for
+ * CT-C48B2F â€” into a 146 MB Float32Array, so it cannot run on Workers at all.
+ * The exported result, on the other hand, is decimated to <=128 cubed and lands
+ * around 0.3 MB, which makes it the cheapest thing in the whole mirror.
+ *
+ * Returns `undefined` for no mirror or no object, so the local route keeps its
+ * own on-demand path and its own 404 for a series that has no stack. There is no
+ * placeholder here: a missing 3-D volume is already a state the client handles
+ * (the toggle is gated on `SeriesInfo.volumeAvailable`).
+ */
+export async function serveMirroredVolume(
+  studyId: string,
+  seriesId: string,
+  req: Request,
+): Promise<Response | undefined> {
+  const bucket = getMirror();
+  if (!bucket) return undefined;
+
+  const object = await bucket.get(mirrorKeys.volume(studyId, seriesId)).catch(() => null);
+  if (!object) return undefined;
+
+  const meta = object.customMetadata ?? {};
+  const dims = meta.dims;
+  const spacing = meta.spacing;
+  const window = meta.window;
+
+  // Without the shape the bytes are unusable, and guessing it would put a wrong
+  // volume on screen. Fail loudly instead.
+  if (!dims || !spacing || !window) {
+    return new Response(
+      JSON.stringify({ error: "Mirrored volume is missing its X-Volume-* metadata â€” re-run `npm run mirror:render`" }),
+      { status: 422, headers: { "Content-Type": "application/json", "X-Mirror": "hit" } },
+    );
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/octet-stream",
+    "X-Volume-Dims": dims,
+    "X-Volume-Spacing": spacing,
+    "X-Volume-Window": window,
+    "Cache-Control": MIRROR_CACHE_CONTROL,
+    ETag: object.httpEtag,
+    "X-Mirror": "hit",
+  };
+
+  if (req.headers.get("if-none-match") === object.httpEtag) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(object.body, { status: 200, headers });
+}
+
+
+
