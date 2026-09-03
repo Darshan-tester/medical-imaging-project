@@ -1,9 +1,22 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, Play, Pause, ChevronsLeft, ChevronsRight } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
+
+/**
+ * Cine rate multipliers, applied to `FRAME_MS`.
+ *
+ * A radiologist scrubbing a 512-slice MPR stack wants to run it faster than the
+ * default; someone reading a short thick-slice series wants it slower. The set is
+ * deliberately small and symmetric around 1× so the control stays a glance-sized
+ * segmented button rather than a dropdown.
+ */
+const SPEEDS = [0.5, 1, 1.5, 2] as const;
+
+/** Base cine interval at 1×: ~11 fps, the rate this viewer has always used. */
+const FRAME_MS = 90;
 
 export function SliceNavigator({
   current,
@@ -36,14 +49,24 @@ export function SliceNavigator({
   currentRef.current = current;
   const readyRef = useRef(ready);
   readyRef.current = ready;
+  const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
+  /*
+   * Read through a ref inside the loop, the same way `current` and `ready` are:
+   * changing speed mid-playback then takes effect on the next frame instead of
+   * tearing down and restarting the requestAnimationFrame loop.
+   */
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
 
   useEffect(() => {
     if (!playing || total <= 1) return;
     let last = performance.now();
     const tick = (t: number) => {
       // Advance on whichever is later: the frame interval, or the moment the
-      // current frame actually finished decoding.
-      if (t - last > 90 && readyRef.current) {
+      // current frame actually finished decoding. Speed scales the interval only
+      // — the readiness gate still applies, so 2× on a series whose planes are
+      // resliced on demand runs as fast as the pixels arrive and no faster.
+      if (t - last > FRAME_MS / speedRef.current && readyRef.current) {
         // Cine playback loops — this is the one place wraparound is intentional.
         onChange((currentRef.current + 1) % total);
         last = t;
@@ -76,6 +99,37 @@ export function SliceNavigator({
         >
           {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
         </button>
+      </Tooltip>
+
+      {/*
+       * Playback speed, next to the transport control it modifies rather than off
+       * in the toolbar. Hidden below `sm` for the same reason the first/last-slice
+       * jumps are: on a phone the slider needs the width more than the multipliers
+       * do, and cine is still fully usable at 1×.
+       */}
+      <Tooltip label="Cine playback speed">
+        <div
+          className="hidden shrink-0 items-center gap-px rounded-md border border-border-strong bg-panel p-px sm:flex"
+          role="group"
+          aria-label="Cine playback speed"
+        >
+          {SPEEDS.map((s) => (
+            <button
+              key={s}
+              onClick={() => setSpeed(s)}
+              aria-pressed={s === speed}
+              aria-label={`${s}× playback speed`}
+              className={cn(
+                "rounded-[5px] px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-clinical",
+                s === speed
+                  ? "bg-clinical/15 text-clinical"
+                  : "text-ink-muted hover:bg-[rgb(var(--overlay-hover)/0.07)] hover:text-ink-primary"
+              )}
+            >
+              {s}x
+            </button>
+          ))}
+        </div>
       </Tooltip>
 
       <div className="mx-0.5 h-5 w-px shrink-0 bg-border-strong" />
