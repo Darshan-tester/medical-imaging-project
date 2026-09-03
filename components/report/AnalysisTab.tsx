@@ -277,6 +277,19 @@ export function AnalysisTab({
       setCurrentSlice(finding.sliceIndex);
       setPlaying(false);
       setSelectedAnnotationId(null);
+      /*
+       * "Show on scan" has to actually show it.
+       *
+       * Navigating to the right series and slice while the overlay was switched
+       * off landed the viewer on a slice with nothing drawn on it — which reads as
+       * a broken button rather than as Original view behaving correctly. And a
+       * finding region is a 2-D box on one slice, so it cannot be drawn over the
+       * ray-marched volume: leave 3-D for the same reason the Annotated switch
+       * does. Both are no-ops when the reader is already in the annotated 2-D
+       * view, which is the common case.
+       */
+      setAnnotatedView(true);
+      setView3D(false);
       // Focus the finding: bring the full frame back into view so its
       // bounding box (drawn in unpanned, unzoomed coordinates) is visible.
       setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));

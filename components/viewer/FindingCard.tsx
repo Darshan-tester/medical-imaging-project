@@ -36,7 +36,7 @@ export function FindingCard({
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Finding>) => void;
-  /** e.g. "CT Axial · Slice 42" — shown so a radiologist knows what clicking the crosshair will navigate to. */
+  /** e.g. "CT Axial · Slice 42" — the region "Show on scan" travels to, stated so a radiologist knows before pressing it. */
   locationLabel?: string;
 }) {
   const [noteOpen, setNoteOpen] = useState(false);
@@ -74,17 +74,41 @@ export function FindingCard({
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-[13px] font-semibold leading-snug text-ink-primary">{finding.label}</p>
-            {!isNegative && (
-              <button onClick={() => onSelect(finding.id)} className="shrink-0 text-ink-muted transition-transform hover:scale-110 hover:text-clinical" aria-label="Focus on image">
-                <Crosshair className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+          <p className="text-[13px] font-semibold leading-snug text-ink-primary">{finding.label}</p>
           {!isNegative && <div className="mt-1"><ConfidenceBand band={finding.band} /></div>}
           <p className="mt-2 text-[12px] leading-relaxed text-ink-secondary">{finding.description}</p>
-          {locationLabel && <p className="mt-1.5 font-mono text-[10.5px] text-ink-muted">{locationLabel}</p>}
+          {/*
+            * Where the region is, and the control that goes there.
+            *
+            * The jump used to be an unlabelled crosshair in the title row, which
+            * gave no clue that it switches the viewer to the annotated slice. The
+            * two belong on one line: the label states the target ("CT Axial ·
+            * Slice 42"), the button performs it, and a reader who wants the
+            * unmarked image just leaves the viewer on Original.
+            *
+            * Negative findings ("No acute abnormality") are excluded because
+            * there is no region to travel to — the same reason they carry no
+            * confidence ring and no accept/reject row.
+            */}
+          {(locationLabel || !isNegative) && (
+            <div className="mt-1.5 flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate font-mono text-[10.5px] text-ink-muted">{locationLabel}</span>
+              {!isNegative && (
+                <button
+                  onClick={() => onSelect(finding.id)}
+                  title={locationLabel ? `Show this finding on ${locationLabel}` : "Show this finding on the scan"}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-[3px] text-[10.5px] font-medium transition-colors",
+                    isActive
+                      ? "border-clinical/50 text-clinical"
+                      : "border-border text-ink-secondary hover:border-clinical/50 hover:text-clinical"
+                  )}
+                >
+                  <Crosshair className="h-3 w-3" /> Show on scan
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
