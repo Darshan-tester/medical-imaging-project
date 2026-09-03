@@ -1,32 +1,29 @@
 /**
- * Cloudflare builds default to dataset mode; everything else keeps the mock default.
+ * Where the UI gets its studies from, decided at build time.
  *
- * `lib/data-source.ts` reads `NEXT_PUBLIC_DATA_MODE` and falls back to "mock",
- * which serves the seeded demo studies from `lib/mock-data.ts`. That fallback is
- * correct for a fresh clone with no dataset, and it is what `.env.local.example`
- * ships. It is wrong for the deployed Worker, and invisibly so:
+ * `NEXT_PUBLIC_DATA_MODE` is read by `lib/data-source.ts` and inlined into the
+ * client bundle by Next, because `app/(portal)/studies/page.tsx` is a client
+ * component. There is no runtime override, which is what made the previous
+ * default fail invisibly:
  *
- *   - `app/(portal)/studies/page.tsx` is a client component, so the value is
- *     inlined into the JS bundle at build time. There is no runtime override.
- *   - `.env.local` (where the real value lives, `NEXT_PUBLIC_DATA_MODE=dataset`)
- *     is gitignored, so the Cloudflare builder never sees it.
+ *   - the fallback was `mock`, so a fresh clone and the deployed Worker both
+ *     served the invented MRD-* studies from `lib/mock-data.ts`;
+ *   - the CI builder was flipped to `dataset`, whose pixels come from API routes
+ *     that read DICOM and NIfTI off disk through `SCANLAB_DATA_ROOT` — a path the
+ *     Cloudflare Worker does not have. Those routes had nothing to read, so the
+ *     deploy fell back to mock data anyway.
  *
- * The result was a green deploy serving mock studies while the R2 dataset mirror
- * sat there unread — the API routes were returning real data that no page asked
- * for.
+ * The default is now `demo`: the real CT / MRI / PET / X-ray studies committed
+ * under `public/demo-data`, indexed by `npm run demo:index` into
+ * `public/demo-data/index.json`. They are static assets, so this is the only mode
+ * that works on the Worker, and it works identically in local dev.
  *
- * So the default flips on a CI builder only. The builder detection is the same
- * expression `scripts/cf-ensure-open-next.mjs` uses (guard 2 in its header), and
- * for the same reason: WORKERS_CI is what Cloudflare Workers Builds sets, with
- * CF_PAGES and the generic CI accepted as backstops.
- *
- * An explicit value always wins, in both directions — `NEXT_PUBLIC_DATA_MODE=mock`
- * in the dashboard forces the demo data back on without a code change, and a
- * local `npm run build` is untouched because `.env.local` sets the value before
- * this file is evaluated.
+ * An explicit value still wins, in both directions. `NEXT_PUBLIC_DATA_MODE=dataset`
+ * in `.env.local` gives the full local corpus through the manifest and the API
+ * routes; `=mock` restores the seeded placeholder studies the component tests and
+ * the design-time pages rely on.
  */
-const onBuilder = Boolean(process.env.WORKERS_CI || process.env.CF_PAGES || process.env.CI);
-const dataMode = process.env.NEXT_PUBLIC_DATA_MODE ?? (onBuilder ? "dataset" : "mock");
+const dataMode = process.env.NEXT_PUBLIC_DATA_MODE ?? "demo";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -39,8 +36,6 @@ const nextConfig = {
   },
 };
 
-if (onBuilder) {
-  console.log(`[next.config] CI builder detected — NEXT_PUBLIC_DATA_MODE=${dataMode}`);
-}
+console.log(`[next.config] NEXT_PUBLIC_DATA_MODE=${dataMode}`);
 
 module.exports = nextConfig;

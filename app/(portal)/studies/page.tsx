@@ -5,6 +5,7 @@ import { Activity, Loader2 } from "lucide-react";
 import { StudyTable, SortKey } from "@/components/studies/StudyTable";
 import { StudyCard } from "@/components/studies/StudyCard";
 import { IndexStatusBanner } from "@/components/studies/IndexStatusBanner";
+import { DemoDataBanner } from "@/components/studies/DemoDataBanner";
 import { StudyFilters, DEFAULT_FILTERS, StudyFilterState } from "@/components/studies/StudyFilters";
 import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { fetchStudies, getDataMode } from "@/lib/data-source";
@@ -96,9 +97,16 @@ export default function StudiesPage() {
       </div>
 
       {dataMode === "dataset" && <IndexStatusBanner />}
+      {dataMode === "demo" && <DemoDataBanner />}
 
       <div className="mt-6 rounded-xl border border-border bg-panel p-4">
-        <StudyFilters filters={filters} setFilters={setFilters} view={view} setView={setView} resultCount={filtered.length} showDatasetFilter={dataMode === "dataset"} />
+        {/*
+          The dataset filter selects between real corpora (Perle CT, MR-RATE, PET,
+          ROCOv2), so it is meaningful in demo mode too — the committed studies
+          span four of them. Only `mock` has a single invented source, where the
+          control would offer one choice that filters nothing.
+        */}
+        <StudyFilters filters={filters} setFilters={setFilters} view={view} setView={setView} resultCount={filtered.length} showDatasetFilter={dataMode !== "mock"} />
       </div>
 
       <div className="mt-5">
@@ -113,6 +121,18 @@ export default function StudiesPage() {
             icon={Activity}
             title="No indexed studies available."
             description="Run `npm run dataset:index` against your local dataset root, then refresh this page."
+          />
+        ) : allStudies.length === 0 && dataMode === "demo" ? (
+          /*
+           * Demo mode has one failure mode and it is not "no data": the studies
+           * are committed under `public/demo-data`, so an empty list means
+           * `public/demo-data/index.json` is missing or was written by a
+           * different index version. Naming the file is the fix.
+           */
+          <EmptyState
+            icon={Activity}
+            title="The demo index could not be read."
+            description="`public/demo-data/index.json` is missing or was built by an older version. Run `npm run demo:index`, then refresh this page."
           />
         ) : filtered.length === 0 ? (
           <EmptyState

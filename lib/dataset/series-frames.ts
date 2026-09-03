@@ -19,7 +19,7 @@
  * ---------------------------------------------------------------------------
  */
 
-import { DatasetImageRef, DatasetSeries } from "./types";
+import { DatasetImageRef, DatasetSeries, SeriesFrameRun } from "./types";
 
 /**
  * Ref id for one frame of a compact run.
@@ -31,6 +31,16 @@ import { DatasetImageRef, DatasetSeries } from "./types";
  */
 export function frameRefId(seriesId: string, index: number): string {
   return `${seriesId}-${index}`;
+}
+
+/**
+ * Public URL for one frame of a compact run, or undefined for a run that has no
+ * static URL at all (everything a dataset scan produced).
+ *
+ * `{index}` in the template is the frame number — see `SeriesFrameRun.urlTemplate`.
+ */
+export function frameUrl(run: SeriesFrameRun, index: number): string | undefined {
+  return run.urlTemplate?.replace("{index}", String(index));
 }
 
 /** How many slices this series actually has refs for, in either representation. */
@@ -58,6 +68,10 @@ export function seriesImageAt(series: DatasetSeries, index: number): DatasetImag
     orientation: run.orientation,
     width: run.width,
     height: run.height,
+    // Only set for the committed public/demo-data studies; undefined for
+    // everything a dataset scan produced, which keeps the materialized ref
+    // byte-identical to what it was before `urlTemplate` existed.
+    url: frameUrl(run, index),
   };
 }
 

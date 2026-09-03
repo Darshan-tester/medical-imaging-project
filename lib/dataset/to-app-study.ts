@@ -1,5 +1,5 @@
 import { DatasetSeries, DatasetStudy, DATASET_SOURCE_LABEL } from "./types";
-import { seriesImageAt, seriesImageCount } from "./series-frames";
+import { frameUrl, seriesImageAt, seriesImageCount } from "./series-frames";
 import { parseReportSections } from "../report-utils";
 import { buildPatientProfile, extractDemographics } from "../patient-profile";
 import { simulateFindings } from "../simulated-findings";
@@ -10,7 +10,7 @@ import {
   SourceReport,
   Study,
   ViewerImage,
-} from "@/lib/types";
+} from "../types";
 
 
 /**
@@ -28,6 +28,23 @@ export function imageUrlFor(
 }
 
 /**
+ * Appends a width hint to a URL that may already carry a query string.
+ *
+ * `imageUrlFor` produces a clean path, so the cover used to be built with a
+ * bare `?w=`. A static demo asset URL already ends in `?dicom=1` or
+ * `?nifti=…&f=12`, and a second `?` would make the whole thing a single opaque
+ * path segment — the decoder would see no parameters and the Worker would 404.
+ */
+function withWidth(
+  url: string,
+  width: number
+): string {
+  return `${url}${
+    url.includes("?") ? "&" : "?"
+  }w=${width}`;
+}
+
+/**
  * One entry per slice, for a viewer that looks URLs up by index rather than
  * deriving them (see `imageByIndex` in AnalysisTab).
  *
@@ -35,6 +52,11 @@ export function imageUrlFor(
  * per-slice list is expanded here at request time instead of being written out
  * slice-by-slice into the manifest. Nothing but `index` varies for such a run —
  * the pixel size is a property of the plane, not of the individual slice.
+ *
+ * `url` wins over `imageUrlFor` when it is set, which is only ever the case for
+ * the committed `public/demo-data` studies: those pixels are static assets the
+ * browser decodes itself, because the deployed Worker has no filesystem to read
+ * them from. Nothing produced by a dataset scan sets it.
  */
 function viewerImagesFor(
   studyId: string,
@@ -48,11 +70,13 @@ function viewerImagesFor(
       (_, index) => ({
         index,
 
-        imageUrl: imageUrlFor(
-          studyId,
-          s.id,
-          index
-        ),
+        imageUrl:
+          frameUrl(run, index) ??
+          imageUrlFor(
+            studyId,
+            s.id,
+            index
+          ),
 
         width: run.width,
 
@@ -64,11 +88,13 @@ function viewerImagesFor(
   return s.images.map((img) => ({
     index: img.index,
 
-    imageUrl: imageUrlFor(
-      studyId,
-      s.id,
-      img.index
-    ),
+    imageUrl:
+      img.url ??
+      imageUrlFor(
+        studyId,
+        s.id,
+        img.index
+      ),
 
     width: img.width,
 
@@ -533,6 +559,10 @@ export function toAppStudy(
           ds.bodyRegion,
         age: ds.age ?? quoted.age,
         sex: ds.sex ?? quoted.sex,
+        // Real measured weight where the dataset states one (PET's
+        // `metadata.json`). Height is never stated, so BMI/BSA still come out
+        // badged as generated — the panel shows which is which.
+        weightKg: ds.weightKg,
         supplied: "source",
       }),
   };
@@ -654,11 +684,15 @@ function coverImageUrl(
     return undefined;
   }
 
-  return `${imageUrlFor(
-    ds.id,
-    series.id,
-    middle.index
-  )}?w=${COVER_WIDTH}`;
+  return withWidth(
+    middle.url ??
+      imageUrlFor(
+        ds.id,
+        series.id,
+        middle.index
+      ),
+    COVER_WIDTH
+  );
 }
 
 const COVER_WIDTH = 320;

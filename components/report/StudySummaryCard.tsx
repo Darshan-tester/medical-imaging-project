@@ -97,12 +97,21 @@ export function StudySummaryCard({ study }: { study: Study }) {
           </div>
         ))}
 
-        {p?.history && p.history.value.length > 0 ? (
-          <div className="border-t border-border pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11.5px] text-ink-muted">Relevant history</span>
-              {needsTag(p.history.source) ? <DemoTag /> : null}
-            </div>
+        {/*
+          History and notes are rendered whether or not there is a value, unlike
+          the rows above which always have one. A section that disappears when
+          empty leaves no way to tell "this patient has no relevant history" from
+          "history was never part of this panel" — and the imaging analysis is
+          described in terms of these parameters, so their absence is itself
+          information. "Not available" is the honest form of it: these datasets
+          carry no history for any study, so nothing here is a clinical negative.
+        */}
+        <div className="border-t border-border pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11.5px] text-ink-muted">Relevant history / pre-existing conditions</span>
+            {p?.history && needsTag(p.history.source) ? <DemoTag /> : null}
+          </div>
+          {p?.history && p.history.value.length > 0 ? (
             <ul className="mt-1.5 space-y-1">
               {p.history.value.map((h) => (
                 <li key={h} className="flex gap-1.5 text-[12px] leading-snug text-ink-primary">
@@ -111,18 +120,20 @@ export function StudySummaryCard({ study }: { study: Study }) {
                 </li>
               ))}
             </ul>
-          </div>
-        ) : null}
+          ) : (
+            <p className="mt-1.5 text-[12px] leading-snug text-ink-muted">Not available</p>
+          )}
+        </div>
 
-        {p?.notes ? (
-          <div className="border-t border-border pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11.5px] text-ink-muted">Special notes</span>
-              {needsTag(p.notes.source) ? <DemoTag /> : null}
-            </div>
-            <p className="mt-1.5 text-[12px] leading-snug text-ink-primary">{p.notes.value}</p>
+        <div className="border-t border-border pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11.5px] text-ink-muted">Special notes</span>
+            {p?.notes && needsTag(p.notes.source) ? <DemoTag /> : null}
           </div>
-        ) : null}
+          <p className={`mt-1.5 text-[12px] leading-snug ${p?.notes ? "text-ink-primary" : "text-ink-muted"}`}>
+            {p?.notes ? p.notes.value : "Not available"}
+          </p>
+        </div>
 
         <div className="mt-1 flex items-center gap-2 rounded-md border border-border bg-panel-alt px-3 py-2.5">
           <div className="flex h-6 w-6 items-center justify-center rounded-full bg-ai/15 text-ai">

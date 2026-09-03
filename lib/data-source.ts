@@ -1,25 +1,47 @@
 import { listStudies, getStudy as getMockStudy } from "./mock-data";
+import { getDemoStudy, listDemoStudies } from "./demo/load";
 import { Study } from "./types";
 
+export type DataMode = "mock" | "dataset" | "demo";
+
 /**
- * "mock" (default) uses the existing seeded demo data untouched. "dataset"
- * fetches real indexed dataset studies from the API routes backed by
- * `.scanlab/manifest.json`. `NEXT_PUBLIC_DATA_MODE` is inlined at build
- * time by Next.js, so this is safe to call from client components.
+ * Where the studies the UI shows come from.
+ *
+ * - `demo` (default) reads `public/demo-data/index.json`, the committed index of
+ *   the real CT / MRI / PET / chest X-ray studies in this repository. This is
+ *   the only mode that works on the deployed Cloudflare Worker, because it is
+ *   the only one whose pixels are static assets rather than files on a disk the
+ *   Worker does not have.
+ * - `dataset` fetches indexed studies from the API routes backed by
+ *   `.scanlab/manifest.json` — the full local corpus, requires
+ *   `SCANLAB_DATA_ROOT` and a `dataset:index` run.
+ * - `mock` is the original seeded placeholder data. Kept because component tests
+ *   and the design-time pages rely on a fixed, dependency-free study set, but no
+ *   longer the default: a deployed build showing invented MRD-* studies beside
+ *   real committed datasets was the problem this mode created.
+ *
+ * `NEXT_PUBLIC_DATA_MODE` is inlined at build time by Next.js, so this is safe
+ * to call from client components.
  */
-export function getDataMode(): "mock" | "dataset" {
-  return process.env.NEXT_PUBLIC_DATA_MODE === "dataset" ? "dataset" : "mock";
+export function getDataMode(): DataMode {
+  const mode = process.env.NEXT_PUBLIC_DATA_MODE;
+  if (mode === "dataset" || mode === "mock" || mode === "demo") return mode;
+  return "demo";
 }
 
 export async function fetchStudies(): Promise<Study[]> {
-  if (getDataMode() === "mock") return listStudies();
+  const mode = getDataMode();
+  if (mode === "mock") return listStudies();
+  if (mode === "demo") return listDemoStudies();
   const res = await fetch("/api/studies");
   if (!res.ok) throw new Error(`Failed to load studies (${res.status})`);
   return res.json();
 }
 
 export async function fetchStudy(id: string): Promise<Study | undefined> {
-  if (getDataMode() === "mock") return getMockStudy(id);
+  const mode = getDataMode();
+  if (mode === "mock") return getMockStudy(id);
+  if (mode === "demo") return getDemoStudy(id);
   const res = await fetch(`/api/studies/${encodeURIComponent(id)}`);
   if (res.status === 404) return undefined;
   if (!res.ok) throw new Error(`Failed to load study (${res.status})`);
@@ -62,7 +84,10 @@ export interface IndexStatus {
 }
 
 export async function fetchIndexStatus(): Promise<IndexStatus | undefined> {
-  if (getDataMode() === "mock") return undefined;
+  // Neither mock nor demo mode has a manifest to report on, and in demo mode
+  // `/api/datasets/status` has no data root to read — asking would produce an
+  // "index missing" banner over studies that are present and working.
+  if (getDataMode() !== "dataset") return undefined;
   const res = await fetch("/api/datasets/status");
   if (!res.ok) return undefined;
   return res.json();

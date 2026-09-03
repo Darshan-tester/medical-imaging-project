@@ -68,6 +68,19 @@ export interface DatasetImageRef {
   orientation?: SliceOrientation;
   width?: number;
   height?: number;
+  /**
+   * Public URL the browser can fetch these pixels from directly, set only for
+   * studies that ship as committed static assets under `public/demo-data`
+   * (see `lib/demo`). Present means "do not route this slice through
+   * `/api/studies/.../images/...`" — the deployed Cloudflare Worker has no
+   * filesystem and no `SCANLAB_DATA_ROOT`, so for those studies the API route
+   * has nothing to read and the browser decodes the asset itself.
+   *
+   * Absent for every study produced by a dataset scan, which is why adding it
+   * changes nothing about the indexed path: `viewerImagesFor` falls back to
+   * `imageUrlFor` exactly as before.
+   */
+  url?: string;
 }
 
 /**
@@ -125,6 +138,16 @@ export interface SeriesFrameRun {
   orientation?: SliceOrientation;
   width?: number;
   height?: number;
+  /**
+   * Public URL for one frame of the run, with `{index}` standing in for the
+   * frame number — see `DatasetImageRef.url` for when this is set at all.
+   *
+   * A template rather than one URL per frame because a run is by definition the
+   * same container at a different index: a 512-slice reconstructed plane needs
+   * 512 URLs that differ in one number, and materializing them would put ~40,000
+   * strings in the browser for a ten-study MRI list that reads none of them.
+   */
+  urlTemplate?: string;
 }
 
 export interface DatasetSeries {
@@ -187,6 +210,12 @@ export interface DatasetStudy {
   /** Only set when the source data actually provides it. Never invented. */
   age?: number;
   sex?: "M" | "F" | "Other";
+  /**
+   * Body weight in kilograms, only when the source states it. PET is the case
+   * that matters: SUV is normalized by body weight, so the number is part of how
+   * the images should be read rather than decoration on a panel.
+   */
+  weightKg?: number;
   modality: NormalizedModality;
   bodyRegion?: string;
   date?: string; // ISO date, only if the source provides one

@@ -19,6 +19,34 @@ interface Point {
   y: number;
 }
 
+/**
+ * Where the image actually is inside the square frame, as CSS percentages.
+ *
+ * The frame is `aspect-square` and the image is `object-contain`, so a 512×326
+ * MRI reslice or a portrait chest radiograph is letterboxed: the pixels occupy a
+ * strip, not the whole frame. Finding regions are normalized against the *image*,
+ * so drawing them at `inset-0` puts every box off by the size of the letterbox —
+ * up to a third of the frame for the wider reslices in this corpus.
+ *
+ * Returns full-frame insets until the natural size is known, and for a square
+ * image, where the two rectangles are the same thing.
+ */
+function containedRect(natural?: { width: number; height: number }) {
+  if (!natural || natural.width <= 0 || natural.height <= 0) {
+    return { left: "0%", top: "0%", width: "100%", height: "100%" };
+  }
+
+  const ratio = natural.width / natural.height;
+  if (ratio > 1) {
+    const height = 1 / ratio;
+    return { left: "0%", top: `${((1 - height) / 2) * 100}%`, width: "100%", height: `${height * 100}%` };
+  }
+  if (ratio < 1) {
+    return { left: `${((1 - ratio) / 2) * 100}%`, top: "0%", width: `${ratio * 100}%`, height: "100%" };
+  }
+  return { left: "0%", top: "0%", width: "100%", height: "100%" };
+}
+
 export function ImageViewer({
   modality,
   seed,
@@ -103,6 +131,15 @@ export function ImageViewer({
   const [pendingStart, setPendingStart] = useState<Point | null>(null);
   const [editingMarker, setEditingMarker] = useState<string | null>(null);
   const [renderFailed, setRenderFailed] = useState(false);
+  /**
+   * The current slice's own pixel dimensions, once the browser has decoded it.
+   *
+   * Needed only to place the AI finding boxes: they are normalized against the
+   * image, and `object-contain` means the image is not the frame unless it
+   * happens to be square. Undefined until the first decode, which is why
+   * `containedRect` falls back to the full frame.
+   */
+  const [natural, setNatural] = useState<{ width: number; height: number }>();
   const localRef = useRef<HTMLDivElement>(null);
   const ref = containerRef ?? localRef;
 
@@ -151,6 +188,19 @@ export function ImageViewer({
   const onMouseUp = () => {
     dragging.current = false;
   };
+
+  /*
+   * Deliberately *not* cleared when the slice changes. Every slice in a series
+   * shares its dimensions, so the previous slice's value is already the right
+   * answer, and dropping back to the full-frame default for the one frame
+   * before `onLoad` fires would make every box visibly jump on each step
+   * through a series. When the series really does change shape, the first
+   * decoded frame corrects it.
+   *
+   * The placeholder texture is the exception: it is a square SVG that fills the
+   * frame, so there is no letterbox to correct for.
+   */
+  const imageBox = containedRect(imageUrl ? natural : undefined);
 
   const onClick = (e: React.MouseEvent) => {
     if (viewerState.tool === "measure") {
@@ -226,6 +276,7 @@ export function ImageViewer({
           loading="eager"
           onFailure={() => setRenderFailed(true)}
           onReady={onImageReady}
+          onNaturalSize={setNatural}
           className="h-full w-full"
         />
 
@@ -239,7 +290,20 @@ export function ImageViewer({
           </div>
         )}
 
-        <AIOverlay findings={findings} activeFindingId={activeFindingId} onHover={onHoverFinding} onSelect={onSelectFinding} />
+        {/* Finding boxes are normalized against the *image*, so they are drawn
+            into the letterboxed rectangle the image actually occupies rather
+            than the square frame. Markers and measurements stay in frame
+            coordinates on purpose: they are created by clicking that same
+            frame, so they are already self-consistent with it.
+
+            An absolutely positioned box is itself the containing block for
+            AIOverlay's own `absolute inset-0`, so no extra wrapper is needed.
+            `pointer-events-none` here does not disable the boxes — each one
+            sets `pointer-events-auto` on itself — it only keeps the letterbox
+            from swallowing clicks meant for the measure and pen tools. */}
+        <div className="pointer-events-none absolute" style={imageBox}>
+          <AIOverlay findings={findings} activeFindingId={activeFindingId} onHover={onHoverFinding} onSelect={onSelectFinding} />
+        </div>
 
         {/* Measurements — normalized coordinates, scoped to this exact slice/series by the caller */}
         <svg className="pointer-events-none absolute inset-0 h-full w-full">

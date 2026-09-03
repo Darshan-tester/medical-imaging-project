@@ -3,6 +3,9 @@ import { PNG } from "pngjs";
 import * as dicomParser from "dicom-parser";
 import * as nifti from "nifti-reader-js";
 import { DatasetImageRef, DicomVolumeRef, SliceOrientation } from "./types";
+// Shared with the client-side demo decoder so both agree on what a NIfTI
+// datatype code means — see the header of `nifti-voxels.ts`.
+import { niftiTypedArray, VoxelArray } from "./nifti-voxels";
 
 export interface RenderedImage {
   contentType: string;
@@ -593,30 +596,6 @@ function resolveIndex(i: number, n: number, flip: boolean): number {
   return flip ? n - 1 - i : i;
 }
 
-function niftiTypedArray(datatypeCode: number, buf: ArrayBuffer): { [i: number]: number; length: number } {
-  // Matches the NIFTI1.TYPE_* constants.
-  switch (datatypeCode) {
-    case 2:
-      return new Uint8Array(buf);
-    case 4:
-      return new Int16Array(buf);
-    case 8:
-      return new Int32Array(buf);
-    case 16:
-      return new Float32Array(buf);
-    case 64:
-      return new Float64Array(buf);
-    case 256:
-      return new Int8Array(buf);
-    case 512:
-      return new Uint16Array(buf);
-    case 768:
-      return new Uint32Array(buf);
-    default:
-      return new Int16Array(buf);
-  }
-}
-
 function toArrayBuffer(b: Buffer): ArrayBuffer {
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
 }
@@ -670,9 +649,15 @@ const WINDOW_MAX_SAMPLES = 4_000_000;
  * Histogram over a strided subsample — exact percentiles over a 45 M-voxel
  * volume would cost more than the decode itself, and a 4 M-sample estimate moves
  * a 1024-bin boundary at most.
+ *
+ * Exported because `scripts/demo-index.ts` measures this once per committed demo
+ * volume and writes the result into `public/demo-data/index.json`: the browser
+ * decoder then applies the identical window without re-running the histogram, so
+ * a client-rendered demo slice and a server-rendered indexed slice of the same
+ * volume look the same.
  */
-function computeVolumeWindow(
-  data: { [i: number]: number; length: number },
+export function computeVolumeWindow(
+  data: VoxelArray,
   slope: number,
   inter: number
 ): { lo: number; range: number } {
