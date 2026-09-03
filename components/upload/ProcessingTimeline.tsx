@@ -4,6 +4,18 @@ import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+/**
+ * NOT WIRED TO ANYTHING, AND NOT TO BE WIRED BACK INTO THE UPLOAD FLOW.
+ *
+ * The stages below are a fixed animation on a timer — `STAGE_DURATIONS`, not
+ * measured work. "AI Analysis", "Findings" and "Report Draft" describe a
+ * pipeline this build does not have: there is no model that reads pixels, so an
+ * uploaded study is created with `findings: []` and `aiStatus: "not-run"`.
+ * Showing this over an upload would depict analysis that never ran, which is why
+ * `app/(portal)/upload/page.tsx` now renders a plain reading indicator instead.
+ *
+ * Kept only as the design-time artefact it is.
+ */
 const STAGES = ["Upload", "Validating", "Preprocessing", "AI Analysis", "Findings", "Report Draft"];
 const STAGE_DURATIONS = [700, 900, 1400, 1900, 800, 700];
 

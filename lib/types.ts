@@ -41,8 +41,9 @@ export interface SeriesInfo {
   /**
    * Optional per-series images, ready for a future PACS/DICOM integration
    * where each series carries its own instances instead of sharing the
-   * study-level `imageUrls`. Not populated by today's mock/demo data or the
-   * upload flow — the viewer falls back to `Study.imageUrls` when absent.
+   * study-level `imageUrls`. Populated by the committed demo studies and by
+   * uploaded studies (one entry per instance/frame); the seeded mock studies
+   * leave it unset and the viewer falls back to `Study.imageUrls`.
    */
   images?: ViewerImage[];
   /**
@@ -250,6 +251,36 @@ export interface Study {
    * generated number.
    */
   patientProfile?: PatientProfile;
+  /**
+   * Set only on a study created by the Upload Scan page from files the person
+   * supplied, and never on a demo, dataset or mock study. This is what keeps
+   * the two sources of truth apart: demo studies come from
+   * `public/demo-data/index.json`, uploaded studies come from the browser's own
+   * upload store (`lib/uploads/db.ts`), and nothing merges them.
+   */
+  uploaded?: UploadOrigin;
+}
+
+/**
+ * Provenance for a study that came from an upload rather than from a dataset.
+ *
+ * Deliberately records only what is true of the transfer itself — when it
+ * happened, which files arrived, whether they survived a reload. Nothing here
+ * describes the images; that comes from the files' own metadata.
+ */
+export interface UploadOrigin {
+  /** ISO timestamp of when the files were accepted. */
+  uploadedAt: string;
+  fileCount: number;
+  /** Original file names, in the order they were read. */
+  fileNames: string[];
+  /**
+   * `"persistent"` — the bytes are in IndexedDB, so reloading the study URL
+   * re-renders the same pixels. `"session"` — IndexedDB was unavailable and the
+   * bytes are only in memory for this page session, which the UI says plainly
+   * rather than letting a reload look like data loss.
+   */
+  storage: "persistent" | "session";
 }
 
 

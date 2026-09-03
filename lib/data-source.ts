@@ -1,5 +1,8 @@
 import { listStudies, getStudy as getMockStudy } from "./mock-data";
 import { getDemoStudy, listDemoStudies } from "./demo/load";
+import { getUploadRecord, listUploadRecords } from "./uploads/db";
+import { uploadedStudyToApp, uploadedStudyToAppSummary } from "./uploads/to-study";
+import { isUploadedStudyId } from "./uploads/types";
 import { Study } from "./types";
 
 export type DataMode = "mock" | "dataset" | "demo";
@@ -29,7 +32,25 @@ export function getDataMode(): DataMode {
   return "demo";
 }
 
+/**
+ * Every study the UI can show: the studies of the current mode, plus this
+ * browser's own uploads.
+ *
+ * Uploads are a second, separate source — read from IndexedDB, never from the
+ * demo index or the manifest — and they are concatenated, not merged. Nothing is
+ * matched or de-duplicated between the two: an upload of a file that happens to
+ * be a copy of a committed study is still its own study with its own id.
+ *
+ * Newest upload first, ahead of the mode's studies. The studies page sorts the
+ * combined list itself, so this only decides what the user sees before they pick
+ * a sort — and after an upload, that should be the upload.
+ */
 export async function fetchStudies(): Promise<Study[]> {
+  const [uploads, indexed] = await Promise.all([fetchUploadedStudies(), fetchModeStudies()]);
+  return [...uploads, ...indexed];
+}
+
+async function fetchModeStudies(): Promise<Study[]> {
   const mode = getDataMode();
   if (mode === "mock") return listStudies();
   if (mode === "demo") return listDemoStudies();
@@ -38,7 +59,37 @@ export async function fetchStudies(): Promise<Study[]> {
   return res.json();
 }
 
+/**
+ * The uploads stored in this browser.
+ *
+ * Never throws and never rejects: an unreadable upload store must not take the
+ * studies list down with it, because the demo studies are still perfectly
+ * loadable. `listUploadRecords` already swallows its own storage errors; this
+ * catch covers a record that fails to convert.
+ */
+async function fetchUploadedStudies(): Promise<Study[]> {
+  try {
+    return (await listUploadRecords()).map(uploadedStudyToAppSummary);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * One study by id.
+ *
+ * The upload store is consulted first, and an `upl_` id never reaches the demo
+ * index or the API at all. That ordering is the fix for the reload case: an
+ * uploaded study opened from a fresh page load has to resolve from the store it
+ * was written to, not fall through to a dataset that was never asked to contain
+ * it — which is what produced "Study not found" on a study that plainly existed.
+ */
 export async function fetchStudy(id: string): Promise<Study | undefined> {
+  if (isUploadedStudyId(id)) {
+    const record = await getUploadRecord(id);
+    return record ? uploadedStudyToApp(record) : undefined;
+  }
+
   const mode = getDataMode();
   if (mode === "mock") return getMockStudy(id);
   if (mode === "demo") return getDemoStudy(id);
@@ -130,6 +181,15 @@ export interface UploadMatchResult {
  * Returns one result per file, in request order. Throws on transport or limit
  * errors so the caller can show the server's own message rather than presenting
  * a failure as "no match".
+ *
+ * NOT PART OF THE UPLOAD FLOW, AND NOT TO BE WIRED BACK INTO IT. This is a
+ * dataset-administration lookup — "is this file already in the indexed corpus?"
+ * — and it has no caller. The Upload Scan page used to call it and open whatever
+ * study came back, which meant an uploaded scan could be silently replaced by a
+ * demo study that happened to share its bytes. Uploads now always become their
+ * own study (`lib/uploads/parse.ts` → `lib/uploads/db.ts` → `uploadedStudyToApp`)
+ * and are never looked up here, or anywhere else, by hash, name, patient,
+ * accession, study code or modality.
  */
 export async function matchUploads(files: File[]): Promise<UploadMatchResult[]> {
   const body = new FormData();

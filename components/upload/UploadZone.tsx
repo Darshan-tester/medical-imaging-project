@@ -14,11 +14,12 @@ export interface UploadDetails {
   bodyRegion: string;
   priority: StudyPriority;
   /*
-   * Demographics and anthropometrics. All optional: the analysis is normalized
-   * against them where they exist (SUV body-weight, contrast and dose by
-   * weight, BSA-indexed measurements), and anything left blank is filled with a
-   * deterministic demo value that the report badges as such rather than being
-   * silently invented here. See `lib/patient-profile.ts`.
+   * Demographics and anthropometrics. All optional, and all of it stored on the
+   * upload record as *entered* — a blank box stays blank rather than being
+   * filled in. The uploaded-study path builds its patient profile with
+   * `simulateMissing: false`, so a height nobody typed and no file stated
+   * renders "Not available" instead of a plausible-looking number. See
+   * `lib/patient-profile.ts` and `lib/uploads/to-study.ts`.
    */
   age?: number;
   sex?: "M" | "F" | "Other";
@@ -38,15 +39,20 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * "analyze" is the original seeded-demo flow: the typed modality/region drive
- * `createDemoStudy`, so they are required. "match" hashes the files against the
- * indexed dataset instead, where nothing typed here affects the result — so the
- * form is not shown rather than left on screen doing nothing.
+/*
+ * This component has one job: collect files and the metadata that will be stored
+ * on the study those files become. Every value typed into the form is part of
+ * that study — the modality and body region are required, the rest is recorded
+ * as *entered* — so the form is always shown.
+ *
+ * It used to take a `mode` prop whose `"match"` value hid the form and relabelled
+ * the button "Match to Indexed Study", for a flow that hashed the files against
+ * the indexed dataset and opened whichever demo study came back. That flow is
+ * gone: an upload becomes its own study and is never matched to an existing one.
+ * The prop went with it rather than being left as an affordance whose label would
+ * now be untrue.
  */
-export type UploadZoneMode = "analyze" | "match";
-
-export function UploadZone({ onStart, mode = "analyze" }: { onStart: (files: File[], details: UploadDetails) => void; mode?: UploadZoneMode }) {
+export function UploadZone({ onStart }: { onStart: (files: File[], details: UploadDetails) => void }) {
   const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [previews, setPreviews] = useState<Map<File, string>>(new Map());
@@ -125,7 +131,7 @@ export function UploadZone({ onStart, mode = "analyze" }: { onStart: (files: Fil
   );
 
   const heroPreview = files.length > 0 ? previews.get(files[0]) : undefined;
-  const canStart = files.length > 0 && (mode === "match" || details.bodyRegion.trim().length > 0);
+  const canStart = files.length > 0 && details.bodyRegion.trim().length > 0;
 
   return (
     <div className="space-y-5">
@@ -148,10 +154,11 @@ export function UploadZone({ onStart, mode = "analyze" }: { onStart: (files: Fil
         )}
       >
         {/*
-          DICOM and NIfTI are here because the demo pack exports CT as a .dcm
-          instance and MRI/PET as their .nii.gz volume. Neither renders in an
-          <img>, but matching only needs the bytes — the study that opens is what
-          gets displayed.
+          DICOM and NIfTI are accepted because they are what medical imaging
+          actually arrives as — and because the demo pack exports CT as a .dcm
+          instance and MRI/PET as a .nii.gz volume. Neither renders in an <img>,
+          so neither gets a preview tile below; both are read and decoded for
+          display once the study is created.
         */}
         <input
           ref={inputRef}
@@ -226,155 +233,142 @@ export function UploadZone({ onStart, mode = "analyze" }: { onStart: (files: Fil
         </div>
       )}
 
-      {mode === "match" ? (
-        <div className="rounded-xl border border-border bg-panel p-5">
-          <h3 className="text-card-title text-ink-primary">How the match works</h3>
-          <p className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">
-            Each file is hashed and looked up against the indexed dataset. On a hit the app opens that study&apos;s real images, its real
-            reconstructed planes and the radiology report that shipped with the dataset. Nothing is predicted, scored or generated — if a
-            file is not in the index, it is reported as unmatched rather than given findings.
-          </p>
-          <p className="mt-3 text-[11px] text-ink-muted">
-            Files are hashed in memory and never written to disk. Modality and body region are read from the matched study, so there is
-            nothing to type here.
-          </p>
+      <div className="rounded-xl border border-border bg-panel p-5">
+        <h3 className="text-card-title text-ink-primary">Study Details</h3>
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Patient Identifier (alias)</label>
+            <Input
+              value={details.patientAlias}
+              onChange={(e) => setDetails((d) => ({ ...d, patientAlias: e.target.value }))}
+              placeholder="e.g. Patient K-4471"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Modality</label>
+            <Select value={details.modality} onChange={(e) => setDetails((d) => ({ ...d, modality: e.target.value as Modality }))}>
+              {MODALITIES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Body Region *</label>
+            <Input
+              value={details.bodyRegion}
+              onChange={(e) => setDetails((d) => ({ ...d, bodyRegion: e.target.value }))}
+              placeholder="e.g. Chest, Brain, Knee (R)"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Priority</label>
+            <Select value={details.priority} onChange={(e) => setDetails((d) => ({ ...d, priority: e.target.value as StudyPriority }))}>
+              <option value="routine">Routine</option>
+              <option value="urgent">Urgent</option>
+              <option value="stat">STAT</option>
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Age (years)</label>
+            <Input
+              type="number"
+              min={0}
+              max={120}
+              inputMode="numeric"
+              value={raw.age}
+              onChange={(e) => setRaw((r) => ({ ...r, age: e.target.value }))}
+              placeholder="e.g. 54"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Sex</label>
+            <Select value={raw.sex} onChange={(e) => setRaw((r) => ({ ...r, sex: e.target.value }))}>
+              <option value="">Not specified</option>
+              <option value="M">Male</option>
+              <option value="F">Female</option>
+              <option value="Other">Other</option>
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Height (cm)</label>
+            <Input
+              type="number"
+              min={30}
+              max={250}
+              inputMode="decimal"
+              value={raw.heightCm}
+              onChange={(e) => setRaw((r) => ({ ...r, heightCm: e.target.value }))}
+              placeholder="e.g. 172"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Weight (kg)</label>
+            <Input
+              type="number"
+              min={1}
+              max={400}
+              inputMode="decimal"
+              value={raw.weightKg}
+              onChange={(e) => setRaw((r) => ({ ...r, weightKg: e.target.value }))}
+              placeholder="e.g. 78.5"
+            />
+          </div>
         </div>
-      ) : (
-        <div className="rounded-xl border border-border bg-panel p-5">
-          <h3 className="text-card-title text-ink-primary">Study Details</h3>
-          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Patient Identifier (alias)</label>
-              <Input
-                value={details.patientAlias}
-                onChange={(e) => setDetails((d) => ({ ...d, patientAlias: e.target.value }))}
-                placeholder="e.g. Patient K-4471"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Modality</label>
-              <Select value={details.modality} onChange={(e) => setDetails((d) => ({ ...d, modality: e.target.value as Modality }))}>
-                {MODALITIES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Body Region *</label>
-              <Input
-                value={details.bodyRegion}
-                onChange={(e) => setDetails((d) => ({ ...d, bodyRegion: e.target.value }))}
-                placeholder="e.g. Chest, Brain, Knee (R)"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Priority</label>
-              <Select value={details.priority} onChange={(e) => setDetails((d) => ({ ...d, priority: e.target.value as StudyPriority }))}>
-                <option value="routine">Routine</option>
-                <option value="urgent">Urgent</option>
-                <option value="stat">STAT</option>
-              </Select>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Age (years)</label>
-              <Input
-                type="number"
-                min={0}
-                max={120}
-                inputMode="numeric"
-                value={raw.age}
-                onChange={(e) => setRaw((r) => ({ ...r, age: e.target.value }))}
-                placeholder="e.g. 54"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Sex</label>
-              <Select value={raw.sex} onChange={(e) => setRaw((r) => ({ ...r, sex: e.target.value }))}>
-                <option value="">Not specified</option>
-                <option value="M">Male</option>
-                <option value="F">Female</option>
-                <option value="Other">Other</option>
-              </Select>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Height (cm)</label>
-              <Input
-                type="number"
-                min={30}
-                max={250}
-                inputMode="decimal"
-                value={raw.heightCm}
-                onChange={(e) => setRaw((r) => ({ ...r, heightCm: e.target.value }))}
-                placeholder="e.g. 172"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Weight (kg)</label>
-              <Input
-                type="number"
-                min={1}
-                max={400}
-                inputMode="decimal"
-                value={raw.weightKg}
-                onChange={(e) => setRaw((r) => ({ ...r, weightKg: e.target.value }))}
-                placeholder="e.g. 78.5"
-              />
-            </div>
-          </div>
 
-          {/*
-            BMI and BSA are computed, never typed — asking for them invites a
-            value that disagrees with the height and weight beside it. BSA uses
-            Mosteller, √(cm × kg / 3600).
-          */}
-          <div className="mt-4 grid grid-cols-2 gap-4">
-            <div className="rounded-lg border border-border bg-panel-alt px-3 py-2">
-              <p className="text-[11px] text-ink-muted">BMI (computed)</p>
-              <p className="mt-0.5 text-[13px] font-semibold text-ink-primary tabular-nums">
-                {liveBmi !== undefined ? `${liveBmi.toFixed(1)} kg/m²` : <span className="font-normal text-ink-muted">Needs height + weight</span>}
-              </p>
-            </div>
-            <div className="rounded-lg border border-border bg-panel-alt px-3 py-2">
-              <p className="text-[11px] text-ink-muted">BSA (computed · Mosteller)</p>
-              <p className="mt-0.5 text-[13px] font-semibold text-ink-primary tabular-nums">
-                {liveBsa !== undefined ? `${liveBsa.toFixed(2)} m²` : <span className="font-normal text-ink-muted">Needs height + weight</span>}
-              </p>
-            </div>
+        {/*
+          BMI and BSA are computed, never typed — asking for them invites a
+          value that disagrees with the height and weight beside it. BSA uses
+          Mosteller, √(cm × kg / 3600).
+        */}
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          <div className="rounded-lg border border-border bg-panel-alt px-3 py-2">
+            <p className="text-[11px] text-ink-muted">BMI (computed)</p>
+            <p className="mt-0.5 text-[13px] font-semibold text-ink-primary tabular-nums">
+              {liveBmi !== undefined ? `${liveBmi.toFixed(1)} kg/m²` : <span className="font-normal text-ink-muted">Needs height + weight</span>}
+            </p>
           </div>
-
-          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">
-                Relevant history / pre-existing conditions
-              </label>
-              <Textarea
-                rows={3}
-                value={raw.history}
-                onChange={(e) => setRaw((r) => ({ ...r, history: e.target.value }))}
-                placeholder={"One per line, e.g.\nFormer smoker, ~20 pack-years\nHypertension"}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Special notes</label>
-              <Textarea
-                rows={3}
-                value={raw.notes}
-                onChange={(e) => setRaw((r) => ({ ...r, notes: e.target.value }))}
-                placeholder="Anything that changes how the images should be read — e.g. portable AP technique, unable to fully inspire"
-              />
-            </div>
+          <div className="rounded-lg border border-border bg-panel-alt px-3 py-2">
+            <p className="text-[11px] text-ink-muted">BSA (computed · Mosteller)</p>
+            <p className="mt-0.5 text-[13px] font-semibold text-ink-primary tabular-nums">
+              {liveBsa !== undefined ? `${liveBsa.toFixed(2)} m²` : <span className="font-normal text-ink-muted">Needs height + weight</span>}
+            </p>
           </div>
-          <p className="mt-3 text-[11px] text-ink-muted">
-            This is a demo environment — modality and region are provided manually rather than parsed from real DICOM metadata. Demographics
-            are optional; anything left blank is filled with a deterministic demo value, and the report marks it as one.
-          </p>
         </div>
-      )}
+
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">
+              Relevant history / pre-existing conditions
+            </label>
+            <Textarea
+              rows={3}
+              value={raw.history}
+              onChange={(e) => setRaw((r) => ({ ...r, history: e.target.value }))}
+              placeholder={"One per line, e.g.\nFormer smoker, ~20 pack-years\nHypertension"}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[12px] font-medium text-ink-secondary">Special notes</label>
+            <Textarea
+              rows={3}
+              value={raw.notes}
+              onChange={(e) => setRaw((r) => ({ ...r, notes: e.target.value }))}
+              placeholder="Anything that changes how the images should be read — e.g. portable AP technique, unable to fully inspire"
+            />
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] text-ink-muted">
+          Every value here is a fallback, not an override: whatever the files&apos; own DICOM headers state wins, and what you type fills the
+          gaps — which for an ordinary JPEG or PNG is everything. The patient identifier is the exception and is always the alias you enter,
+          so a name in the headers need not be carried into the study. Nothing left blank is filled in for you; it reads &ldquo;Not
+          available&rdquo; instead.
+        </p>
+      </div>
 
       <Button variant="primary" size="lg" className="w-full" disabled={!canStart} onClick={() => onStart(files, submittedDetails())}>
-        {mode === "match" ? "Match to Indexed Study" : "Start Upload & Analysis"} <ArrowRight className="h-4 w-4" />
+        Start Upload &amp; Analysis <ArrowRight className="h-4 w-4" />
       </Button>
     </div>
   );

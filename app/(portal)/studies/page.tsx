@@ -5,7 +5,6 @@ import { Activity, Loader2 } from "lucide-react";
 import { StudyTable, SortKey } from "@/components/studies/StudyTable";
 import { StudyCard } from "@/components/studies/StudyCard";
 import { IndexStatusBanner } from "@/components/studies/IndexStatusBanner";
-import { DemoDataBanner } from "@/components/studies/DemoDataBanner";
 import { StudyFilters, DEFAULT_FILTERS, StudyFilterState } from "@/components/studies/StudyFilters";
 import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { fetchStudies, getDataMode } from "@/lib/data-source";
@@ -97,7 +96,6 @@ export default function StudiesPage() {
       </div>
 
       {dataMode === "dataset" && <IndexStatusBanner />}
-      {dataMode === "demo" && <DemoDataBanner />}
 
       <div className="mt-6 rounded-xl border border-border bg-panel p-4">
         {/*

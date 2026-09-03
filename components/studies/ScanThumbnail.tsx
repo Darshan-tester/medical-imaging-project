@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { isDemoDecodeUrl } from "@/lib/demo/types";
+import { isUploadDecodeUrl } from "@/lib/uploads/types";
 import { Modality } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -55,12 +56,21 @@ function PlaceholderTexture({ seed, modality, className }: { seed: number; modal
  *
  * Two kinds of URL arrive here. Most are something an `<img>` can load directly:
  * a raster file, or an `/api/studies/.../images/...` route that returns a PNG the
- * server rendered. The committed `public/demo-data` studies are the exception —
- * their pixels are a DICOM instance or a slice of a gzipped NIfTI volume, marked
- * as such by the query parameters `lib/demo/types.ts` defines, and the browser
- * has to decode them itself because the deployed Worker has no filesystem to
- * render them from. This component is where that happens, because it is the one
- * place both the study cards and the diagnostic viewer go through.
+ * server rendered. The rest have to be decoded in the browser, and this component
+ * is where that happens because it is the one place both the study cards and the
+ * diagnostic viewer go through:
+ *
+ * - the committed `public/demo-data` studies, whose pixels are a DICOM instance
+ *   or a slice of a gzipped NIfTI volume marked by the query parameters in
+ *   `lib/demo/types.ts`, because the deployed Worker has no filesystem to render
+ *   them from;
+ * - an uploaded study, whose pixels are bytes in IndexedDB marked by the
+ *   `/_uploaded/…?up=1` form in `lib/uploads/types.ts`, and which were never on a
+ *   server at all.
+ *
+ * The two decoders are separate modules over the same shared DICOM path, and
+ * which one runs is decided by the marker alone. A demo URL can never resolve
+ * from the upload store, and an upload URL can never resolve from the demo index.
  */
 export function ScanThumbnail({
   seed,
@@ -108,13 +118,14 @@ export function ScanThumbnail({
   /**
    * The object URL for a locally decoded slice, once it exists.
    *
-   * Never revoked here: the URL is owned by the LRU cache in `lib/demo/decode.ts`,
-   * which revokes it on eviction. Revoking on unmount would leave that cache
-   * handing out a dead blob to the next component that asks for the same slice.
+   * Never revoked here: the URL is owned by the LRU cache in the decode module
+   * that produced it, which revokes it on eviction. Revoking on unmount would
+   * leave that cache handing out a dead blob to the next component that asks for
+   * the same slice.
    */
   const [decodedUrl, setDecodedUrl] = useState<string>();
 
-  const needsDecode = imageUrl !== undefined && isDemoDecodeUrl(imageUrl);
+  const needsDecode = imageUrl !== undefined && (isDemoDecodeUrl(imageUrl) || isUploadDecodeUrl(imageUrl));
 
   /*
    * Held in a ref rather than listed as an effect dependency. The viewer passes
@@ -138,18 +149,29 @@ export function ScanThumbnail({
     setFailed(false);
     setDecodedUrl(undefined);
 
-    if (imageUrl === undefined || !isDemoDecodeUrl(imageUrl)) return;
+    if (imageUrl === undefined) return;
+
+    /*
+     * Imported on demand, not at module scope. Both decode modules pull in
+     * `dicom-parser` and `nifti-reader-js`; a static import would put both in the
+     * bundle of every page that renders a thumbnail, including the modes that
+     * never produce a decode-marked URL at all.
+     *
+     * The marker picks the module. Nothing falls back to the other one: a demo
+     * slice that fails to decode is not looked for in the upload store, and an
+     * uploaded slice that is missing does not go looking for a demo study.
+     */
+    const decode = isDemoDecodeUrl(imageUrl)
+      ? () => import("@/lib/demo/decode").then((mod) => mod.decodeDemoImage(imageUrl))
+      : isUploadDecodeUrl(imageUrl)
+        ? () => import("@/lib/uploads/decode").then((mod) => mod.decodeUploadImage(imageUrl))
+        : undefined;
+
+    if (!decode) return;
 
     let cancelled = false;
 
-    /*
-     * Imported on demand, not at module scope. `lib/demo/decode.ts` pulls in
-     * `dicom-parser` and `nifti-reader-js`; a static import would put both in
-     * the bundle of every page that renders a thumbnail, including the modes
-     * that never produce a decode-marked URL.
-     */
-    void import("@/lib/demo/decode")
-      .then((mod) => mod.decodeDemoImage(imageUrl))
+    void decode()
       .then((image) => {
         if (!cancelled) setDecodedUrl(image.objectUrl);
       })

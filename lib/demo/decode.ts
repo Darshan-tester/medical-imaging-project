@@ -230,8 +230,12 @@ function downscaleGray(
  *
  * PNG on the server, whatever `toBlob` gives us here — the pixels are what
  * matter, and both paths hand an `<img>` a lossless single-channel image.
+ *
+ * Exported because `lib/uploads/decode.ts` renders uploaded pixels the same way.
+ * An uploaded slice and a demo slice going through one encoder is the point:
+ * two of these would drift.
  */
-function grayToObjectUrl(
+export function grayToObjectUrl(
   grayIn: Uint8Array,
   widthIn: number,
   heightIn: number,
@@ -297,9 +301,12 @@ function outputSize(width: number, height: number, maxEdge?: number): [number, n
  * works without a JPEG/JPEG2000 codec in the browser. A compressed instance
  * would land in `catch` as an unreadable slice rather than silently rendering
  * garbage.
+ *
+ * Exported for `lib/uploads/decode.ts`, which has the same bytes from IndexedDB
+ * rather than from a fetch. `frame` is for a multi-frame instance — a cine loop
+ * or an enhanced object, which an upload can be and a demo asset never is.
  */
-async function decodeDicomSlice(req: DemoRequest): Promise<DecodedImage> {
-  const bytes = new Uint8Array(await fetchBytes(req.assetUrl));
+export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, frame = 0): Promise<DecodedImage> {
   const dataSet = dicomParser.parseDicom(bytes);
 
   const rows = dataSet.uint16("x00280010") ?? 0;
@@ -319,10 +326,20 @@ async function decodeDicomSlice(req: DemoRequest): Promise<DecodedImage> {
   const byteArray = dataSet.byteArray as Uint8Array;
   const pixelCount = rows * columns * samplesPerPixel;
 
+  /*
+   * Frames sit back to back in the pixel element, so the nth one starts n frame
+   * lengths in. The index is clamped to what the element actually holds: a frame
+   * past the end would otherwise read whatever bytes follow it.
+   */
+  const bytesPerSample = samplesPerPixel >= 3 ? 1 : bitsAllocated === 8 ? 1 : 2;
+  const frameBytes = pixelCount * bytesPerSample;
+  const available = Math.max(1, Math.floor((pixelElement.length || frameBytes) / frameBytes));
+  const offset = pixelElement.dataOffset + Math.min(Math.max(0, Math.trunc(frame)), available - 1) * frameBytes;
+
   let raw: Float64Array;
   if (samplesPerPixel >= 3) {
     // RGB/YBR — converted to 8-bit luma for a consistent single-channel viewer.
-    const buf = byteArray.subarray(pixelElement.dataOffset, pixelElement.dataOffset + pixelCount);
+    const buf = byteArray.subarray(offset, offset + pixelCount);
     raw = new Float64Array(rows * columns);
     for (let i = 0; i < rows * columns; i++) {
       raw[i] = 0.299 * (buf[i * 3] ?? 0) + 0.587 * (buf[i * 3 + 1] ?? 0) + 0.114 * (buf[i * 3 + 2] ?? 0);
@@ -330,14 +347,14 @@ async function decodeDicomSlice(req: DemoRequest): Promise<DecodedImage> {
     windowCenter = windowCenter ?? 128;
     windowWidth = windowWidth ?? 256;
   } else if (bitsAllocated === 8) {
-    const buf = byteArray.subarray(pixelElement.dataOffset, pixelElement.dataOffset + pixelCount);
+    const buf = byteArray.subarray(offset, offset + pixelCount);
     raw = new Float64Array(pixelCount);
     for (let i = 0; i < pixelCount; i++) raw[i] = buf[i] * rescaleSlope + rescaleIntercept;
   } else {
     const view =
       pixelRepresentation === 1
-        ? new Int16Array(byteArray.buffer, byteArray.byteOffset + pixelElement.dataOffset, pixelCount)
-        : new Uint16Array(byteArray.buffer, byteArray.byteOffset + pixelElement.dataOffset, pixelCount);
+        ? new Int16Array(byteArray.buffer, byteArray.byteOffset + offset, pixelCount)
+        : new Uint16Array(byteArray.buffer, byteArray.byteOffset + offset, pixelCount);
     raw = new Float64Array(pixelCount);
     for (let i = 0; i < pixelCount; i++) raw[i] = view[i] * rescaleSlope + rescaleIntercept;
   }
@@ -366,7 +383,11 @@ async function decodeDicomSlice(req: DemoRequest): Promise<DecodedImage> {
     gray[i] = invert ? 255 - v : v;
   }
 
-  return grayToObjectUrl(gray, columns, rows, req.maxEdge);
+  return grayToObjectUrl(gray, columns, rows, maxEdge);
+}
+
+async function decodeDicomSlice(req: DemoRequest): Promise<DecodedImage> {
+  return decodeDicomBytes(new Uint8Array(await fetchBytes(req.assetUrl)), req.maxEdge);
 }
 
 // ---------------------------------------------------------------------------
