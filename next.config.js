@@ -23,7 +23,51 @@
  * routes; `=mock` restores the seeded placeholder studies the component tests and
  * the design-time pages rely on.
  */
-const dataMode = process.env.NEXT_PUBLIC_DATA_MODE ?? "demo";
+const requestedMode = process.env.NEXT_PUBLIC_DATA_MODE;
+
+/**
+ * Cloudflare's builder, specifically — not CI in general.
+ *
+ * `WORKERS_CI` is set by Workers Builds and `CF_PAGES` by Pages. Bare `CI` is
+ * deliberately *not* consulted: this repo's own `.env.local` sets
+ * `NEXT_PUBLIC_DATA_MODE=dataset`, which is correct on the machine that holds
+ * ScanLab_Datasets, and a stray `CI=true` in someone's shell must not quietly
+ * downgrade that build.
+ */
+const isCloudflareBuild = Boolean(process.env.WORKERS_CI || process.env.CF_PAGES);
+
+/**
+ * Set to `1` in the Cloudflare build variables once `mirror:export`,
+ * `mirror:render` and `mirror:upload` have actually populated the `DATASET` R2
+ * bucket. Until then `dataset` mode has nothing to read on the Worker, and
+ * whether the bucket is populated is not knowable from here at build time.
+ */
+const mirrorPopulated = process.env.CF_DATASET_MIRROR === "1";
+
+let dataMode = requestedMode ?? "demo";
+
+/*
+ * A leftover `NEXT_PUBLIC_DATA_MODE=dataset` build variable in the Cloudflare
+ * dashboard survived the default change above and shipped an empty deploy: the
+ * Studies page rendered `IndexStatusBanner` ("No dataset index has been built
+ * yet"), the modality filters showed "0 studies", and the Upload page reported
+ * every file unmatched — over a repository that had 18 real studies committed
+ * under `public/demo-data`. Nothing was broken; the build was simply pointed at
+ * a manifest and a data root that a Worker cannot have.
+ *
+ * So on a Cloudflare build, `dataset` is honoured only with the explicit mirror
+ * opt-in above. Otherwise fall back to `demo`, which is real committed data —
+ * a smaller corpus than the mirror, never mock studies — and say so in the
+ * build log, since that log is the only place this decision is visible.
+ */
+if (isCloudflareBuild && dataMode === "dataset" && !mirrorPopulated) {
+  dataMode = "demo";
+  console.log(
+    "[next.config] NEXT_PUBLIC_DATA_MODE=dataset ignored on the Cloudflare build: " +
+      "a Worker has no SCANLAB_DATA_ROOT, and CF_DATASET_MIRROR=1 is not set, so the " +
+      "R2 mirror cannot be assumed populated. Falling back to demo (public/demo-data)."
+  );
+}
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
