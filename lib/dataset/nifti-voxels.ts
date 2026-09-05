@@ -20,6 +20,14 @@
 export interface VoxelArray {
   [i: number]: number;
   length: number;
+  /**
+   * Size in bytes. Every value of this type comes from `niftiTypedArray`, so it is
+   * always a typed array and this is always present; it is declared because a
+   * cache that holds volumes has to be bounded by memory rather than by count, and
+   * `length` alone does not say how much a `Float32` volume costs against a
+   * `Uint8` one.
+   */
+  readonly byteLength: number;
 }
 
 /**

@@ -169,6 +169,16 @@ export interface DatasetSeries {
    * Server-only — `toAppStudy` never forwards it to the browser.
    */
   volumeId?: string;
+  /**
+   * Set when the browser can build this series' whole 3-D volume by itself, with
+   * no server route: a committed NIfTI where every slice is a frame of one
+   * container the client already inflates whole to cut the 2-D planes.
+   *
+   * Separate from `volumeId` because that one names a server-side DICOM stack
+   * behind absolute paths, and the deployed Worker has no filesystem to read it
+   * from. Both feed the same `SeriesInfo.volumeAvailable`.
+   */
+  clientVolume?: boolean;
 }
 
 /**

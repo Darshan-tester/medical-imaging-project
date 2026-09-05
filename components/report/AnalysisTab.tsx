@@ -786,8 +786,10 @@ export function AnalysisTab({
         )}
 
         {/*
-          2D / 3D switch. Rendered only for a series the server can actually
-          serve a volume for, so it never promises a view the data can't back.
+          2D / 3D switch. Rendered only for a series something can actually build a
+          volume for — an indexed DICOM stack on the server, a committed NIfTI the
+          browser inflates itself, or a committed DICOM series long enough to stack a
+          run of its files — so it never promises a view the data can't back.
         */}
         {volumeAvailable && (
           <div className="flex items-center gap-2">
@@ -845,7 +847,22 @@ export function AnalysisTab({
         )}
 
         <div className="min-h-0 flex-1 rounded-lg bg-black">
-          {view3D && <Volume3DViewer studyId={study.id} seriesId={activeSeries.id} />}
+          {view3D && (
+            <Volume3DViewer
+              studyId={study.id}
+              seriesId={activeSeries.id}
+              /* Frame 0's URL is how the 3-D view recognises which client-side
+                 route applies: a NIfTI marker names a whole volume, a DICOM marker
+                 names one instance out of a stack. The plane and frame in it are
+                 irrelevant to a whole-volume read. */
+              volumeUrl={imageUrlAt(0)}
+              /* For the stacked route, which needs the rest of the series. The same
+                 resolver the viewer and the filmstrip use, so the slices that go
+                 into the render are the ones the reader has been scrolling. */
+              sliceCount={activeSeries.sliceCount}
+              sliceUrlAt={imageUrlAt}
+            />
+          )}
           {!view3D && (
             <ImageViewer
               modality={study.modality}

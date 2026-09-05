@@ -1,59 +1,98 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { Boxes, ImageOff, Loader2 } from "lucide-react";
 import { SceneErrorBoundary } from "@/components/three/SceneErrorBoundary";
+import { isDemoDicomUrl, isDemoVolumeUrl, DEMO_MIN_STACK_SLICES } from "@/lib/demo/types";
 import { usePrefersReducedMotion, useWebGLSupport } from "@/lib/hooks";
 
 /**
- * Interactive 3-D render of one reconstructed CT series.
+ * Interactive 3-D render of one reconstructed series.
  *
- * The volume is the same reconstructed stack the Coronal/Sagittal planes are cut
- * from — fetched once from `/api/studies/<id>/volume/<seriesId>` as an 8-bit
- * scalar field, uploaded as a 3-D texture, and ray-marched in the fragment
+ * The volume is the same one the Coronal/Sagittal planes are cut from, and it
+ * arrives by one of three routes:
+ *
+ *  - `volumeUrl` names a committed NIfTI series. The browser has already inflated
+ *    that volume to draw the 2-D planes, so the field is built from the copy in
+ *    memory at its full acquired resolution, with no request and no decimation.
+ *  - `volumeUrl` names a committed DICOM instance and `sliceUrlAt` can resolve the
+ *    rest of the series. One instance is one slice, so a field has to be stacked
+ *    out of an evenly spaced sample of the files — see `loadDemoCtVolume8` for the
+ *    download budget that fixes how many.
+ *  - otherwise — an indexed DICOM stack, fetched from
+ *    `/api/studies/<id>/volume/<seriesId>` as an 8-bit scalar field. This is the
+ *    only route that needs a filesystem, so it is the only one the deployed Worker
+ *    cannot take.
+ *
+ * Either way it is uploaded as a 3-D texture and ray-marched in the fragment
  * shader. Nothing is modelled, inferred or smoothed into existence: every sample
- * on screen is an interpolated CT value from the indexed instances.
+ * on screen is an interpolated stored value from the series itself.
  *
- * Only offered for series the indexer actually reconstructed
- * (`SeriesInfo.volumeAvailable`). There is no fallback that fakes a 3-D view for
- * a series that has no stack.
+ * Only offered for series that actually have a volume behind them
+ * (`SeriesInfo.volumeAvailable`). There is no fallback that fakes a 3-D view for a
+ * series that has no stack.
  */
-export function Volume3DViewer({ studyId, seriesId }: { studyId: string; seriesId: string }) {
+export function Volume3DViewer({
+  studyId,
+  seriesId,
+  volumeUrl,
+  sliceCount,
+  sliceUrlAt,
+}: {
+  studyId: string;
+  seriesId: string;
+  /**
+   * Slice URL of the active series, used only to recognise which of the two
+   * client-side routes applies. Anything else — an indexed `/api/studies/...` URL —
+   * falls through to the server route.
+   */
+  volumeUrl?: string;
+  /** Slices in the active series, for the stacked route. */
+  sliceCount?: number;
+  /** Resolves any slice index of the active series to its URL, for the stacked route. */
+  sliceUrlAt?: (index: number) => string | undefined;
+}) {
   const webglSupported = useWebGLSupport();
   const reduced = usePrefersReducedMotion();
 
+  const clientUrl = volumeUrl && isDemoVolumeUrl(volumeUrl) ? volumeUrl : undefined;
+  /* A stack is only worth reading when there is enough of it to be a volume; the
+     same threshold decides which series advertise a 3-D view in the first place. */
+  const stackCount =
+    !clientUrl && volumeUrl && isDemoDicomUrl(volumeUrl) && sliceCount && sliceCount >= DEMO_MIN_STACK_SLICES
+      ? sliceCount
+      : undefined;
+
   const [volume, setVolume] = useState<LoadedVolume | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [threshold, setThreshold] = useState(0.28);
   const [density, setDensity] = useState(0.55);
   const [mip, setMip] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setVolume(null);
     setError(null);
+    setProgress(null);
 
     (async () => {
       try {
-        const res = await fetch(`/api/studies/${studyId}/volume/${seriesId}`, { cache: "no-store" });
-        if (!res.ok) {
-          const detail = await res.json().catch(() => null);
-          throw new Error(detail?.error ?? `The server returned ${res.status}`);
-        }
-        const dims = parseTriple(res.headers.get("X-Volume-Dims"));
-        const spacing = parseTriple(res.headers.get("X-Volume-Spacing"));
-        if (!dims || !spacing) throw new Error("The volume response did not describe its own shape");
-        const huWindow = parsePair(res.headers.get("X-Volume-Window"));
-
-        const buf = await res.arrayBuffer();
-        const expected = dims[0] * dims[1] * dims[2];
-        if (buf.byteLength !== expected) {
-          throw new Error(`Expected ${expected} voxels but received ${buf.byteLength}`);
-        }
-        if (!cancelled) setVolume({ data: new Uint8Array(buf), dims, spacing, window: huWindow });
+        const loaded = clientUrl
+          ? await loadClientVolume(clientUrl)
+          : stackCount && sliceUrlAt
+            ? await loadClientStack(sliceUrlAt, stackCount, `${studyId}:${seriesId}`, {
+                signal: controller.signal,
+                onProgress: (done, total) => {
+                  if (!cancelled) setProgress({ done, total });
+                },
+              })
+            : await loadServerVolume(studyId, seriesId);
+        if (!cancelled) setVolume(loaded);
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
       }
@@ -61,8 +100,11 @@ export function Volume3DViewer({ studyId, seriesId }: { studyId: string; seriesI
 
     return () => {
       cancelled = true;
+      // Stops the run from downloading slices for a view nobody is looking at.
+      // Requests already in the air are left to finish, as everywhere else.
+      controller.abort();
     };
-  }, [studyId, seriesId]);
+  }, [studyId, seriesId, clientUrl, stackCount, sliceUrlAt]);
 
   if (webglSupported === false) {
     return <Notice title="3D view unavailable">This browser or GPU does not support WebGL, which the volume render requires. The 2D planes are unaffected.</Notice>;
@@ -74,8 +116,16 @@ export function Volume3DViewer({ studyId, seriesId }: { studyId: string; seriesI
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-lg bg-viewer text-center">
         <Loader2 className="h-5 w-5 animate-spin text-ink-muted" strokeWidth={1.6} />
-        <p className="text-[12.5px] text-ink-secondary">Reading the full instance stack…</p>
-        <p className="max-w-xs text-[11px] text-ink-muted">Every slice is decoded once, so the first load of a large series takes a few seconds.</p>
+        <p className="text-[12.5px] text-ink-secondary">
+          {progress ? `Reading slice ${progress.done} of ${progress.total}…` : "Building the volume…"}
+        </p>
+        <p className="max-w-xs text-[11px] text-ink-muted">
+          {clientUrl
+            ? "The whole series is read once. If you have already been scrolling it, the voxels are in memory and this is arithmetic."
+            : stackCount
+              ? `Every slice of this series is a separate file, so the render is stacked from an evenly spaced sample of the ${stackCount} — the first and the last included.`
+              : "Every slice is decoded once, so the first load of a large series takes a few seconds."}
+        </p>
       </div>
     );
   }
@@ -94,12 +144,20 @@ export function Volume3DViewer({ studyId, seriesId }: { studyId: string; seriesI
           <Boxes className="h-3.5 w-3.5" /> {volume.dims.join("×")}
         </span>
 
-        {/* The intensity window the server mapped onto 0-255 — shown so the
-            sliders below are read as display controls over a known range, not
-            as an edit to the stored values. */}
+        {/* The intensity window that was mapped onto 0-255 — shown so the sliders
+            below are read as display controls over a known range, not as an edit
+            to the stored values. */}
         {volume.window && (
           <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
-            {volume.window[0]} … {volume.window[1]} HU
+            {formatLevel(volume.window[0])} … {formatLevel(volume.window[1])}
+            {volume.windowUnit ? ` ${volume.windowUnit}` : ""}
+          </span>
+        )}
+
+        {/* How much of the series this field is, when it is not all of it. */}
+        {volume.detail && (
+          <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
+            {volume.detail}
           </span>
         )}
 
@@ -147,8 +205,77 @@ interface LoadedVolume {
   data: Uint8Array;
   dims: [number, number, number];
   spacing: [number, number, number];
-  /** The intensity window the server mapped onto 0-255. Undefined if the header was absent. */
+  /** The intensity window that was mapped onto 0-255. Undefined if the header was absent. */
   window?: [number, number];
+  /**
+   * Unit for that window. `HU` for either DICOM route; omitted for NIfTI, where
+   * the stored values are MR signal or PET SUV and labelling them HU would be
+   * wrong.
+   */
+  windowUnit?: string;
+  /**
+   * What this field is, when it is not the whole acquisition — "48 of 443 slices ·
+   * 7.4 mm". Shown verbatim, so a stacked render is never mistaken for the full
+   * series.
+   */
+  detail?: string;
+}
+
+/**
+ * The indexed route: the server reads the instance stack off disk and streams it
+ * as one 8-bit scalar field, describing its own shape in response headers.
+ */
+async function loadServerVolume(studyId: string, seriesId: string): Promise<LoadedVolume> {
+  const res = await fetch(`/api/studies/${studyId}/volume/${seriesId}`, { cache: "no-store" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.error ?? `The server returned ${res.status}`);
+  }
+  const dims = parseTriple(res.headers.get("X-Volume-Dims"));
+  const spacing = parseTriple(res.headers.get("X-Volume-Spacing"));
+  if (!dims || !spacing) throw new Error("The volume response did not describe its own shape");
+  const huWindow = parsePair(res.headers.get("X-Volume-Window"));
+
+  const buf = await res.arrayBuffer();
+  const expected = dims[0] * dims[1] * dims[2];
+  if (buf.byteLength !== expected) {
+    throw new Error(`Expected ${expected} voxels but received ${buf.byteLength}`);
+  }
+  return { data: new Uint8Array(buf), dims, spacing, window: huWindow, windowUnit: "HU" };
+}
+
+/**
+ * The committed-NIfTI route.
+ *
+ * Imported on demand rather than at module scope so the NIfTI and DICOM decoders
+ * do not get pulled into whichever chunk this component lands in — a reader who
+ * never opens the 3-D view should not download them twice.
+ */
+async function loadClientVolume(volumeUrl: string): Promise<LoadedVolume> {
+  const { loadDemoVolume8 } = await import("@/lib/demo/decode");
+  return loadDemoVolume8(volumeUrl);
+}
+
+/**
+ * The committed-DICOM route: an evenly spaced sample of the series' files, stacked.
+ *
+ * The window is labelled HU because the instances' rescale slope and intercept are
+ * applied before it, exactly as on the server route.
+ */
+async function loadClientStack(
+  sliceUrlAt: (index: number) => string | undefined,
+  sliceCount: number,
+  cacheKey: string,
+  opts: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void }
+): Promise<LoadedVolume> {
+  const { loadDemoCtVolume8 } = await import("@/lib/demo/decode");
+  const built = await loadDemoCtVolume8(sliceUrlAt, sliceCount, cacheKey, opts);
+  const interval = built.intervalMm ? ` · ${built.intervalMm.toFixed(1)} mm` : "";
+  return {
+    ...built,
+    windowUnit: "HU",
+    detail: `${built.sampled.count} of ${built.sampled.of} slices${interval}`,
+  };
 }
 
 /**
@@ -348,6 +475,12 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
       <p className="max-w-sm text-[11.5px] text-ink-muted">{children}</p>
     </div>
   );
+}
+
+/** The window bounds are HU integers on one route and SUV fractions on the other. */
+function formatLevel(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.abs(value) >= 10 ? String(Math.round(value)) : value.toFixed(2);
 }
 
 function parseTriple(raw: string | null): [number, number, number] | undefined {

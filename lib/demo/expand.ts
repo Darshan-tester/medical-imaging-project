@@ -19,10 +19,16 @@
  *     prefers them over `/api/studies/...`, which is what routes these pixels to
  *     the static asset the browser decodes itself.
  *
- * `volumes` and `volumeId` are deliberately never set, so `volumeAvailable`
- * computes false and the viewer's 3-D toggle stays hidden: volume rendering is a
- * server route reading DICOM stacks off disk, which the deployed Worker cannot
- * do. The server-side CT/3-D path is untouched by any of this.
+ * `volumes` and `volumeId` are deliberately never set: those name server-side
+ * DICOM stacks behind absolute paths, and the deployed Worker has no filesystem
+ * to read them from. The server-side CT/3-D route is untouched by any of this.
+ *
+ * `clientVolume` is set instead, and by two different routes. A NIfTI series says
+ * the browser can build the 3-D field out of the volume it already inflated to cut
+ * the 2-D planes. A DICOM series of at least `DEMO_MIN_STACK_SLICES` files says it
+ * can build one by reading an evenly spaced sample of those files. Either way the
+ * viewer's 3-D toggle becomes reachable for the committed CT, MRI and PET studies
+ * with no route, no backend and no second asset.
  *
  * Client-safe: no `fs`, no `path`.
  * ---------------------------------------------------------------------------
@@ -37,6 +43,7 @@ import {
 import { volumeRegistryKey } from "./registry";
 import {
   DEMO_FRAME_PARAM,
+  DEMO_MIN_STACK_SLICES,
   DEMO_NIFTI_PARAM,
   DEMO_PLANE_CODE,
   DEMO_PLANE_PARAM,
@@ -88,7 +95,16 @@ function toDatasetSeries(study: DemoStudy, s: DemoSeries): DatasetSeries {
       width: s.w,
       height: s.h,
     }));
-    return { ...base, images };
+
+    /*
+     * A run of these is a volume, so the 3-D view is reachable — but by reading a
+     * sample of the files rather than out of something already in memory, since
+     * each one is a separate 500 KB instance. `loadDemoCtVolume8` is the half that
+     * decides how many. Gated on both the kind and the count so a committed chest
+     * X-ray, which is one `raster` image, is excluded twice over.
+     */
+    const clientVolume = s.kind === "dicom" && s.files.length >= DEMO_MIN_STACK_SLICES;
+    return { ...base, images, clientVolume };
   }
 
   /*
@@ -113,7 +129,13 @@ function toDatasetSeries(study: DemoStudy, s: DemoSeries): DatasetSeries {
     urlTemplate: niftiFrameTemplate(study.id, s, volume.url),
   };
 
-  return { ...base, images: [], frames };
+  /*
+   * The browser inflates this whole container to cut any one plane out of it, so
+   * the 3-D view is reachable from the volume it already has — see
+   * `loadDemoVolume8`. Guarded on the kind rather than on the presence of frames
+   * because only NIfTI is a volume; a multi-frame raster would not be.
+   */
+  return { ...base, images: [], frames, clientVolume: s.kind === "nifti" };
 }
 
 /**

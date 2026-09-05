@@ -38,6 +38,7 @@ import { lookupVolume } from "./registry";
 import {
   DEMO_DICOM_PARAM,
   DEMO_FRAME_PARAM,
+  DEMO_MIN_STACK_SLICES,
   DEMO_NIFTI_PARAM,
   DEMO_PLANE_PARAM,
   DEMO_WIDTH_PARAM,
@@ -115,14 +116,29 @@ export function parseDemoUrl(url: string): DemoRequest | undefined {
  *
  * `volumeCache` holds decoded voxel arrays, which is the expensive one:
  * inflating a 3–5 MB gzipped NIfTI per slice would mean re-inflating the same
- * volume for all 512 frames of a plane. Two entries mirrors the server's
- * `VOLUME_CACHE_MAX` and covers "scrolling one study, occasionally flipping to
- * its second series".
+ * volume for all 512 frames of a plane.
  *
  * Only DICOM instances go in `bytesCache`. A NIfTI archive is useless once it has
  * been inflated into `volumeCache`, and one of them would evict sixty CT slices.
  */
-const VOLUME_CACHE_MAX = 2;
+
+/**
+ * Byte budget for decoded volumes.
+ *
+ * Bounded by bytes and not by entry count, because a study's series list is not a
+ * list of volumes: MRI-16B80D is 12 series over 4 volumes, MRI-76AED8 is 15 over
+ * 5, and a PET study is 3 over 1. The old limit of two entries meant that walking
+ * down that series list evicted a volume the reader was about to come back to,
+ * and since NIfTI archives are deliberately absent from `bytesCache` above,
+ * coming back paid the entire round trip again. Measured against the committed
+ * corpus: 3.4–4.8 MB over the network plus 102–147 ms of synchronous inflate,
+ * before the first pixel of the newly selected series.
+ *
+ * 64 MB holds every volume of every study in the corpus at once — the largest,
+ * MRI-76AED8, is 58.0 MB of `Uint16`; a PET volume is 29.9 MB of `Float32` —
+ * so flipping between the series of one study now costs one reslice.
+ */
+const VOLUME_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * Byte budget for the raw file cache.
@@ -512,6 +528,49 @@ function outputSize(width: number, height: number, maxEdge?: number): [number, n
  * or an enhanced object, which an upload can be and a demo asset never is.
  */
 export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, frame = 0): Promise<DecodedImage> {
+  const plane = dicomGrayPlane(bytes, maxEdge, frame);
+  return grayToObjectUrl(plane.gray, plane.width, plane.height);
+}
+
+/**
+ * One instance as an 8-bit plane, plus the header facts needed to place it in
+ * space. This is the whole of the decode; `decodeDicomBytes` is the PNG wrapper
+ * around it and `loadDemoCtVolume8` is the stacking one.
+ *
+ * `forceWindow` exists for the stacking caller. Every slice of a series has to be
+ * mapped through the *same* window or the 3-D field is a montage of differently
+ * exposed planes — a bright plane every few slices where an instance happened to
+ * carry a narrower window. It also skips the min/max scan, which is a second full
+ * pass over the image.
+ *
+ * The geometry fields are read, never guessed: an instance without
+ * `PixelSpacing` leaves it undefined and the caller falls back to square voxels
+ * rather than to a plausible-sounding millimetre figure.
+ */
+interface DicomPlane {
+  gray: Uint8Array;
+  /** Size of `gray`, after any `maxEdge` reduction. */
+  width: number;
+  height: number;
+  /** The acquired grid, before that reduction. */
+  rows: number;
+  columns: number;
+  /** Stored-value window mapped onto 0-255, as `[lo, hi]`. HU for CT — the rescale is applied first. */
+  window: [number, number];
+  /** `PixelSpacing` (0028,0030), as `[betweenRows, betweenColumns]` in mm. */
+  pixelSpacing?: [number, number];
+  /** `ImagePositionPatient` (0020,0032) — where this plane sits, for measuring slice separation. */
+  position?: [number, number, number];
+  /** `SpacingBetweenSlices` (0018,0088), else `SliceThickness` (0018,0050), in mm. */
+  nominalGap?: number;
+}
+
+function dicomGrayPlane(
+  bytes: Uint8Array,
+  maxEdge?: number,
+  frame = 0,
+  forceWindow?: [number, number]
+): DicomPlane {
   const dataSet = dicomParser.parseDicom(bytes);
 
   const rows = dataSet.uint16("x00280010") ?? 0;
@@ -567,7 +626,10 @@ export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, fram
   // values — never a fabricated "typical" window for the modality. Measured over
   // every pixel, not over the reduced plane, so the window is a property of the
   // image rather than of the size it happens to be requested at.
-  if (windowCenter === undefined || windowWidth === undefined || windowWidth <= 0) {
+  if (forceWindow) {
+    windowCenter = (forceWindow[0] + forceWindow[1]) / 2;
+    windowWidth = Math.max(1e-6, forceWindow[1] - forceWindow[0]);
+  } else if (windowCenter === undefined || windowWidth === undefined || windowWidth <= 0) {
     let min = Infinity;
     let max = -Infinity;
     for (let i = 0; i < rows * columns; i++) {
@@ -601,7 +663,27 @@ export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, fram
     }
   }
 
-  return grayToObjectUrl(gray, width, height);
+  const rowSpacing = dataSet.floatString("x00280030", 0);
+  const colSpacing = dataSet.floatString("x00280030", 1);
+  const px = dataSet.floatString("x00200032", 0);
+  const py = dataSet.floatString("x00200032", 1);
+  const pz = dataSet.floatString("x00200032", 2);
+
+  return {
+    gray,
+    width,
+    height,
+    rows,
+    columns,
+    window: [lo, lo + windowWidth],
+    pixelSpacing:
+      rowSpacing !== undefined && colSpacing !== undefined && rowSpacing > 0 && colSpacing > 0
+        ? [rowSpacing, colSpacing]
+        : undefined,
+    position:
+      px !== undefined && py !== undefined && pz !== undefined ? [px, py, pz] : undefined,
+    nominalGap: dataSet.floatString("x00180088") ?? dataSet.floatString("x00180050"),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -643,12 +725,435 @@ function demoVolume(key: string, volume: DemoVolume, bytes: ArrayBuffer | undefi
   };
 
   volumeCache.set(key, decoded);
-  while (volumeCache.size > VOLUME_CACHE_MAX) {
-    const oldest = volumeCache.keys().next();
-    if (oldest.done) break;
-    volumeCache.delete(oldest.value);
-  }
+  evictVolumes();
   return decoded;
+}
+
+/**
+ * Drops least-recently-used volumes until the cache is inside its byte budget.
+ *
+ * `touch` re-inserts on every read, so `Map` insertion order is least-recently-used
+ * first. The newest entry is never evicted: a volume larger than the whole budget
+ * is still usable, it just stands alone rather than being dropped the instant it
+ * arrives and re-inflated on the next slice.
+ */
+function evictVolumes(): void {
+  let total = 0;
+  for (const v of volumeCache.values()) total += v.data.byteLength;
+
+  for (const key of [...volumeCache.keys()]) {
+    if (total <= VOLUME_CACHE_MAX_BYTES || volumeCache.size <= 1) return;
+    const victim = volumeCache.get(key);
+    if (!victim) continue;
+    volumeCache.delete(key);
+    total -= victim.data.byteLength;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8-bit scalar fields, for the 3-D view
+// ---------------------------------------------------------------------------
+
+/** Exactly what `Volume3DViewer` needs to build its 3-D texture, with no server route involved. */
+export interface DemoVolume8 {
+  data: Uint8Array;
+  dims: [number, number, number];
+  /** Relative voxel size per axis. Only the ratios matter — the mesh normalises them. */
+  spacing: [number, number, number];
+  /** The stored-intensity window that was mapped onto 0–255, as `[lo, hi]`. */
+  window: [number, number];
+}
+
+/**
+ * The most recent 8-bit field, and only that one.
+ *
+ * The three planes of a volume are three *series*, so switching plane while the
+ * 3-D view is open re-runs the loader — for a field that would come out
+ * byte-identical, because a 3-D volume has no plane. One entry turns that into a
+ * lookup, and also covers toggling 2-D → 3-D → 2-D → 3-D. Deliberately not an LRU:
+ * this is derived data on top of the voxels, and holding several copies of it
+ * would eat the volume budget twice over.
+ */
+let lastVolume8: { key: string; value: DemoVolume8 } | undefined;
+
+/**
+ * Builds the 3-D scalar field for one committed NIfTI series, in the browser.
+ *
+ * `/api/studies/<id>/volume/<seriesId>` reads a DICOM stack off disk, which the
+ * deployed Worker has none of — that is why the 3-D toggle was hidden for demo
+ * studies. This is the demo equivalent and it needs no route at all, because the
+ * volume is already the thing the 2-D planes are cut from: same inflate, same
+ * cache entry, same window. Opening the 3-D view on a series the reader has been
+ * scrolling costs no network and no second decode.
+ *
+ * Every voxel is a stored value put through the volume's own slope/intercept and
+ * its index-time display window. Nothing is smoothed, sharpened, interpolated or
+ * filled in; the 8-bit quantisation is the only loss, and it is the same one the
+ * server route applies. Unlike the server route there is no decimation, so the
+ * field is the full acquired grid.
+ */
+export async function loadDemoVolume8(url: string): Promise<DemoVolume8> {
+  const req = parseDemoUrl(url);
+  if (!req || req.kind !== "nifti" || !req.volumeKey) {
+    throw new Error("This series is not reconstructed from a volume");
+  }
+
+  const volume = lookupVolume(req.volumeKey);
+  if (!volume) throw new Error("This series' volume is not in the index this page loaded");
+
+  const key = req.volumeKey;
+  if (lastVolume8?.key === key) return lastVolume8.value;
+
+  let decoded = touch(volumeCache, key);
+  if (!decoded) {
+    const bytes = await sliceNetworkQueue.run(netKeyFor(req), PRIORITY.current, (signal) =>
+      fetchBytes(req.assetUrl, volume.zip, signal)
+    );
+    // Through the pixel queue so a ~130 ms inflate cannot land in the middle of a
+    // slice decode; `demoVolume` re-checks the cache, so a slice that inflated the
+    // same volume while this was queued is reused rather than repeated.
+    decoded = await slicePixelQueue.run(`volume3d:${key}`, PRIORITY.current, () =>
+      Promise.resolve(demoVolume(key, volume, bytes))
+    );
+  }
+
+  const [nx, ny, nz] = decoded.dims;
+  const { data, slope, inter, win } = decoded;
+  const range = Math.max(1e-6, win.range);
+  const axes = volumeAxes(volume, decoded.dims);
+  const out = new Uint8Array(nx * ny * nz);
+
+  for (let z = 0; z < nz; z++) {
+    const sz = axes.flip[2] ? nz - 1 - z : z;
+    for (let y = 0; y < ny; y++) {
+      const sy = axes.flip[1] ? ny - 1 - y : y;
+      const src = (sz * ny + sy) * nx;
+      const dst = (z * ny + y) * nx;
+      for (let x = 0; x < nx; x++) {
+        const value = (data[src + (axes.flip[0] ? nx - 1 - x : x)] ?? 0) * slope + inter;
+        let v = Math.round(((value - win.lo) / range) * 255);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        out[dst + x] = v;
+      }
+    }
+  }
+
+  const value: DemoVolume8 = {
+    data: out,
+    dims: [nx, ny, nz],
+    spacing: axes.spacing,
+    window: [win.lo, win.lo + win.range],
+  };
+  lastVolume8 = { key, value };
+  return value;
+}
+
+/**
+ * Per-axis voxel size and display direction, read off the plane geometries the
+ * indexer already derived from the volume's affine.
+ *
+ * A plane's output height is its vertical axis's physical extent expressed in
+ * in-plane pixels — which is precisely why the coronal cut of a 512×512×22 axial
+ * volume is 338 rows tall and not 22. So `ht / dims[v]` is that axis's size in
+ * those same units, and `w / dims[h]` likewise. Between the three planes every
+ * axis appears as a horizontal or a vertical at least once, and an axis that
+ * somehow does not falls back to 1.
+ *
+ * The flips are the ones the 2-D reslice uses, so the two views walk each axis in
+ * the same direction and a structure does not appear mirrored when the reader
+ * switches to 3-D. This is display consistency, not a claim about which side of
+ * the render is the patient's left — that needs the affine, which is not in the
+ * index.
+ */
+function volumeAxes(
+  volume: DemoVolume,
+  dims: [number, number, number]
+): { spacing: [number, number, number]; flip: [boolean, boolean, boolean] } {
+  const spacing: [number, number, number] = [1, 1, 1];
+  const flip: [boolean, boolean, boolean] = [false, false, false];
+
+  const note = (axis: DemoAxis | undefined, extent: number) => {
+    if (!axis) return;
+    const a = axisOf(axis);
+    if (dims[a] > 0 && extent > 0) spacing[a] = extent / dims[a];
+    flip[a] = flipOf(axis);
+  };
+
+  for (const plane of Object.values(volume.planes ?? {})) {
+    if (!plane) continue;
+    note(plane.h, plane.w);
+    note(plane.v, plane.ht);
+  }
+
+  return { spacing, flip };
+}
+
+// ---------------------------------------------------------------------------
+// DICOM stack → 8-bit scalar field, for the 3-D view
+// ---------------------------------------------------------------------------
+
+/**
+ * Download budget for building a CT field in the browser.
+ *
+ * This is the whole difference between the two 3-D routes. A NIfTI series is one
+ * container the reader has already downloaded, so its 3-D view is nearly free. A
+ * CT series is one uncompressed file per slice, and HTTP cannot ask for part of a
+ * slice, so the only quantity there is to trade is how many of them get read.
+ * Measured on the committed corpus: 515 KB per 512×512 chest instance × 443 and
+ * 558 instances = 223 and 281 MB; 650–658 KB per 647–655×512 head instance × 153
+ * and 189 = 97 and 121 MB. Reading a quarter of a gigabyte to look at a rendering
+ * is not a trade anybody would make, so an evenly spaced run is read instead.
+ *
+ * What 32 MB actually buys, measured by building all four (`ct-vol3d-check`):
+ *
+ *   CT-27CEA6  chest  443 inst  →  63 of 443 · 3.9 mm  (31.7 MB)
+ *   CT-C48B2F  chest  558 inst  →  63 of 558 · 4.9 mm  (31.7 MB)
+ *   CT-3097B2  head   189 inst  →  49 of 189 · 3.3 mm  (31.5 MB)
+ *   CT-9339BE  head   153 inst  →  50 of 153 · 3.1 mm  (31.7 MB)
+ *
+ * 3–5 mm is coarser than these acquisitions, which step 0.55–1.0 mm, and is in the
+ * range a scanner would itself reconstruct for a routine read. The count is
+ * derived from the first instance's actual size rather than assumed, because the
+ * two geometries in the corpus differ by 28%.
+ */
+const CT_VOLUME_BUDGET_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Ceiling on the sample count, whatever the budget divides out to. The floor is
+ * `DEMO_MIN_STACK_SLICES`.
+ *
+ * Both chest series hit this rather than the budget — 64 minus the first slice is
+ * the 63 above — which is deliberate: past this the render gains detail the
+ * sliders cannot show, and the field itself is already 15.8 MB.
+ */
+const CT_VOLUME_MAX_SAMPLES = 64;
+
+/**
+ * In-plane cap. Measured: a no-op for a 512×512 chest instance, and a 655×512 head
+ * instance comes out 400×512 with its 0.347 mm pixels rescaled to 0.444 mm, so the
+ * proportions hold. Keeps the largest field in the corpus at 15.8 MB.
+ */
+const CT_VOLUME_MAX_EDGE = 512;
+
+/** A CT field, plus what a caller needs to describe it honestly on screen. */
+export interface DemoCtVolume8 extends DemoVolume8 {
+  /** How many slices were read, out of how many the series has. */
+  sampled: { count: number; of: number };
+  /**
+   * Separation between the sampled planes in mm, when the instances carried
+   * `ImagePositionPatient` or a thickness. Undefined means the headers did not say
+   * and the render fell back to cubic voxels.
+   */
+  intervalMm?: number;
+  /** Bytes downloaded to build it. Zero when every slice was already in `bytesCache`. */
+  bytes: number;
+}
+
+let lastCtVolume8: { key: string; value: DemoCtVolume8 } | undefined;
+
+export interface CtVolumeOptions {
+  /** Reported after each slice lands, for a progress readout. */
+  onProgress?: (done: number, total: number) => void;
+  /** Set when the reader has left the 3-D view; stops the run early. */
+  signal?: AbortSignal;
+}
+
+/**
+ * How many slices of the run are on the wire at once.
+ *
+ * Matched to `sliceNetworkQueue`'s own limit: fewer and the queue's parallelism
+ * goes unused, so a 60-slice build costs 60 round trips end to end; more and the
+ * extra requests only sit in the queue while their `ArrayBuffer`s wait to be
+ * decoded, which is 500 KB of live memory each for nothing.
+ */
+const CT_VOLUME_INFLIGHT = 4;
+
+/**
+ * Builds a 3-D scalar field by stacking a run of one CT series' instances.
+ *
+ * Honest about what it is: an evenly spaced subset of the series at its acquired
+ * in-plane resolution, not the whole acquisition, and `sampled` / `intervalMm`
+ * carry that fact to the UI so the render is never presented as something it is
+ * not. Every voxel is a stored value through the instance's own rescale
+ * slope/intercept and one window shared across the stack — no smoothing, no
+ * interpolation between slices, nothing filled in. The first and last slice of the
+ * series are always included, so the sampled block spans the same anatomy the 2-D
+ * scroll does rather than a cropped middle.
+ *
+ * Scheduling is the existing one. Fetches go through `sliceNetworkQueue` under the
+ * same key the 2-D viewer uses, so a slice already on the wire or in `bytesCache`
+ * is shared rather than downloaded twice, and decodes go through
+ * `slicePixelQueue`, so 60-odd windowing passes cannot merge into one long
+ * main-thread block. Both run in the preload band: preemptible, so flipping back
+ * to 2-D mid-build still gets the slice on screen first.
+ *
+ * These downloads deliberately do *not* enter `bytesCache` — 32 MB of them would
+ * evict the entire 32 MB slice cache the 2-D viewer depends on.
+ */
+export async function loadDemoCtVolume8(
+  urlAt: (index: number) => string | undefined,
+  sliceCount: number,
+  cacheKey: string,
+  opts: CtVolumeOptions = {}
+): Promise<DemoCtVolume8> {
+  if (lastCtVolume8?.key === cacheKey) return lastCtVolume8.value;
+  if (sliceCount < 2) throw new Error("A 3-D view needs a series of more than one slice");
+
+  const first = await ctSlice(urlAt(0), CT_VOLUME_MAX_EDGE);
+  stopIfAborted(opts.signal);
+
+  /*
+   * The sample count from the measured instance size, then the indices: the two
+   * ends pinned and the rest spread evenly between them. `Math.round` rather than
+   * a fixed stride so the interval stays even when the count does not divide the
+   * series length.
+   */
+  const perSlice = Math.max(1, first.size);
+  const count = Math.min(
+    sliceCount,
+    CT_VOLUME_MAX_SAMPLES,
+    Math.max(DEMO_MIN_STACK_SLICES, Math.floor(CT_VOLUME_BUDGET_BYTES / perSlice))
+  );
+  const indexOf = (i: number) => Math.round((i * (sliceCount - 1)) / (count - 1));
+
+  const { width, height } = first.plane;
+  const out = new Uint8Array(width * height * count);
+  out.set(first.plane.gray, 0);
+  let bytes = first.downloaded;
+  let done = 1;
+  opts.onProgress?.(done, count);
+
+  /*
+   * A sliding window of requests rather than one at a time, so the four network
+   * slots stay busy, and rather than all of them at once, so at most four 500 KB
+   * buffers are alive. Each is given a no-op rejection handler as it starts: when
+   * one slice fails or the reader leaves mid-build, the ones already in the air
+   * must not surface as unhandled rejections. The real handling is at the `await`.
+   */
+  const pending: Array<Promise<CtSlice> | undefined> = [];
+  const begin = (i: number) => {
+    if (i >= count || pending[i]) return;
+    const p = ctSlice(urlAt(indexOf(i)), CT_VOLUME_MAX_EDGE, first.plane.window);
+    p.catch(() => {});
+    pending[i] = p;
+  };
+  for (let i = 1; i <= CT_VOLUME_INFLIGHT; i++) begin(i);
+
+  let last = first.plane;
+  for (let i = 1; i < count; i++) {
+    const slice = await pending[i]!;
+    stopIfAborted(opts.signal);
+    begin(i + CT_VOLUME_INFLIGHT);
+
+    // Same window for every plane — see `dicomGrayPlane`. A plane that came back
+    // at a different size cannot be stacked, so it is a hard error rather than a
+    // silently misaligned slab.
+    if (slice.plane.width !== width || slice.plane.height !== height) {
+      throw new Error("This series' slices are not all the same size, so they cannot be stacked");
+    }
+    out.set(slice.plane.gray, i * width * height);
+    bytes += slice.downloaded;
+    last = slice.plane;
+    opts.onProgress?.(++done, count);
+  }
+
+  const intervalMm = ctInterval(first.plane, last, count, sliceCount);
+  const inPlane = ctPixelSpacing(first.plane);
+  /* Columns run along the output's x, rows along its y; `PixelSpacing` is
+     (between rows, between columns), so it is read in the other order. Scaled by
+     the in-plane reduction, because a 512→400 column reduction makes each
+     remaining column 1.28 acquired columns wide. */
+  const sx = (inPlane?.[1] ?? 1) * (first.plane.columns / width);
+  const sy = (inPlane?.[0] ?? 1) * (first.plane.rows / height);
+  const value: DemoCtVolume8 = {
+    data: out,
+    dims: [width, height, count],
+    /* When nothing in the headers gives a separation, the field is left cubic in
+       its own grid rather than given a plausible-looking thickness: the render
+       comes out visibly squashed or stretched, which is the correct signal, and
+       only the ratios matter to it anyway. */
+    spacing: [sx, sy, intervalMm ?? sy],
+    window: first.plane.window,
+    sampled: { count, of: sliceCount },
+    intervalMm,
+    bytes,
+  };
+  lastCtVolume8 = { key: cacheKey, value };
+  return value;
+}
+
+/** One instance, fetched and windowed, with what it cost. */
+interface CtSlice {
+  plane: DicomPlane;
+  /** The instance's size, cached or not — what the sample count is budgeted against. */
+  size: number;
+  /** What it cost the network. Zero when the 2-D viewer had already downloaded it. */
+  downloaded: number;
+}
+
+async function ctSlice(
+  url: string | undefined,
+  maxEdge: number,
+  sharedWindow?: [number, number]
+): Promise<CtSlice> {
+  if (!url) throw new Error("This series is missing a slice the 3-D view needs");
+  const req = parseDemoUrl(url);
+  if (!req || req.kind !== "dicom") throw new Error("This series is not a committed DICOM stack");
+
+  const netKey = netKeyFor(req);
+  const cached = touch(bytesCache, netKey);
+  const buffer =
+    cached ??
+    (await sliceNetworkQueue.run(netKey, PRIORITY.preload, (signal) =>
+      fetchBytes(req.assetUrl, undefined, signal)
+    ));
+
+  const plane = await slicePixelQueue.run(`volume3d:${netKey}`, PRIORITY.preload, () =>
+    Promise.resolve(dicomGrayPlane(new Uint8Array(buffer), maxEdge, 0, sharedWindow))
+  );
+  return { plane, size: buffer.byteLength, downloaded: cached ? 0 : buffer.byteLength };
+}
+
+/** Abort is not a failure to report — it is the reader having moved on. */
+function stopIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("The 3-D build is no longer needed", "AbortError");
+}
+
+/**
+ * Separation between two sampled planes, in mm.
+ *
+ * Straight-line distance between the two `ImagePositionPatient` vectors divided by
+ * the number of gaps between them, which is correct for any slice orientation
+ * without needing the direction cosines. Falls back to the nominal slice gap times
+ * the sampling stride, and to undefined when the instance carried neither — at
+ * which point the caller uses cubic voxels rather than invent a thickness.
+ */
+function ctInterval(
+  first: DicomPlane,
+  last: DicomPlane,
+  count: number,
+  sliceCount: number
+): number | undefined {
+  if (count < 2) return undefined;
+
+  const a = first.position;
+  const b = last.position;
+  if (a && b) {
+    const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    if (span > 0) return span / (count - 1);
+  }
+
+  if (first.nominalGap && first.nominalGap > 0) {
+    return (first.nominalGap * (sliceCount - 1)) / (count - 1);
+  }
+  return undefined;
+}
+
+/** `PixelSpacing`, or undefined — never a substituted default, so the caller can say it is guessing. */
+function ctPixelSpacing(plane: DicomPlane): [number, number] | undefined {
+  const s = plane.pixelSpacing;
+  return s && s[0] > 0 && s[1] > 0 ? s : undefined;
 }
 
 function clampInt(value: number, lo: number, hi: number): number {

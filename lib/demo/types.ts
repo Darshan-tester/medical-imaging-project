@@ -227,3 +227,38 @@ export function isDemoDecodeUrl(url: string): boolean {
     url.includes(`${DEMO_NIFTI_PARAM}=`)
   );
 }
+
+/**
+ * Narrower: this URL is a frame of a committed NIfTI volume, so the browser can
+ * build the whole 3-D field from the same download. False for a DICOM instance,
+ * which is one slice and carries no volume with it.
+ */
+export function isDemoVolumeUrl(url: string): boolean {
+  return url.includes(`${DEMO_NIFTI_PARAM}=`);
+}
+
+/**
+ * The other half: a committed DICOM instance.
+ *
+ * One of these is a single slice and carries no volume with it, so a 3-D view
+ * built from it has to read a run of its siblings — see `loadDemoCtVolume8`. Kept
+ * beside the two above so the viewer can route a series without importing the
+ * decoder, which is dynamically imported precisely to keep it out of the chunk.
+ */
+export function isDemoDicomUrl(url: string): boolean {
+  return url.includes(`${DEMO_DICOM_PARAM}=1`);
+}
+
+/**
+ * Fewest instances that make a DICOM series a stack worth rendering in 3-D, and
+ * the fewest a stacked field is ever built from.
+ *
+ * Lives here rather than in the decoder because `expand.ts` decides which series
+ * advertise a 3-D view and must not import the decoder to do it — that would pull
+ * `dicom-parser` and `nifti-reader-js` into the chunk the studies list loads.
+ *
+ * Sixteen because below that the render says less than scrolling the slices does,
+ * and because it cleanly excludes what is not a stack at all: a committed chest
+ * X-ray series is one image.
+ */
+export const DEMO_MIN_STACK_SLICES = 16;

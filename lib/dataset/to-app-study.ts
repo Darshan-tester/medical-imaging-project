@@ -397,9 +397,13 @@ export function toAppStudy(
         s.orientation,
 
       // Boolean only — `volumes` holds absolute paths and stays server-side.
-      // True means /api/studies/<id>/volume/<seriesId> will serve this series.
+      // True by either route: `volumeId` means /api/studies/<id>/volume/<seriesId>
+      // will serve this series off disk, `clientVolume` means the browser builds
+      // the field itself from committed assets — out of the NIfTI volume it already
+      // inflates for the 2-D planes, or by stacking a run of a DICOM series' files.
+      // The viewer's toggle only needs to know that a 3-D view exists.
       volumeAvailable:
-        Boolean(s.volumeId && ds.volumes?.[s.volumeId]),
+        Boolean(s.volumeId && ds.volumes?.[s.volumeId]) || Boolean(s.clientVolume),
 
       images:
         viewerImagesFor(
