@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { Boxes, ImageOff, Loader2 } from "lucide-react";
@@ -68,6 +68,13 @@ export function Volume3DViewer({
 
   const [volume, setVolume] = useState<LoadedVolume | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * A shader/program failure, which is the one fault an error boundary cannot
+   * see: three logs it and leaves the program invalid, so the mesh silently
+   * draws nothing and the reader is left looking at a black rectangle with
+   * working sliders. Reported as a notice instead — see `ShaderErrorReporter`.
+   */
+  const [gpuError, setGpuError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [threshold, setThreshold] = useState(0.28);
   const [density, setDensity] = useState(0.55);
@@ -78,6 +85,7 @@ export function Volume3DViewer({
     const controller = new AbortController();
     setVolume(null);
     setError(null);
+    setGpuError(null);
     setProgress(null);
 
     (async () => {
@@ -92,7 +100,13 @@ export function Volume3DViewer({
                 },
               })
             : await loadServerVolume(studyId, seriesId);
-        if (!cancelled) setVolume(loaded);
+        if (!cancelled) {
+          setVolume(loaded);
+          /* MIP or Composite, decided by the field rather than fixed: see
+             `clippedFraction`. Set per series, so switching series re-decides and
+             a reader's own choice only lasts as long as the series it was made on. */
+          setMip(clippedFraction(loaded.data) < CLIPPED_FOR_COMPOSITE);
+        }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
       }
@@ -111,6 +125,9 @@ export function Volume3DViewer({
   }
   if (error) {
     return <Notice title="Unable to build the 3D view">{error}</Notice>;
+  }
+  if (gpuError) {
+    return <Notice title="3D view stopped">{gpuError}</Notice>;
   }
   if (!volume) {
     return (
@@ -133,7 +150,16 @@ export function Volume3DViewer({
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg bg-black">
       <SceneErrorBoundary fallback={<Notice title="3D view stopped">The volume render failed on this GPU. The 2D planes are unaffected.</Notice>}>
-        <Canvas dpr={[1, 1.5]} gl={{ antialias: false, alpha: false }} camera={{ position: [0, 0, 2.6], fov: 45 }}>
+        {/*
+          The box's longest physical edge is normalized to 1 unit (see `scale`), so
+          at this fov the frame is 2 · 1.8 · tan(22.5°) = 1.49 units tall and the
+          volume fills most of it. Measured over the corpus, this is the difference
+          between the render covering 54-68% of the frame and the 23-29% a 2.6
+          camera gave — a quarter-height model adrift in a black panel was half of
+          why there appeared to be nothing there. Scrolling still zooms.
+        */}
+        <Canvas dpr={[1, 1.5]} gl={{ antialias: false, alpha: false }} camera={{ position: [0, 0, 1.8], fov: 45 }}>
+          <ShaderErrorReporter onError={setGpuError} />
           <VolumeMesh volume={volume} threshold={threshold} density={density} mip={mip} />
           <OrbitControls enablePan={false} autoRotate={!reduced} autoRotateSpeed={0.6} minDistance={1.2} maxDistance={6} />
         </Canvas>
@@ -175,7 +201,12 @@ export function Volume3DViewer({
           />
         </label>
 
-        <label className="flex items-center gap-2 text-[11px] text-ink-secondary">
+        {/* Opacity is a compositing control: a MIP is opaque by definition, so the
+            slider is shown disabled there rather than left looking live. */}
+        <label
+          className={`flex items-center gap-2 text-[11px] ${mip ? "text-ink-muted" : "text-ink-secondary"}`}
+          title={mip ? "Opacity applies to the composite mode; a MIP is opaque." : undefined}
+        >
           Opacity
           <input
             type="range"
@@ -183,8 +214,9 @@ export function Volume3DViewer({
             max={1}
             step={0.01}
             value={density}
+            disabled={mip}
             onChange={(e) => setDensity(Number(e.target.value))}
-            className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+            className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="Opacity"
           />
         </label>
@@ -386,13 +418,22 @@ const VERTEX_SHADER = /* glsl */ `
  * `uThreshold` discards samples below a density, so air and table padding do not
  * fog the render. It is a display control — it never edits the served volume.
  *
- * Note on outputs: three.js prepends `layout(location = 0) out highp vec4
- * pc_fragColor;` plus `#define gl_FragColor pc_fragColor` for a GLSL3
- * ShaderMaterial, so this shader must NOT declare its own out variable.
+ * Note on outputs — this shader MUST declare its own. three.js compiles every
+ * non-raw `ShaderMaterial` as `#version 300 es` and injects `#define varying in`
+ * and `#define texture2D texture`, but it emits `layout(location = 0) out highp
+ * vec4 pc_fragColor;` and `#define gl_FragColor pc_fragColor` only when
+ * `glslVersion !== GLSL3` (`WebGLProgram`'s prefixFragment, three 0.160.1). Since
+ * the material below asks for GLSL3 explicitly, `gl_FragColor` does not exist:
+ * assigning to it is an undeclared identifier, the fragment stage fails to
+ * compile, and three leaves an invalid program behind — which draws nothing at
+ * all while the React overlay above it still renders. That is a silent black
+ * canvas, not an error, and no React error boundary can see it.
  */
 const FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
   precision highp sampler3D;
+
+  layout(location = 0) out highp vec4 fragColor;
 
   uniform sampler3D uVolume;
   uniform float uThreshold;
@@ -459,13 +500,92 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     if (uMip > 0.5) {
       if (brightest <= 0.0) discard;
-      gl_FragColor = vec4(vec3(brightest), brightest * uDensity);
+      /* Opaque, and the projected value written straight out. Normal blending
+         multiplies a fragment's colour by its own alpha, so carrying the
+         projection in the alpha channel as well would square it — half of the
+         window would reach the screen as a quarter — which is most of why this
+         render read as an unlit smudge. There is nothing behind the volume but
+         the panel's black backdrop, so transparency buys a MIP nothing. */
+      fragColor = vec4(vec3(brightest), 1.0);
     } else {
       if (accAlpha <= 0.0) discard;
-      gl_FragColor = vec4(accColor / max(accAlpha, 0.001) * accAlpha, accAlpha);
+      fragColor = vec4(accColor / max(accAlpha, 0.001) * accAlpha, accAlpha);
     }
   }
 `;
+
+/**
+ * How much of the field sits at the very top of its 8-bit range.
+ *
+ * This decides which mode a series opens in, because the two fail in opposite
+ * conditions. A MIP keeps the largest sample along each ray, so a field with a lot
+ * of saturated voxels projects to a flat white silhouette with no interior at all.
+ * Measured over the corpus: PET SUV 0.5%, MRI FLAIR 0.6%, chest CT 2.0%, head CT
+ * 10.4% — the head studies are windowed for soft tissue (-5 to 75 HU), so bone and
+ * everything denser clips, and their MIP is an unreadable egg while the same
+ * field composites into a legible skull. Anything below the cut reads better as a
+ * MIP, which is also how these stacks are read in 2-D.
+ *
+ * Every seventh voxel is enough to measure it, and 7 is coprime with all the row
+ * lengths in the corpus so the walk crosses rows and slices instead of tracking one
+ * column. A 16 MB field costs a couple of milliseconds.
+ */
+function clippedFraction(data: Uint8Array): number {
+  let clipped = 0;
+  let seen = 0;
+  for (let i = 0; i < data.length; i += 7) {
+    if (data[i] >= 250) clipped++;
+    seen++;
+  }
+  return seen > 0 ? clipped / seen : 0;
+}
+
+/** Between the 2.0% of the chest CTs, whose MIP is fine, and the 10.4% of the heads. */
+const CLIPPED_FOR_COMPOSITE = 0.04;
+
+/**
+ * Turns a shader/program failure into something the reader can see.
+ *
+ * A failed link is the only fault in this component that neither the loader's
+ * try/catch nor `SceneErrorBoundary` can catch: it happens inside the render
+ * loop, three reports it and moves on, and the mesh then draws nothing. The
+ * result is a black canvas with a working control bar — indistinguishable, to
+ * whoever is looking at it, from a volume that is simply all air.
+ *
+ * `renderer.debug.onShaderError` is three's supported hook for this (called on
+ * `LINK_STATUS === false` at the program's first use). Installing it replaces
+ * three's own console reporting, so the logs are re-emitted here rather than
+ * swallowed: the one-line cause always, the full shader logs in development.
+ */
+function ShaderErrorReporter({ onError }: { onError: (message: string) => void }) {
+  const gl = useThree((state) => state.gl);
+
+  useEffect(() => {
+    const previous = gl.debug.onShaderError;
+    gl.debug.onShaderError = (context, program, vertexShader, fragmentShader) => {
+      const vertexLog = context.getShaderInfoLog(vertexShader)?.trim() ?? "";
+      const fragmentLog = context.getShaderInfoLog(fragmentShader)?.trim() ?? "";
+      const programLog = context.getProgramInfoLog(program)?.trim() ?? "";
+      const first =
+        (fragmentLog || vertexLog || programLog).split("\n").find((line) => line.trim().length > 0) ??
+        "no diagnostic was reported";
+
+      console.error(`[Volume3D] the volume shader failed to compile: ${first}`);
+      if (process.env.NODE_ENV === "development") {
+        console.error(`[Volume3D] vertex log:\n${vertexLog}\n\nfragment log:\n${fragmentLog}\n\nprogram log:\n${programLog}`);
+      }
+
+      onError(
+        "The volume shader did not compile on this GPU, so nothing could be drawn. The 2D planes are unaffected."
+      );
+    };
+    return () => {
+      gl.debug.onShaderError = previous;
+    };
+  }, [gl, onError]);
+
+  return null;
+}
 
 function Notice({ title, children }: { title: string; children: React.ReactNode }) {
   return (
