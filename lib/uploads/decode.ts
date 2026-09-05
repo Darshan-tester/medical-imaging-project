@@ -26,24 +26,26 @@
 import * as nifti from "nifti-reader-js";
 
 import { niftiTypedArray, VoxelArray } from "../dataset/nifti-voxels";
-import { DecodedImage, decodeDicomBytes, grayToObjectUrl } from "../demo/decode";
+import { decodeDicomBytes, grayToObjectUrl } from "../demo/decode";
+import { DecodedImage, peekSlice, putSlice } from "../viewer/slice-cache";
 import { getUploadBytes, getUploadRecord } from "./db";
 import { parseUploadUrl, UploadedFileRecord, UploadImageRef } from "./types";
 
 /*
- * Caches, mirroring the demo decoder's.
+ * Caches.
  *
- * `sliceCache` holds object URLs, each backed by a Blob the browser keeps alive
- * until the URL is revoked — so eviction revokes, or scrolling a long series
- * leaks every slice it passes. `volumeCache` holds inflated voxels, which is the
- * expensive part: without it, every slice of a gzipped NIfTI would inflate the
- * whole volume again. `inflight` collapses the duplicate requests a fast scroll
+ * Decoded slices go in the shared LRU in `lib/viewer/slice-cache.ts` — the same
+ * one the demo decoder fills, because a decoded slice is a decoded slice however
+ * its bytes arrived, and two caches over the same kind of object mean two
+ * eviction policies and two chances to leak a Blob.
+ *
+ * `volumeCache` stays local: it holds inflated voxels, which is the expensive
+ * part here — without it, every slice of a gzipped NIfTI would inflate the whole
+ * volume again. `inflight` collapses the duplicate requests a fast scroll
  * produces into one decode.
  */
-const SLICE_CACHE_MAX = 192;
 const VOLUME_CACHE_MAX = 2;
 
-const sliceCache = new Map<string, DecodedImage>();
 const volumeCache = new Map<string, UploadVolume>();
 const inflight = new Map<string, Promise<DecodedImage>>();
 
@@ -66,18 +68,6 @@ function touch<T>(cache: Map<string, T>, key: string): T | undefined {
   return hit;
 }
 
-function putSlice(key: string, value: DecodedImage): DecodedImage {
-  sliceCache.set(key, value);
-  while (sliceCache.size > SLICE_CACHE_MAX) {
-    const oldest = sliceCache.keys().next();
-    if (oldest.done) break;
-    const evicted = sliceCache.get(oldest.value);
-    sliceCache.delete(oldest.value);
-    if (evicted) URL.revokeObjectURL(evicted.objectUrl);
-  }
-  return value;
-}
-
 /**
  * Decodes one uploaded-image marker URL.
  *
@@ -86,7 +76,7 @@ function putSlice(key: string, value: DecodedImage): DecodedImage {
  * decision this module gets to make.
  */
 export function decodeUploadImage(url: string): Promise<DecodedImage> {
-  const cached = touch(sliceCache, url);
+  const cached = peekSlice(url);
   if (cached) return Promise.resolve(cached);
 
   const running = inflight.get(url);

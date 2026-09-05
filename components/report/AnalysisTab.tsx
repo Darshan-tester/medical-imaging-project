@@ -20,6 +20,10 @@ import { Drawer } from "@/components/ui/Drawer";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ctPerfCurrentSlice, ctPerfNewStudy, ctPerfSliceIndex } from "@/lib/viewer/perf";
+import { peekSlice } from "@/lib/viewer/slice-cache";
+import { isDecodableUrl } from "@/lib/viewer/slice-source";
+import { useSlicePrefetch } from "@/lib/viewer/use-slice-prefetch";
 import { cn } from "@/lib/utils";
 
 type RightPanelTab = "ai" | "report" | "annotations";
@@ -28,6 +32,10 @@ const RIGHT_PANEL_TABS: { key: RightPanelTab; label: string; icon: LucideIcon }[
   { key: "report", label: "Radiology Report", icon: FileText },
   { key: "annotations", label: "Annotations", icon: Pencil },
 ];
+
+function perfNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
 
 /**
  * three.js + the ray-marching viewer are ~150 kB that only CT (and any other
@@ -198,15 +206,36 @@ export function AnalysisTab({
   // skipped an unreadable instance leaves a gap, and positional access would
   // then quietly display the wrong slice (off-by-N for every slice after the
   // gap) while the slider still read "12/220".
+  //
+  // How long that takes is measured for the dev-only performance log: it is the
+  // whole cost of "work out what order the slices go in" on the client, because
+  // the order arrived precomputed in the manifest. Written to a ref rather than
+  // logged here so the print happens in an effect, not during render.
+  const indexBuildMs = useRef(0);
   const imageByIndex = useMemo(() => {
+    const started = perfNow();
     const map = new Map<number, ViewerImage>();
     for (const img of activeSeries?.images ?? []) map.set(img.index, img);
+    indexBuildMs.current = perfNow() - started;
     return map;
   }, [activeSeries]);
 
-  const activeImageUrl =
-    imageByIndex.get(currentSlice)?.imageUrl ??
-    (study.imageUrls && study.imageUrls.length > 0 ? study.imageUrls[currentSlice % study.imageUrls.length] : undefined);
+  /**
+   * The image URL for any slice position in the active series.
+   *
+   * One resolver for all three consumers — the viewer, the filmstrip and the
+   * preloader — because they have to agree. A preloader warming a URL the viewer
+   * would not have asked for is a wasted 515 KB, and a filmstrip resolving
+   * differently from the viewer shows a tile that is not the slice it links to.
+   */
+  const imageUrlAt = useCallback(
+    (index: number) =>
+      imageByIndex.get(index)?.imageUrl ??
+      (study.imageUrls && study.imageUrls.length > 0 ? study.imageUrls[index % study.imageUrls.length] : undefined),
+    [imageByIndex, study.imageUrls]
+  );
+
+  const activeImageUrl = imageUrlAt(currentSlice);
 
   /*
    * A real indexed dataset study is expected to have a URL for every slice, so a
@@ -246,6 +275,71 @@ export function AnalysisTab({
   useEffect(() => {
     if (!volumeAvailable) setView3D(false);
   }, [volumeAvailable]);
+
+  /*
+   * Keeps the slices around this one warm, leaning in the direction of travel.
+   * Held off while the 3-D view is up: nothing is paging through slices then, and
+   * the volume shader wants the bandwidth.
+   */
+  useSlicePrefetch({
+    total: activeSeries?.sliceCount ?? 0,
+    current: currentSlice,
+    urlAt: imageUrlAt,
+    enabled: !view3D,
+  });
+
+  /*
+   * Dev-only instrumentation for the slice pipeline. Every number below is a real
+   * measurement — `perf.ts` folds to nothing in a production build, and none of
+   * this changes what the viewer does.
+   *
+   * The study header runs during render, not in an effect, because effects fire
+   * child-first: by the time this component's effect ran, <ScanThumbnail> had
+   * already requested the first slice, and opening the measurement window then
+   * would discard the one timing that matters most. The ref guard keeps it to once
+   * per study and series.
+   */
+  const perfMark = useRef<string | undefined>(undefined);
+  if (activeSeries && perfMark.current !== `${study.studyId}:${activeSeries.id}`) {
+    perfMark.current = `${study.studyId}:${activeSeries.id}`;
+    ctPerfNewStudy(`${study.studyId} · ${activeSeries.label}`);
+    ctPerfSliceIndex(activeSeries.sliceCount, indexBuildMs.current);
+  }
+
+  /**
+   * Where the current slice came from, and how long it took to appear.
+   *
+   * Recorded when the slice changes and printed when the pixels are on screen, so
+   * the elapsed figure is the wait the reader actually experienced rather than the
+   * time some internal stage took. `cached` is read at request time, which is why
+   * a revisited slice reports a hit and a near-zero wait instead of pretending the
+   * pipeline got faster.
+   */
+  const sliceWatch = useRef<{ url?: string; at: number; cached: boolean; logged: boolean }>({
+    at: 0,
+    cached: false,
+    logged: true,
+  });
+  useEffect(() => {
+    if (!isDecodableUrl(activeImageUrl)) {
+      sliceWatch.current = { at: 0, cached: false, logged: true };
+      return;
+    }
+    sliceWatch.current = {
+      url: activeImageUrl,
+      at: perfNow(),
+      cached: peekSlice(activeImageUrl) !== undefined,
+      logged: false,
+    };
+  }, [activeImageUrl]);
+
+  const onImageReady = useCallback(() => {
+    setImageReady(true);
+    const watch = sliceWatch.current;
+    if (watch.logged || watch.url === undefined) return;
+    watch.logged = true;
+    ctPerfCurrentSlice(currentSlice, activeSeries?.sliceCount ?? 0, watch.cached, perfNow() - watch.at);
+  }, [currentSlice, activeSeries?.sliceCount]);
 
   const onSelectSeries = useCallback((id: string) => {
     setActiveSeriesId(id);
@@ -772,8 +866,9 @@ export function AnalysisTab({
               onAddMeasurement={onAddMeasurement}
               onClearAnnotations={onClearAnnotations}
               hasImageData={hasImageData}
-              onImageReady={() => setImageReady(true)}
+              onImageReady={onImageReady}
               resetKey={`${activeSeries.id}:${currentSlice}`}
+              sliceLabel={activeSeries.sliceCount > 1 ? `Slice ${currentSlice + 1} / ${activeSeries.sliceCount}` : undefined}
               annotations={currentAnnotations}
               brushColor={brushColor}
               brushSizePx={BRUSH_WIDTH_PX[brushSize]}
@@ -796,9 +891,7 @@ export function AnalysisTab({
             total={activeSeries.sliceCount}
             current={currentSlice}
             onChange={onChangeSlice}
-            getImageUrl={(i) =>
-              imageByIndex.get(i)?.imageUrl ?? (study.imageUrls && study.imageUrls[i % (study.imageUrls.length || 1)])
-            }
+            getImageUrl={imageUrlAt}
           />
         )}
 

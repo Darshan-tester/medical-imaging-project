@@ -21,6 +21,7 @@
     "demo:pack": "tsx scripts/demo-pack.ts",
     "demo:index": "tsx scripts/demo-index.ts",
     "demo:verify": "tsx scripts/demo-verify.ts",
+    "ct:order-check": "tsx scripts/ct-order-check.ts",
     "mirror:export": "tsx scripts/mirror-export.ts",
     "mirror:render": "tsx scripts/mirror-render.ts",
     "mirror:upload": "node scripts/mirror-upload.mjs",

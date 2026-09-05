@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { Modality } from "@/lib/types";
 import { ScanThumbnail } from "@/components/studies/ScanThumbnail";
+import { PRIORITY } from "@/lib/viewer/request-queue";
 import { cn } from "@/lib/utils";
 
 // Only ever mount this many thumbnails on each side of the current slice.
@@ -64,11 +65,16 @@ export function ThumbnailStrip({
             i === current ? "border-clinical ring-1 ring-clinical" : "border-border-strong opacity-70 hover:opacity-100"
           )}
         >
+          {/* Tiles are scheduled last and, within that, nearest-first. `loading="lazy"`
+              does nothing for a decode-marked URL — the fetch happens in the decode
+              step, not in the <img> — so the band is what keeps thirteen tiles from
+              competing with the slice the reader is waiting for. */}
           <ScanThumbnail
             seed={thumbnailSeed + i}
             modality={modality}
             imageUrl={thumbEdge(getImageUrl?.(i))}
             loading="lazy"
+            priority={PRIORITY.thumbnail + Math.abs(i - current)}
             className="h-full w-full"
           />
           <span className="absolute bottom-0 right-0 rounded-tl bg-black/70 px-1 font-mono text-[8.5px] leading-tight text-white">{i + 1}</span>

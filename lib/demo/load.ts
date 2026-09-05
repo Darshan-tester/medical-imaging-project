@@ -21,6 +21,7 @@
 import { Study } from "../types";
 import { DatasetStudy } from "../dataset/types";
 import { toAppStudy, toAppStudySummary } from "../dataset/to-app-study";
+import { ctPerfIndex } from "../viewer/perf";
 import { demoIndexToDatasetStudies } from "./expand";
 import { registerStudyVolumes } from "./registry";
 import { DEMO_INDEX_URL, DEMO_INDEX_VERSION, DemoIndex, DemoOmission } from "./types";
@@ -63,6 +64,7 @@ function indexUrl(): string {
 }
 
 async function fetchDemoIndex(): Promise<DemoData> {
+  const started = typeof performance !== "undefined" ? performance.now() : Date.now();
   try {
     const res = await fetch(indexUrl(), { cache: "force-cache" });
     if (!res.ok) return EMPTY;
@@ -78,8 +80,21 @@ async function fetchDemoIndex(): Promise<DemoData> {
     // is fetched, which is why this happens here and not lazily in the decoder.
     for (const study of raw.studies) registerStudyVolumes(study);
 
+    const studies = demoIndexToDatasetStudies(raw);
+
+    /*
+     * This one fetch is the entire metadata step: it carries every study, every
+     * series and every slice URL already in order, so opening a study reads no
+     * DICOM to find out what it contains. Timed here — dev only — because that
+     * claim is worth being able to check.
+     */
+    ctPerfIndex({
+      studies: studies.length,
+      ms: (typeof performance !== "undefined" ? performance.now() : Date.now()) - started,
+    });
+
     return {
-      studies: demoIndexToDatasetStudies(raw),
+      studies,
       omitted: raw.omitted ?? [],
       generatedAt: raw.generatedAt,
     };

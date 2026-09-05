@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { X, ImageOff } from "lucide-react";
 import { Finding, Marker, Modality, ViewerAnnotation, ViewerMeasurement } from "@/lib/types";
 import { ScanThumbnail } from "@/components/studies/ScanThumbnail";
+import { PRIORITY } from "@/lib/viewer/request-queue";
 import { AIOverlay } from "./AIOverlay";
 import { AnnotationCanvas } from "./AnnotationCanvas";
 import { ViewerState } from "./ViewerToolbar";
@@ -68,6 +69,7 @@ export function ImageViewer({
   onClearAnnotations,
   hasImageData = true,
   resetKey,
+  sliceLabel,
   onImageReady,
   annotations,
   brushColor,
@@ -106,6 +108,14 @@ export function ImageViewer({
   hasImageData?: boolean;
   /** Changes whenever the active series/slice changes, so in-progress UI (a half-drawn measurement, an open note editor) doesn't bleed across images. */
   resetKey?: string;
+  /**
+   * What to say while this slice decodes, e.g. "Slice 17 / 443".
+   *
+   * A number the reader can watch is worth more than a bare spinner on a 443-slice
+   * series: it says which slice is coming and that the viewer is working, and the
+   * rest of the viewer stays interactive behind it.
+   */
+  sliceLabel?: string;
   /**
    * Fired once the current slice's pixels have decoded. Cine playback uses it as
    * backpressure: without it the timer advances every 90 ms regardless of whether
@@ -274,6 +284,8 @@ export function ImageViewer({
           imageUrl={imageUrl}
           fit="contain"
           loading="eager"
+          priority={PRIORITY.current}
+          loadingLabel={sliceLabel}
           onFailure={() => setRenderFailed(true)}
           onReady={onImageReady}
           onNaturalSize={setNatural}

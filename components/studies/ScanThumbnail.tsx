@@ -2,9 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { isDemoDecodeUrl } from "@/lib/demo/types";
-import { isUploadDecodeUrl } from "@/lib/uploads/types";
 import { Modality } from "@/lib/types";
+import { ctPerfRendered } from "@/lib/viewer/perf";
+import { PRIORITY } from "@/lib/viewer/request-queue";
+import { peekSlice } from "@/lib/viewer/slice-cache";
+import { isDecodableUrl, loadSlice, releaseSlice } from "@/lib/viewer/slice-source";
 import { cn } from "@/lib/utils";
 
 const MODALITY_TINT: Record<Modality, string> = {
@@ -71,6 +73,9 @@ function PlaceholderTexture({ seed, modality, className }: { seed: number; modal
  * The two decoders are separate modules over the same shared DICOM path, and
  * which one runs is decided by the marker alone. A demo URL can never resolve
  * from the upload store, and an upload URL can never resolve from the demo index.
+ * Both are reached through `lib/viewer/slice-source.ts`, which owns the on-demand
+ * import — a static one would put `dicom-parser` and `nifti-reader-js` in the
+ * bundle of every page that renders a thumbnail.
  */
 export function ScanThumbnail({
   seed,
@@ -80,6 +85,8 @@ export function ScanThumbnail({
   animated = false,
   fit = "cover",
   loading,
+  priority = PRIORITY.current,
+  loadingLabel,
   onFailure,
   onReady,
   onNaturalSize,
@@ -99,6 +106,17 @@ export function ScanThumbnail({
   fit?: "cover" | "contain";
   /** Pass "lazy" for off-screen grids/strips so a 41-thumbnail row doesn't issue 41 immediate requests. */
   loading?: "eager" | "lazy";
+  /**
+   * Scheduling band for a decoded slice, from `PRIORITY`.
+   *
+   * `loading="lazy"` does nothing for a decode-marked URL — the fetch happens in
+   * the decode step, not in the `<img>` — so this is what keeps a filmstrip of
+   * tiles from competing with the slice the reader is waiting for. Defaults to
+   * `current`, i.e. the standing every request had when there was no scheduler.
+   */
+  priority?: number;
+  /** Shown while a slice is decoding, e.g. "Slice 17 / 443". A spinner alone if omitted. */
+  loadingLabel?: string;
   /** Lets the parent surface a real error state instead of a placeholder that looks like data. */
   onFailure?: () => void;
   /** Fired when these exact pixels are on screen — used to gate cine playback on decode. */
@@ -113,19 +131,38 @@ export function ScanThumbnail({
    */
   onNaturalSize?: (size: { width: number; height: number }) => void;
 }) {
-  const [failed, setFailed] = useState(false);
-
   /**
-   * The object URL for a locally decoded slice, once it exists.
+   * The decoded slice, tagged with the URL it belongs to.
    *
-   * Never revoked here: the URL is owned by the LRU cache in the decode module
-   * that produced it, which revokes it on eviction. Revoking on unmount would
-   * leave that cache handing out a dead blob to the next component that asks for
-   * the same slice.
+   * Tagged rather than reset by an effect, because an effect runs after the
+   * browser has painted: on the frame after `imageUrl` changed, a plain
+   * `decodedUrl` state still held the *previous* slice's pixels, so stepping
+   * through a series painted one frame of the slice you just left. Comparing the
+   * tag during render means that frame cannot happen.
+   *
+   * The object URL is never revoked here: it is owned by the LRU in
+   * `lib/viewer/slice-cache.ts`, which revokes on eviction. Revoking on unmount
+   * would leave that cache handing out a dead blob to the next component that
+   * asks for the same slice.
    */
-  const [decodedUrl, setDecodedUrl] = useState<string>();
+  const [decoded, setDecoded] = useState<{ url: string; objectUrl: string }>();
+  const [failedUrl, setFailedUrl] = useState<string>();
 
-  const needsDecode = imageUrl !== undefined && (isDemoDecodeUrl(imageUrl) || isUploadDecodeUrl(imageUrl));
+  const needsDecode = isDecodableUrl(imageUrl);
+  const failed = failedUrl !== undefined && failedUrl === imageUrl;
+
+  /*
+   * Synchronous cache read, during render. A slice that is already decoded — the
+   * one you just stepped away from, or a neighbour the preloader warmed — is on
+   * screen on this frame, with no spinner in between. Going through the decode
+   * module for the same answer would cost a dynamic import and a microtask, which
+   * is a frame of spinner: the difference between "instant" and "nearly instant".
+   */
+  const ready = !needsDecode
+    ? undefined
+    : decoded?.url === imageUrl
+      ? decoded.objectUrl
+      : peekSlice(imageUrl)?.objectUrl;
 
   /*
    * Held in a ref rather than listed as an effect dependency. The viewer passes
@@ -140,50 +177,40 @@ export function ScanThumbnail({
   }, [onFailureCurrent]);
 
   /*
-   * Reset on URL change. Without this, one failed slice latched `failed` for
-   * the lifetime of the component, and because the viewer reuses a single
-   * <ScanThumbnail> across every slice, a single transient 422 turned the rest
-   * of the series into synthetic noise that looks like a real (if ugly) scan.
+   * Same reasoning for priority: a filmstrip tile's band changes as the window
+   * slides past it, and restarting a decode because a tile moved one place closer
+   * would undo the scheduling this is for. The band that counts is the one at the
+   * moment the request is made.
    */
+  const priorityRef = useRef(priority);
+  priorityRef.current = priority;
+
   useEffect(() => {
-    setFailed(false);
-    setDecodedUrl(undefined);
+    if (imageUrl === undefined || !isDecodableUrl(imageUrl)) return;
 
-    if (imageUrl === undefined) return;
-
-    /*
-     * Imported on demand, not at module scope. Both decode modules pull in
-     * `dicom-parser` and `nifti-reader-js`; a static import would put both in the
-     * bundle of every page that renders a thumbnail, including the modes that
-     * never produce a decode-marked URL at all.
-     *
-     * The marker picks the module. Nothing falls back to the other one: a demo
-     * slice that fails to decode is not looked for in the upload store, and an
-     * uploaded slice that is missing does not go looking for a demo study.
-     */
-    const decode = isDemoDecodeUrl(imageUrl)
-      ? () => import("@/lib/demo/decode").then((mod) => mod.decodeDemoImage(imageUrl))
-      : isUploadDecodeUrl(imageUrl)
-        ? () => import("@/lib/uploads/decode").then((mod) => mod.decodeUploadImage(imageUrl))
-        : undefined;
-
-    if (!decode) return;
+    // Already decoded — the render above is showing it. No claim, so no release.
+    if (peekSlice(imageUrl)) return;
 
     let cancelled = false;
 
-    void decode()
+    void loadSlice(imageUrl, priorityRef.current)
       .then((image) => {
-        if (!cancelled) setDecodedUrl(image.objectUrl);
+        if (!cancelled) setDecoded({ url: imageUrl, objectUrl: image.objectUrl });
       })
       .catch(() => {
         // Same contract as a failed <img>: surface it, never substitute pixels.
+        // A dropped request rejects too, and the URL it was for is no longer the
+        // one being shown, so `cancelled` covers that case as well.
         if (cancelled) return;
-        setFailed(true);
+        setFailedUrl(imageUrl);
         onFailureRef.current?.();
       });
 
     return () => {
       cancelled = true;
+      // Lets the scheduler drop work nobody is waiting for any more. A slice that
+      // has already started keeps going — its bytes are still worth caching.
+      releaseSlice(imageUrl);
     };
   }, [imageUrl]);
 
@@ -193,16 +220,24 @@ export function ScanThumbnail({
    * noise, and on a real study it would read as data. An empty viewer-coloured
    * frame is what is actually true — the pixels are on their way.
    */
-  if (needsDecode && !decodedUrl && !failed) {
+  if (needsDecode && !ready && !failed) {
     return (
-      <div className={cn("relative flex items-center justify-center overflow-hidden bg-viewer", className)}>
+      <div
+        className={cn(
+          "relative flex items-center justify-center gap-2 overflow-hidden bg-viewer",
+          className
+        )}
+      >
         <Loader2 className="h-4 w-4 animate-spin text-ink-muted/60" aria-hidden />
+        {loadingLabel ? (
+          <span className="text-xs tabular-nums text-ink-muted/70">{loadingLabel}</span>
+        ) : null}
         <span className="sr-only">Decoding {modality} image</span>
       </div>
     );
   }
 
-  const src = needsDecode ? decodedUrl : imageUrl;
+  const src = needsDecode ? ready : imageUrl;
 
   if (src && !failed) {
     return (
@@ -218,7 +253,7 @@ export function ScanThumbnail({
           loading={loading}
           decoding="async"
           onError={() => {
-            setFailed(true);
+            setFailedUrl(imageUrl);
             onFailure?.();
           }}
           onLoad={(e) => {
@@ -226,6 +261,9 @@ export function ScanThumbnail({
             if (img.naturalWidth > 0 && img.naturalHeight > 0) {
               onNaturalSize?.({ width: img.naturalWidth, height: img.naturalHeight });
             }
+            // The only timing that matches what the person in front of the screen
+            // saw. Development-only inside; a no-op in production.
+            if (imageUrl !== undefined) ctPerfRendered(imageUrl);
             onReady?.();
           }}
           className={cn(

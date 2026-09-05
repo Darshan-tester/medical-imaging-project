@@ -27,6 +27,13 @@
 import * as dicomParser from "dicom-parser";
 import * as nifti from "nifti-reader-js";
 import { niftiTypedArray, VoxelArray } from "../dataset/nifti-voxels";
+import {
+  ctPerfDecoded,
+  ctPerfFetched,
+  ctPerfRequestStart,
+} from "../viewer/perf";
+import { PRIORITY, sliceNetworkQueue, slicePixelQueue } from "../viewer/request-queue";
+import { DecodedImage, peekSlice, putSlice } from "../viewer/slice-cache";
 import { lookupVolume } from "./registry";
 import {
   DEMO_DICOM_PARAM,
@@ -44,12 +51,7 @@ import {
 /** Matches `MIN_FULL_EDGE` (SCANLAB_RENDER_MIN_EDGE) so a demo render is the same size as an indexed one. */
 const MIN_FULL_EDGE = 512;
 
-/** What a decoded slice URL resolves to: an object URL an `<img>` can use directly. */
-export interface DecodedImage {
-  objectUrl: string;
-  width: number;
-  height: number;
-}
+export type { DecodedImage };
 
 interface DemoRequest {
   /** The asset URL with the decode markers stripped — what actually gets fetched. */
@@ -103,11 +105,13 @@ export function parseDemoUrl(url: string): DemoRequest | undefined {
  * ---------------------------------------------------------------------------
  * CACHES
  * ---------------------------------------------------------------------------
- * Two of them, for two different costs.
+ * Decoded slices live in the shared LRU in `lib/viewer/slice-cache.ts`. The two
+ * here are the intermediate results, for two different costs.
  *
- * `sliceCache` holds object URLs. They are backed by a Blob the browser keeps
- * alive until the URL is revoked, so an unbounded cache is a leak — hence the
- * LRU with explicit revocation on eviction.
+ * `bytesCache` holds the DICOM files themselves, and exists because one slice is
+ * asked for at two sizes: the filmstrip wants it at `?w=96` and the viewer wants
+ * it full size, and those are different slice-cache keys over the *same* 515 KB
+ * download. Without this, visiting a slice fetched it twice.
  *
  * `volumeCache` holds decoded voxel arrays, which is the expensive one:
  * inflating a 3–5 MB gzipped NIfTI per slice would mean re-inflating the same
@@ -115,15 +119,49 @@ export function parseDemoUrl(url: string): DemoRequest | undefined {
  * `VOLUME_CACHE_MAX` and covers "scrolling one study, occasionally flipping to
  * its second series".
  *
- * `inflight` is what stops a fast scroll from starting the same decode twenty
- * times over: a fetch that is already running is awaited rather than repeated.
+ * Only DICOM instances go in `bytesCache`. A NIfTI archive is useless once it has
+ * been inflated into `volumeCache`, and one of them would evict sixty CT slices.
  */
-const SLICE_CACHE_MAX = 192;
 const VOLUME_CACHE_MAX = 2;
 
-const sliceCache = new Map<string, DecodedImage>();
+/**
+ * Byte budget for the raw file cache.
+ *
+ * 32 MB is a little over sixty CT instances at 515 KB — comfortably more than
+ * the preload window plus the filmstrip, so a scroll back and forth across the
+ * same region re-decodes without re-downloading, while a long one-directional
+ * sweep evicts what it has left behind. Bounded by total bytes rather than by
+ * entry count, because a CT instance and a NIfTI archive differ by two orders of
+ * magnitude in size.
+ */
+const BYTES_CACHE_MAX = 32 * 1024 * 1024;
+
 const volumeCache = new Map<string, DecodedVolume>();
-const inflight = new Map<string, Promise<DecodedImage>>();
+const bytesCache = new Map<string, ArrayBuffer>();
+let bytesCacheSize = 0;
+
+/**
+ * One slice's work, while it is in flight.
+ *
+ * This is the deduplication layer: two callers asking for the same slice URL —
+ * which happens constantly, because the filmstrip and the preloader overlap —
+ * share one record and one promise. `consumers` counts how many of them still
+ * want it, so the last one to let go is the one that cancels; `priority` is the
+ * best band anybody has asked for, and raising it is what lets a slice that was
+ * queued as a background preload jump ahead when it becomes the slice on screen.
+ *
+ * Records live only until the decode settles. After that the pixels are in the
+ * shared slice cache and there is nothing left to cancel or reprioritise.
+ */
+interface Inflight {
+  promise: Promise<DecodedImage>;
+  /** Key this slice's bytes are queued under — shared by its thumbnail and its full-size render. */
+  netKey: string;
+  priority: number;
+  consumers: number;
+}
+
+const inflight = new Map<string, Inflight>();
 
 interface DecodedVolume {
   data: VoxelArray;
@@ -141,16 +179,14 @@ function touch<T>(cache: Map<string, T>, key: string): T | undefined {
   return hit;
 }
 
-function putSlice(key: string, value: DecodedImage): DecodedImage {
-  sliceCache.set(key, value);
-  while (sliceCache.size > SLICE_CACHE_MAX) {
-    const oldest = sliceCache.keys().next();
-    if (oldest.done) break;
-    const evicted = sliceCache.get(oldest.value);
-    sliceCache.delete(oldest.value);
-    if (evicted) URL.revokeObjectURL(evicted.objectUrl);
-  }
-  return value;
+/** Options a caller can attach to a slice request. */
+export interface DecodeOptions {
+  /**
+   * Scheduling band, from `PRIORITY`. Defaults to `current`, so a caller that
+   * does not care keeps exactly the standing it had when every request was
+   * equally urgent.
+   */
+  priority?: number;
 }
 
 /**
@@ -159,28 +195,182 @@ function putSlice(key: string, value: DecodedImage): DecodedImage {
  * Rejects rather than returning a placeholder: the caller decides what a failed
  * slice looks like, and silently substituting anything for medical pixels would
  * be the wrong default.
+ *
+ * The work is scheduled rather than started, in two stages. `sliceNetworkQueue`
+ * bounds how many slices are downloading at once; `slicePixelQueue` then runs the
+ * decodes one at a time so a burst of them cannot lock React out of the main
+ * thread. Both are ordered by priority, which is how the slice on screen
+ * overtakes the thirteen filmstrip tiles that used to be its equals.
  */
-export function decodeDemoImage(url: string): Promise<DecodedImage> {
-  const cached = touch(sliceCache, url);
-  if (cached) return Promise.resolve(cached);
+export function decodeDemoImage(url: string, opts: DecodeOptions = {}): Promise<DecodedImage> {
+  const priority = opts.priority ?? PRIORITY.current;
 
-  const running = inflight.get(url);
-  if (running) return running;
+  const cached = peekSlice(url);
+  if (cached) {
+    ctPerfRequestStart(url, priority, true);
+    return Promise.resolve(cached);
+  }
 
   const req = parseDemoUrl(url);
   if (!req) return Promise.reject(new Error("Not a demo-decoded URL"));
 
-  const task = (req.kind === "dicom" ? decodeDicomSlice(req) : decodeNiftiSlice(req))
-    .then((image) => putSlice(url, image))
-    .finally(() => inflight.delete(url));
+  ctPerfRequestStart(url, priority, false);
 
-  inflight.set(url, task);
-  return task;
+  const running = inflight.get(url);
+  if (running) {
+    running.consumers++;
+    if (priority < running.priority) {
+      running.priority = priority;
+      sliceNetworkQueue.raise(running.netKey, priority);
+      slicePixelQueue.raise(url, priority);
+    }
+    return running.promise;
+  }
+
+  const netKey = netKeyFor(req);
+  const record: Inflight = { promise: undefined as unknown as Promise<DecodedImage>, netKey, priority, consumers: 1 };
+
+  record.promise = runSlice(url, req, record).finally(() => {
+    if (inflight.get(url) === record) inflight.delete(url);
+  });
+
+  /*
+   * A prefetch that is dropped before it starts rejects with an AbortError, and a
+   * caller that never awaited it must not turn that into an unhandled rejection.
+   * Anyone holding this promise still receives the rejection themselves.
+   */
+  record.promise.catch(() => {});
+
+  inflight.set(url, record);
+  return record.promise;
 }
 
-async function fetchBytes(url: string, range?: { off: number; len: number }): Promise<ArrayBuffer> {
+/**
+ * Drops one caller's interest in a slice.
+ *
+ * The preloader calls this when a slice leaves its window and the filmstrip calls
+ * it when a tile scrolls out of view. When the last interested caller lets go of
+ * a slice whose work has not started yet, that work is dropped — which is the
+ * point: jumping from slice 17 to slice 300 must not leave the queue holding 280
+ * slices nobody is looking at any more, ahead of the one they are.
+ *
+ * Work already in flight is left to finish. Half-downloaded bytes still land in
+ * `bytesCache`, and re-fetching them later would cost more than the slot does.
+ * A decoded slice is unaffected — it is in the shared slice cache, there is
+ * nothing to cancel — so a caller that never releases behaves exactly as it did
+ * before.
+ */
+export function releaseDemoImage(url: string): void {
+  const record = inflight.get(url);
+  if (!record) return;
+
+  record.consumers--;
+  if (record.consumers > 0) return;
+
+  inflight.delete(url);
+  sliceNetworkQueue.release(record.netKey);
+  slicePixelQueue.release(url);
+}
+
+/** Byte-cache and network-queue key: the asset, plus the archive member for a NIfTI frame. */
+function netKeyFor(req: DemoRequest): string {
+  if (req.kind === "dicom") return req.assetUrl;
+  const zip = lookupVolume(req.volumeKey ?? "")?.zip;
+  return zip ? `${req.assetUrl}#${zip.off}+${zip.len}` : req.assetUrl;
+}
+
+function perfNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+/**
+ * Fetch, then decode, each in its own queue.
+ *
+ * The split is the important part. Decoding inside the network queue's slot would
+ * hold a connection open across a 20 ms main-thread block, and fetching inside the
+ * pixel queue's single slot would serialise the downloads to one at a time —
+ * either way the preloader stops being able to keep ahead of a scroll.
+ */
+async function runSlice(url: string, req: DemoRequest, record: Inflight): Promise<DecodedImage> {
+  const bytes = await loadSliceBytes(url, req, record);
+
+  /*
+   * The last consumer let go while the bytes were on the wire. The download was
+   * still worth finishing — it is cached now — but decoding it is not.
+   */
+  if (inflight.get(url) !== record) {
+    throw new DOMException("Slice no longer needed", "AbortError");
+  }
+
+  return slicePixelQueue.run(url, record.priority, async () => {
+    const started = perfNow();
+    const image =
+      req.kind === "dicom"
+        ? await decodeDicomBytes(new Uint8Array(bytes!), req.maxEdge)
+        : await decodeNiftiSlice(req, bytes);
+    ctPerfDecoded(url, record.priority, perfNow() - started);
+    return putSlice(url, image);
+  });
+}
+
+/**
+ * The bytes this slice needs, or undefined when it needs none.
+ *
+ * Undefined is the NIfTI case where the volume is already inflated in
+ * `volumeCache`: reconstructing another plane of a study already on screen costs
+ * a reslice and no network at all.
+ *
+ * The queue key is the asset rather than the slice URL, so the `?w=96` filmstrip
+ * tile and the full-size viewer image of one instance share a single 515 KB
+ * download instead of racing each other for it.
+ */
+async function loadSliceBytes(url: string, req: DemoRequest, record: Inflight): Promise<ArrayBuffer | undefined> {
+  if (req.kind === "nifti" && volumeCache.has(req.volumeKey ?? "")) return undefined;
+
+  const cached = touch(bytesCache, record.netKey);
+  if (cached) {
+    ctPerfFetched(url, 0, true, cached.byteLength);
+    return cached;
+  }
+
+  const range = req.kind === "nifti" ? lookupVolume(req.volumeKey ?? "")?.zip : undefined;
+  const started = perfNow();
+  const buffer = await sliceNetworkQueue.run(record.netKey, record.priority, (signal) =>
+    fetchBytes(req.assetUrl, range, signal)
+  );
+  ctPerfFetched(url, perfNow() - started, false, buffer.byteLength);
+
+  // NIfTI archives are deliberately not cached: once inflated into `volumeCache`
+  // the compressed bytes are dead weight, and one of them evicts sixty CT slices.
+  if (req.kind === "dicom") putBytes(record.netKey, buffer);
+  return buffer;
+}
+
+function putBytes(key: string, value: ArrayBuffer): void {
+  if (value.byteLength > BYTES_CACHE_MAX) return;
+
+  const existing = bytesCache.get(key);
+  if (existing) bytesCacheSize -= existing.byteLength;
+  bytesCache.set(key, value);
+  bytesCacheSize += value.byteLength;
+
+  while (bytesCacheSize > BYTES_CACHE_MAX) {
+    const oldest = bytesCache.keys().next();
+    if (oldest.done) break;
+    const evicted = bytesCache.get(oldest.value);
+    bytesCache.delete(oldest.value);
+    bytesCacheSize -= evicted?.byteLength ?? 0;
+  }
+}
+
+async function fetchBytes(
+  url: string,
+  range?: { off: number; len: number },
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
   const res = await fetch(url, {
     headers: range ? { Range: `bytes=${range.off}-${range.off + range.len - 1}` } : undefined,
+    signal,
   });
   if (!res.ok) throw new Error(`Failed to load ${url} (HTTP ${res.status})`);
   const buf = await res.arrayBuffer();
@@ -195,6 +385,7 @@ async function fetchBytes(url: string, range?: { off: number; len: number }): Pr
   }
   return buf;
 }
+
 
 /**
  * Nearest-neighbour downscale to `maxEdge`, mirroring the server's own
@@ -302,6 +493,20 @@ function outputSize(width: number, height: number, maxEdge?: number): [number, n
  * would land in `catch` as an unreadable slice rather than silently rendering
  * garbage.
  *
+ * When `maxEdge` asks for a smaller image than the instance holds, the windowing
+ * pass writes straight into the reduced plane instead of filling a full-size one
+ * and shrinking it afterwards. For a 96 px filmstrip tile that is 1/28th of the
+ * work — 2,304 windowed pixels instead of 262,144 — and it is the difference
+ * between a decode that blocks the main thread for 13 ms and one that takes 1.4.
+ *
+ * The pixels are unchanged by that shortcut. Nearest-neighbour sampling picks
+ * whole source pixels and the window map is applied per pixel, so choosing first
+ * and mapping second gives the same bytes as mapping first and choosing second;
+ * checked against the previous implementation over real CT instances at maxEdge
+ * 96, 128, 256 and full size, with zero differing pixels. The display window
+ * itself is still measured over the whole full-resolution image, so a tile and
+ * its full-size slice cannot come out at different brightnesses.
+ *
  * Exported for `lib/uploads/decode.ts`, which has the same bytes from IndexedDB
  * rather than from a fetch. `frame` is for a multi-frame instance — a cine loop
  * or an enhanced object, which an upload can be and a demo asset never is.
@@ -336,35 +541,37 @@ export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, fram
   const available = Math.max(1, Math.floor((pixelElement.length || frameBytes) / frameBytes));
   const offset = pixelElement.dataOffset + Math.min(Math.max(0, Math.trunc(frame)), available - 1) * frameBytes;
 
-  let raw: Float64Array;
+  /**
+   * Reads source pixel `i` in modality units. One indirection per pixel, chosen
+   * once per image, in place of a 2 MB `Float64Array` copy of the whole plane.
+   */
+  let valueAt: (i: number) => number;
   if (samplesPerPixel >= 3) {
     // RGB/YBR — converted to 8-bit luma for a consistent single-channel viewer.
     const buf = byteArray.subarray(offset, offset + pixelCount);
-    raw = new Float64Array(rows * columns);
-    for (let i = 0; i < rows * columns; i++) {
-      raw[i] = 0.299 * (buf[i * 3] ?? 0) + 0.587 * (buf[i * 3 + 1] ?? 0) + 0.114 * (buf[i * 3 + 2] ?? 0);
-    }
+    valueAt = (i) => 0.299 * (buf[i * 3] ?? 0) + 0.587 * (buf[i * 3 + 1] ?? 0) + 0.114 * (buf[i * 3 + 2] ?? 0);
     windowCenter = windowCenter ?? 128;
     windowWidth = windowWidth ?? 256;
   } else if (bitsAllocated === 8) {
     const buf = byteArray.subarray(offset, offset + pixelCount);
-    raw = new Float64Array(pixelCount);
-    for (let i = 0; i < pixelCount; i++) raw[i] = buf[i] * rescaleSlope + rescaleIntercept;
+    valueAt = (i) => buf[i] * rescaleSlope + rescaleIntercept;
   } else {
     const view =
       pixelRepresentation === 1
         ? new Int16Array(byteArray.buffer, byteArray.byteOffset + offset, pixelCount)
         : new Uint16Array(byteArray.buffer, byteArray.byteOffset + offset, pixelCount);
-    raw = new Float64Array(pixelCount);
-    for (let i = 0; i < pixelCount; i++) raw[i] = view[i] * rescaleSlope + rescaleIntercept;
+    valueAt = (i) => view[i] * rescaleSlope + rescaleIntercept;
   }
 
   // No window in the file: a full min/max stretch of THIS image's real pixel
-  // values — never a fabricated "typical" window for the modality.
+  // values — never a fabricated "typical" window for the modality. Measured over
+  // every pixel, not over the reduced plane, so the window is a property of the
+  // image rather than of the size it happens to be requested at.
   if (windowCenter === undefined || windowWidth === undefined || windowWidth <= 0) {
     let min = Infinity;
     let max = -Infinity;
-    for (const v of raw) {
+    for (let i = 0; i < rows * columns; i++) {
+      const v = valueAt(i);
       if (v < min) min = v;
       if (v > max) max = v;
     }
@@ -375,32 +582,47 @@ export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, fram
   const lo = windowCenter - windowWidth / 2;
   const scale = 255 / windowWidth;
   const invert = photometric === "MONOCHROME1";
-  const gray = new Uint8Array(rows * columns);
-  for (let i = 0; i < rows * columns; i++) {
-    let v = Math.round((raw[i] - lo) * scale);
-    if (v < 0) v = 0;
-    if (v > 255) v = 255;
-    gray[i] = invert ? 255 - v : v;
+
+  // Output size up front, so the window pass fills the plane that is actually
+  // wanted. `fitEdge` is the same mapping `downscaleGray` uses, and the row/column
+  // arithmetic below is its nearest-neighbour rule.
+  const [width, height] = fitEdge(columns, rows, maxEdge);
+  const gray = new Uint8Array(width * height);
+
+  for (let oy = 0; oy < height; oy++) {
+    const sourceRow = (height === rows ? oy : Math.min(rows - 1, Math.floor((oy * rows) / height))) * columns;
+    const outRow = oy * width;
+    for (let ox = 0; ox < width; ox++) {
+      const sx = width === columns ? ox : Math.min(columns - 1, Math.floor((ox * columns) / width));
+      let v = Math.round((valueAt(sourceRow + sx) - lo) * scale);
+      if (v < 0) v = 0;
+      if (v > 255) v = 255;
+      gray[outRow + ox] = invert ? 255 - v : v;
+    }
   }
 
-  return grayToObjectUrl(gray, columns, rows, maxEdge);
-}
-
-async function decodeDicomSlice(req: DemoRequest): Promise<DecodedImage> {
-  return decodeDicomBytes(new Uint8Array(await fetchBytes(req.assetUrl)), req.maxEdge);
+  return grayToObjectUrl(gray, width, height);
 }
 
 // ---------------------------------------------------------------------------
 // NIfTI — mirrors `loadVolume` + `resliceToPng`
 // ---------------------------------------------------------------------------
 
-async function loadDemoVolume(key: string, volume: DemoVolume, assetUrl: string): Promise<DecodedVolume> {
+/**
+ * Inflates one NIfTI archive into voxels, or returns the copy already in cache.
+ *
+ * `bytes` is undefined exactly when the volume is cached, because the caller
+ * skipped the download in that case — reconstructing a second plane of a series
+ * already on screen is pure arithmetic.
+ */
+function demoVolume(key: string, volume: DemoVolume, bytes: ArrayBuffer | undefined): DecodedVolume {
   const cached = touch(volumeCache, key);
   if (cached) return cached;
+  if (!bytes) throw new Error("Volume bytes are unavailable");
 
-  let buf = await fetchBytes(assetUrl, volume.zip);
   // `nifti-reader-js` inflates through pure-JS `fflate`, so this works in the
   // browser exactly as it does in Node.
+  let buf = bytes;
   if (nifti.isCompressed(buf)) buf = nifti.decompress(buf) as ArrayBuffer;
   if (!nifti.isNIFTI(buf)) throw new Error("Not a valid NIfTI file");
 
@@ -535,7 +757,7 @@ function reslice(volume: DecodedVolume, p: DemoPlaneGeometry, throughIndex: numb
   return { gray, width, height };
 }
 
-async function decodeNiftiSlice(req: DemoRequest): Promise<DecodedImage> {
+async function decodeNiftiSlice(req: DemoRequest, bytes: ArrayBuffer | undefined): Promise<DecodedImage> {
   const key = req.volumeKey ?? "";
   const volume = lookupVolume(key);
   if (!volume) {
@@ -549,7 +771,7 @@ async function decodeNiftiSlice(req: DemoRequest): Promise<DecodedImage> {
     throw new Error(`This volume has no ${req.plane.toLowerCase()} extent, so that plane cannot be reconstructed`);
   }
 
-  const decoded = await loadDemoVolume(key, volume, req.assetUrl);
+  const decoded = demoVolume(key, volume, bytes);
   const { gray, width, height } = reslice(decoded, geometry, req.frame, req.maxEdge);
   return grayToObjectUrl(gray, width, height);
 }
