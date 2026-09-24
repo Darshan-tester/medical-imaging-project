@@ -1,0 +1,12 @@
+# Delivered application folders — created by the build scripts or at runtime,
+# never source. Root .gitignore already covers __pycache__, *.pyc and logs/.
+dataset/
+index/
+cache/
+logs/
+runtime/
+
+# PyInstaller working output
+build/
+dist/
+*.spec
