@@ -1,98 +1,107 @@
-# Vedh / Meridian Medical Imaging — Desktop Application
+# Meridian Desktop — Medical Imaging Workstation
 
-A local, offline desktop viewer for the delivered study dataset: a study list
-over a SQLite index, a diagnostic viewer with axial / coronal / sagittal MPR,
-GPU-accelerated 3-D volume rendering, linked navigation with crosshairs,
-window/level controls, and world-coordinate annotations that stay aligned in
-2-D and 3-D.
+A native desktop application (Windows + macOS) built on PySide6/Qt + VTK that
+reuses the existing Meridian dataset architecture. It reads the SAME
+`.scanlab/manifest.json` the web app produces, so the real image/report
+pairing, series structure, slice ordering metadata and verbatim reports are
+consumed as-is — nothing is re-derived, and no fake data exists.
 
-Patient scan data stays on this machine. The application has no network access,
-performs no uploads, and collects no telemetry.
+## Run (development)
 
-## Stack
-
-Python 3.10+, PySide6 (Qt 6), NumPy. The imaging core (`desktop/core/imaging/`)
-is pure NumPy and headless-testable; the Qt layer (`desktop/ui/`) only paints
-what core produces and never decodes on the UI thread.
-
-## Running from source
-
-```bash
+```
 cd desktop
-python -m pip install PySide6 numpy
-# the delivered folder must contain dataset/ and index/studies.db beside
-# desktop/ (or set MERIDIAN_DESKTOP_HOME to point at it)
-python main.py
+python -m venv .venv
+.venv\Scripts\activate            (Windows)   |   source .venv/bin/activate  (macOS)
+pip install -r requirements.txt
+run-dev.bat                        (Windows)   |   ./run-dev.sh               (macOS)
 ```
 
-## Layout & controls
+Dataset configuration: the app finds `.scanlab/manifest.json` next to your
+dataset root (`SCANLAB_DATA_ROOT`, e.g. `D:\ScanLab_Datasets`) or walks up from
+its own location. Point Settings at either location; no path is ever exposed in
+rendered image data.
 
-| Action | Control |
-|---|---|
-| Layout: 1 / 2 / 4 panes | Layout selector in the viewer top bar, or press `M` |
-| Per-pane view | Right-click a pane's label, or pick from the pane's view combo |
-| Maximize a pane | Double-click the pane; `Esc` restores |
-| Active pane | Highlighted border; click a pane to activate |
-| Linked navigation | On by default; `L` toggles. Clicking in any plane moves the others |
-| Crosshairs | `C` toggles |
-| Window / level | Sliders + numeric inputs in the right rail, presets, "Reset window/level" |
-| 3-D color presets | Preset combo above the 3-D pane. Grayscale = measured intensity; everything else is labeled **pseudocolor** (MRI intensities have no true tissue colors) |
-| 3-D interaction | Drag = rotate, wheel = zoom, right-drag = pan, double-click = reset camera |
+## Build
 
-## Building installers
+Windows `.exe`:  `build-windows.bat`  →  `dist\Meridian\Meridian.exe`
+macOS `.app`:    `./build-macos.sh`   →  `dist\Meridian.app`
 
-### Windows
+PyInstaller onedir layout; end users need no Python/Node tooling installed.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File desktop\build\build_windows.ps1
+## Architecture
+
+```
+desktop/meridian_desktop/
+  config.py            settings persistence (data root, window state)
+  app.py               entry point, logging (~/.meridian/logs/meridian.log)
+  dataset/manifest.py  DatasetStudy/Series/ImageRef/DicomVolume model,
+                       study search/filter — reads .scanlab/manifest.json
+  dataset/imageloader.py  slice decoders (DICOM/NIfTI/raster), correct-order
+                       volume builders (ImagePositionPatient-ordered stack or
+                       NIfTI affine), SliceCache (LRU), VolumeCache, SliceLoader
+                       (thread pool + neighbour prefetch, never blocks GUI)
+  dataset/volumes.py   background volume service with caching
+  dataset/annotations.py  voxel-coordinate annotation model, JSON persistence
+                       per study, plane<->voxel projection, mm measurements
+  viewer/sliceview.py  2-D slice widget: WW/WL, invert, zoom/pan/fit,
+                       crosshair overlay, annotation overlay, spacing-correct
+                       aspect (no stretched anatomy)
+  viewer/vtk3d.py      GPU volume rendering, CT presets (Bone/Soft Tissue/Lung),
+                       MRI Color intensity-based false-colour transfer function,
+                       Tissue/High Contrast presets, shading, AA, camera ops
+  ui/main_window.py    workstation shell: study list + search + modality filter,
+                       toolbar (W/L, pan, zoom, measure, line, arrow, rect,
+                       ellipse, freehand, text, invert, reset), layouts
+                       1x1 / 1x2 / 2x2, view sync, report/AI-findings/annotation
+                       tabs, radiologist disclaimer
 ```
 
-Produces `desktop\dist\VedhMedicalImaging\` (folder with `VedhMedicalImaging.exe`).
-With Inno Setup 6 installed, an installer is also produced. Copy your
-`dataset\` and `index\` folders next to the exe to deliver.
+Key behaviours:
 
-### macOS
-
-```bash
-bash desktop/build/build_macos.sh
-```
-
-Produces `desktop/dist/VedhMedicalImaging.app`.
-
-### Signing and notarization (honest status)
-
-No signing credentials are available in this environment, so **builds produced
-by these scripts are unsigned** and this is stated on screen by the scripts.
-
-* Windows: SmartScreen will warn on first run until you sign with `signtool`
-  and an EV/OV code-signing certificate (`SIGNTOOL_PFX` /
-  `SIGNTOOL_PASSWORD` environment variables are honored by the script).
-* macOS: Gatekeeper will block an unsigned app; users must right-click → Open
-  on first launch. To distribute normally, sign with `codesign --deep --force
-  --options runtime --sign "Developer ID Application: …"` and notarize with
-  `xcrun notarytool submit` then `xcrun stapler staple` (commands are printed
-  in `build_macos.sh`).
-
-## Tests
-
-```bash
-cd desktop
-python tests/run_tests.py        # zero-dependency runner (numpy only)
-python -m pytest tests -q        # or pytest where available
-```
-
-Covers: plane-pick round trips across all MPR planes, cross-plane consistency,
-world↔voxel transforms (exact values on a known affine), degenerate-affine
-safety, transfer-function identity/pseudocolor behavior, opacity thresholds,
-volume downsampling, and annotation persistence round trips.
+- Correct ordering: slice order always comes from the manifest (ordered at
+  index time by ImagePositionPatient / InstanceNumber), never from filesystem
+  enumeration. Corrupt DICOM instances are skipped with a log entry.
+- Latency: visible slice loads first; adjacent slices prefetch in background;
+  decoded slices and built volumes are LRU-cached; the GUI thread never decodes.
+- MPR: the volume is resliced per plane with true voxel spacing; crosshair
+  position is shared across planes (click in one plane updates the others);
+  wheel scrolls the crosshair along each plane's own axis.
+- Sync: WW/WL changes propagate across all panels when Sync Views is ON.
+- 3D: native-resolution VTK GPU volume rendering with progressive sampling
+  (VTK auto-adjusts sample distance during interaction and refines when idle);
+  MRI Color is explicitly a false-colour visualization driven by actual
+  intensity percentiles.
+- Annotations: stored in voxel coordinates, projected into every plane and
+  available for 3D highlighting; persisted per study under the app config dir.
 
 ## Known limitations
 
-* macOS/Windows installers were **not** built or executed in the development
-  environment (no Qt runtime, no GPU, and no Windows/macOS host available);
-  the scripts have not been run end-to-end there. Run them on the target OS.
-* Unsigned builds: see above; nothing here claims certification.
-* 3-D rendering requires OpenGL 3.3; on machines without it the pane shows an
-  error rather than a software fallback.
-* Pen-stroke annotations draw on their original slice plane in 3-D; they are
-  not volumetric objects.
+- 3D panel requires VTK (`pip install vtk`); without it the 2-D/MPR viewer
+  still works fully and a clear message is shown.
+- Annotation 3D visualization currently marks the annotated voxel region via
+  the shared voxel coordinate store; full 3D contour extraction is a
+  follow-up.
+- DICOM multiframe and exotic transfer syntaxes follow pydicom's supported
+  set; corrupted files are skipped rather than crashing the app.
+- macOS build should be produced on a Mac (cross-compiling from Windows is not
+  supported by PyInstaller); the codebase itself is fully cross-platform.
+
+## Testing checklist
+
+1. Launch app → study list appears quickly; search and modality filter work.
+2. Open a CT study → first slice renders without blocking; wheel navigates in
+   acquisition/spatial order.
+3. WW/WL drag updates image in real time; presets via drag; Invert works;
+   Reset restores fit + auto window.
+4. Switch layout to 2×2 → Axial/Coronal/Sagittal/3D panels appear.
+5. Double-click in axial → crosshair updates in coronal and sagittal at the
+   same anatomy; wheel in coronal scrolls along y only.
+6. Sync Views OFF → WW/WL changes affect only the active panel.
+7. Measure a structure → mm value matches physical spacing (unstretched).
+8. Draw line/rect/ellipse/freehand/arrow/text → persists after restart.
+9. 3D panel → rotate/zoom/pan; switch preset Grayscale ↔ MRI Color ↔ Bone;
+   reset camera.
+10. Open an MRI study → MRI Color preset shows intensity-based colouring.
+11. Open an X-Ray study → single image renders; report pane shows verbatim text.
+12. Verify report pane matches the study's real report and shows the
+    radiologist disclaimer.
