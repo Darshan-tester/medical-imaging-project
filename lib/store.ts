@@ -71,28 +71,65 @@ export const useUIStore = create<UIState>((set, get) => ({
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
 }));
 
+export interface AuthUser {
+  id: string;
+  name: string;
+  role: string;
+  npi?: string;
+  department?: string;
+}
+
+export const DEFAULT_CLINICAL_USER: AuthUser = {
+  id: "usr-chen",
+  name: "Dr. Amara Chen",
+  role: "Attending Radiologist",
+  npi: "1849204918",
+  department: "Diagnostic Radiology & Thoracic Imaging",
+};
+
 interface AuthState {
   isAuthenticated: boolean;
   hydrated: boolean;
+  user: AuthUser;
   hydrate: () => void;
-  login: () => void;
+  login: (customUser?: Partial<AuthUser>) => void;
   logout: () => void;
+  setUser: (user: AuthUser) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
   hydrated: false,
+  user: DEFAULT_CLINICAL_USER,
   hydrate: () => {
     if (typeof window === "undefined") return;
     const v = window.localStorage.getItem("meridian:session");
-    set({ isAuthenticated: v === "1", hydrated: true });
+    const storedUser = window.localStorage.getItem("meridian:user");
+    set({
+      isAuthenticated: v === "1",
+      hydrated: true,
+      user: storedUser ? JSON.parse(storedUser) : DEFAULT_CLINICAL_USER,
+    });
   },
-  login: () => {
-    if (typeof window !== "undefined") window.localStorage.setItem("meridian:session", "1");
-    set({ isAuthenticated: true });
+  login: (customUser) => {
+    const userToSave = { ...DEFAULT_CLINICAL_USER, ...customUser };
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("meridian:session", "1");
+      window.localStorage.setItem("meridian:user", JSON.stringify(userToSave));
+    }
+    set({ isAuthenticated: true, user: userToSave });
   },
   logout: () => {
-    if (typeof window !== "undefined") window.localStorage.removeItem("meridian:session");
-    set({ isAuthenticated: false });
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("meridian:session");
+      window.localStorage.removeItem("meridian:user");
+    }
+    set({ isAuthenticated: false, user: DEFAULT_CLINICAL_USER });
+  },
+  setUser: (user) => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("meridian:user", JSON.stringify(user));
+    }
+    set({ user });
   },
 }));

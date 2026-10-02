@@ -8,7 +8,7 @@
     "build": "next build",
     "postbuild": "node scripts/cf-ensure-open-next.mjs --if-ci",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "demo:index:check": "node scripts/demo-index-check.mjs",
     "cf:build": "opennextjs-cloudflare build",

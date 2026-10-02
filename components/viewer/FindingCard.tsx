@@ -17,6 +17,7 @@ const BAND_ACCENT: Record<Finding["band"], string> = {
 
 const FLASH_CLASS: Partial<Record<Finding["status"], string>> = {
   accepted: "status-flash-success",
+  confirmed: "status-flash-success",
   modified: "status-flash-warning",
   rejected: "status-flash-critical",
 };
@@ -43,8 +44,10 @@ export function FindingCard({
   const isNegative = finding.label.toLowerCase().startsWith("no ");
 
   const statusStyles: Record<Finding["status"], string> = {
+    unreviewed: "border-border",
     pending: "border-border",
     accepted: "border-success/40 bg-success-dim/40",
+    confirmed: "border-success/50 bg-success-dim/50",
     modified: "border-warning/40 bg-warning-dim/40",
     rejected: "border-critical/40 bg-critical-dim/30 opacity-60",
   };
@@ -75,8 +78,27 @@ export function FindingCard({
         )}
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-semibold leading-snug text-ink-primary">{finding.label}</p>
-          {!isNegative && <div className="mt-1"><ConfidenceBand band={finding.band} /></div>}
+          {finding.isCritical && (
+            <div className="mt-1.5 inline-flex items-center gap-1 rounded border border-critical/40 bg-critical-dim px-2 py-0.5 text-[10.5px] font-bold text-critical">
+              <span>⚠</span> CRITICAL FINDING
+            </div>
+          )}
+          {!isNegative && (
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <ConfidenceBand band={finding.band} />
+              {finding.measurements?.lengthMm && (
+                <span className="rounded bg-panel-alt px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-primary">
+                  {finding.measurements.lengthMm} mm
+                </span>
+              )}
+            </div>
+          )}
           <p className="mt-2 text-[12px] leading-relaxed text-ink-secondary">{finding.description}</p>
+          {finding.modelName && (
+            <p className="mt-1 text-[10px] text-ink-muted">
+              {finding.modelName} · {finding.processingTimeMs}ms
+            </p>
+          )}
           {/*
             * Where the region is, and the control that goes there.
             *

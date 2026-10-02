@@ -19,6 +19,26 @@ export interface Radiologist {
   role: string;
 }
 
+export type FindingReviewStatus = "unreviewed" | "pending" | "accepted" | "modified" | "rejected" | "confirmed";
+
+export interface FindingMeasurement {
+  lengthMm?: number;
+  widthMm?: number;
+  areaMm2?: number;
+  volumeMm3?: number;
+  meanHu?: number;
+  maxSuv?: number;
+}
+
+export interface FindingEvidence {
+  seriesId: string;
+  sliceIndex: number;
+  region: { x: number; y: number; w: number; h: number };
+  centerCoords?: { x: number; y: number };
+  thumbnailUrl?: string;
+  keyObservation: string;
+}
+
 export interface Finding {
   id: string;
   label: string;
@@ -29,8 +49,17 @@ export interface Finding {
   /** Which series this finding lives on. Undefined = applies regardless of series (e.g. single-series studies). */
   seriesId?: string;
   description: string;
-  status: "pending" | "accepted" | "modified" | "rejected";
+  status: "pending" | "accepted" | "modified" | "rejected" | FindingReviewStatus;
   radiologistNote?: string;
+  location?: string;
+  isCritical?: boolean;
+  priority?: string;
+  severity?: string;
+  modelName?: string;
+  modelVersion?: string;
+  processingTimeMs?: number;
+  measurements?: FindingMeasurement;
+  evidence?: FindingEvidence;
 }
 
 export interface SeriesInfo {
@@ -38,6 +67,7 @@ export interface SeriesInfo {
   label: string;
   sliceCount: number;
   orientation: "Axial" | "Sagittal" | "Coronal" | "AP" | "PA" | "Lateral" | "Unknown";
+  pixelSpacing?: [number, number]; // [rowSpacing, colSpacing] in mm
   /**
    * Optional per-series images, ready for a future PACS/DICOM integration
    * where each series carries its own instances instead of sharing the
@@ -359,6 +389,7 @@ export interface UploadOrigin {
 export interface ReportSection {
   clinicalInformation: string;
   technique: string;
+  comparison?: string;
   findings: string;
   impression: string;
 }
@@ -425,4 +456,46 @@ export interface VitalsReading {
   status: VitalsStatus;
   updatedSecondsAgo: number;
   stats: VitalStat[];
+}
+
+export interface ReportQCWarning {
+  id: string;
+  category: "laterality" | "measurement" | "contradiction" | "missing_critical" | "unsupported_claim";
+  severity: "critical" | "warning" | "advisory";
+  title: string;
+  description: string;
+  suggestedAction?: string;
+  findingId?: string;
+  resolved: boolean;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  user: string;
+  action:
+    | "STUDY_OPENED"
+    | "IMAGE_VIEWED"
+    | "FINDING_ACCEPTED"
+    | "FINDING_REJECTED"
+    | "FINDING_EDITED"
+    | "REPORT_EDITED"
+    | "REPORT_QC_CHECKED"
+    | "REPORT_APPROVED"
+    | "REPORT_EXPORTED";
+  studyId: string;
+  details: string;
+}
+
+export interface PriorStudyComparison {
+  priorStudyId: string;
+  priorDate: string;
+  modality: Modality;
+  findingDeltas: {
+    findingName: string;
+    status: "new" | "stable" | "increased" | "decreased" | "resolved";
+    currentMeasurementMm?: number;
+    priorMeasurementMm?: number;
+    percentChange?: number;
+  }[];
 }

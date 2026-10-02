@@ -89,11 +89,13 @@ export function ImageViewer({
   onCrosshairMove,
   onSliceScroll,
   annotationVisibility,
+  pixelSpacing,
 }: {
   modality: Modality;
   seed: number;
   imageUrl?: string;
   isProcessing?: boolean;
+  pixelSpacing?: [number, number];
   findings: Finding[];
   activeFindingId: string | null;
   onHoverFinding: (id: string | null) => void;
@@ -412,15 +414,23 @@ export function ImageViewer({
                 </g>
               ))}
             </svg>
-            {measurements.map((m) => (
-              <span
-                key={m.id}
-                className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded bg-clinical px-1.5 py-0.5 text-[9.5px] font-medium text-white shadow"
-                style={{ left: `${((m.a.x + m.b.x) / 2) * 100}%`, top: `${((m.a.y + m.b.y) / 2) * 100}%` }}
-              >
-                {m.distanceMm !== undefined ? `${m.distanceMm.toFixed(1)} mm` : `${m.distancePx} px`}
-              </span>
-            ))}
+            {measurements.map((m) => {
+              const physicalMm =
+                m.distanceMm !== undefined
+                  ? m.distanceMm
+                  : pixelSpacing
+                  ? Math.hypot((m.b.x - m.a.x) * 512 * pixelSpacing[1], (m.b.y - m.a.y) * 512 * pixelSpacing[0])
+                  : undefined;
+              return (
+                <span
+                  key={m.id}
+                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded bg-clinical px-1.5 py-0.5 text-[9.5px] font-medium text-white shadow"
+                  style={{ left: `${((m.a.x + m.b.x) / 2) * 100}%`, top: `${((m.a.y + m.b.y) / 2) * 100}%` }}
+                >
+                  {physicalMm !== undefined ? `${physicalMm.toFixed(1)} mm` : `${m.distancePx} px`}
+                </span>
+              );
+            })}
           </>
         )}
 
@@ -482,6 +492,7 @@ export function ImageViewer({
           brushSize={brushSizePx}
           brushOpacity={brushOpacity}
           selectedId={selectedAnnotationId ?? null}
+          pixelSpacing={pixelSpacing}
           onSelect={onSelectAnnotation ?? (() => {})}
           onCommitStroke={onCommitStroke ?? (() => {})}
           onCommitAnnotation={onCommitAnnotation}

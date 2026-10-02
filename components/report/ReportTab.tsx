@@ -27,11 +27,11 @@ export function ReportTab({
           <h2 className="text-section-title text-ink-primary">Clinical Report</h2>
           <ExportButton study={study} />
         </div>
-        <ReportEditor report={study.report} onChange={onChangeSections} />
+        <ReportEditor report={study.report} study={study} onChange={onChangeSections} />
       </div>
 
       <div className="order-3 space-y-5">
-        <ApprovalPanel report={study.report} onApprove={onApprove} />
+        <ApprovalPanel report={study.report} study={study} onApprove={onApprove} />
 
         <div className="rounded-xl border border-border bg-panel">
           <div className="border-b border-border px-4 py-3.5">

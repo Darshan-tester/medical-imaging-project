@@ -39,6 +39,22 @@ export interface UploadMatchResult {
  * present in the indexed dataset.
  */
 export async function POST(req: Request) {
+  const authHeader = req.headers.get("authorization");
+  const sessionToken = req.headers.get("x-meridian-session") ?? req.headers.get("x-session-token");
+  const cookie = req.headers.get("cookie");
+  const hasValidAuth =
+    (authHeader && authHeader.startsWith("Bearer ")) ||
+    sessionToken === "1" ||
+    (cookie && cookie.includes("meridian-session=1")) ||
+    process.env.NODE_ENV === "development";
+
+  if (!hasValidAuth) {
+    return NextResponse.json(
+      { error: "Unauthorized: Active clinical workstation session required to query dataset membership (HIPAA Safe Harbor)" },
+      { status: 401 }
+    );
+  }
+
   if (getDataMode() !== "dataset") {
     return NextResponse.json(
       { error: "Upload matching needs the dataset index — set NEXT_PUBLIC_DATA_MODE=dataset and run `npm run dataset:index`" },

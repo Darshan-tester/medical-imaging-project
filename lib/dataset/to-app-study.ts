@@ -221,6 +221,7 @@ function toWorkingReport(
       sections: {
         clinicalInformation: "",
         technique: "",
+        comparison: "",
         findings: "",
         impression: "",
       },
@@ -297,6 +298,11 @@ function toWorkingReport(
           salvaged?.technique ??
           parsedTechnique,
 
+        comparison:
+          parsed.comparison ??
+          src.comparison ??
+          "",
+
         findings:
           salvaged?.findings ??
           parsedFindings,
@@ -323,6 +329,7 @@ function toWorkingReport(
       src.clinicalInformation?.trim() ||
       src.indication?.trim() ||
       src.technique?.trim() ||
+      src.comparison?.trim() ||
       src.findings?.trim() ||
       src.impression?.trim()
     );
@@ -339,6 +346,10 @@ function toWorkingReport(
 
         technique:
           src.technique ??
+          "",
+
+        comparison:
+          src.comparison ??
           "",
 
         findings:
@@ -370,6 +381,7 @@ function toWorkingReport(
     sections: {
       clinicalInformation: "",
       technique: "",
+      comparison: "",
       findings: src.text,
       impression: "",
     },
@@ -668,6 +680,7 @@ export function toAppStudySummary(
       sections: {
         clinicalInformation: "",
         technique: "",
+        comparison: "",
         findings: "",
         impression: "",
       },

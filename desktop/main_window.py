@@ -35,23 +35,63 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-from ..config import Config
-from ..dataset.manifest import ManifestIndex, Study, Series
-from ..dataset.imageloader import SliceCache, SliceLoader
-from ..dataset.volumes import VolumeService
-from ..dataset.annotations import (
-    Annotation,
-    AnnotationStore,
-    plane_px_to_voxel,
-    measurement_length_mm,
-)
-from ..viewer.sliceview import SliceView
+import sys
+_desktop_dir = Path(__file__).resolve().parent
+if str(_desktop_dir) not in sys.path:
+    sys.path.insert(0, str(_desktop_dir))
 
 try:
-    from ..viewer.vtk3d import VTKVolumeWidget, HAS_VTK
-except Exception:
-    VTKVolumeWidget = None
-    HAS_VTK = False
+    from ..config import Config
+    from ..dataset.manifest import ManifestIndex, Study, Series
+    from ..dataset.imageloader import SliceCache, SliceLoader
+    from ..dataset.volumes import VolumeService
+    from ..dataset.annotations import (
+        Annotation,
+        AnnotationStore,
+        plane_px_to_voxel,
+        measurement_length_mm,
+    )
+    from ..viewer.sliceview import SliceView
+    try:
+        from ..viewer.vtk3d import VTKVolumeWidget, HAS_VTK
+    except Exception:
+        VTKVolumeWidget = None
+        HAS_VTK = False
+except (ImportError, ValueError):
+    try:
+        from meridian_desktop.config import Config
+        from meridian_desktop.dataset.manifest import ManifestIndex, Study, Series
+        from meridian_desktop.dataset.imageloader import SliceCache, SliceLoader
+        from meridian_desktop.dataset.volumes import VolumeService
+        from meridian_desktop.dataset.annotations import (
+            Annotation,
+            AnnotationStore,
+            plane_px_to_voxel,
+            measurement_length_mm,
+        )
+        from meridian_desktop.viewer.sliceview import SliceView
+        try:
+            from meridian_desktop.viewer.vtk3d import VTKVolumeWidget, HAS_VTK
+        except Exception:
+            VTKVolumeWidget = None
+            HAS_VTK = False
+    except ImportError:
+        from config import Config
+        from dataset.manifest import ManifestIndex, Study, Series
+        from dataset.imageloader import SliceCache, SliceLoader
+        from dataset.volumes import VolumeService
+        from dataset.annotations import (
+            Annotation,
+            AnnotationStore,
+            plane_px_to_voxel,
+            measurement_length_mm,
+        )
+        from viewer.sliceview import SliceView
+        try:
+            from viewer.vtk3d import VTKVolumeWidget, HAS_VTK
+        except Exception:
+            VTKVolumeWidget = None
+            HAS_VTK = False
 
 
 log = logging.getLogger(__name__)
@@ -1054,3 +1094,11 @@ class WorkstationWindow(QMainWindow):
             pass
 
         super().closeEvent(event)
+ 
+ 
+MainWindow = WorkstationWindow
+
+
+if __name__ == "__main__":
+    from meridian_desktop.app import main
+    sys.exit(main())

@@ -168,6 +168,9 @@ export function exportStudyReportPDF(study: Study) {
     );
   }
   section("Technique", study.report.sections.technique);
+  if (study.report.sections.comparison && study.report.sections.comparison.trim().length > 0) {
+    section("Comparison", study.report.sections.comparison);
+  }
   if (p?.notes) {
     section(p.notes.source === "simulated" ? "Special Notes (demo value)" : "Special Notes", p.notes.value);
   }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, Image as ImageIcon, type LucideIcon } from "lucide-react";
+import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, Image as ImageIcon, GitCompare, type LucideIcon } from "lucide-react";
 import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage, ViewportLayout, Annotation3D, SeriesInfo } from "@/lib/types";
 import { CURRENT_USER } from "@/lib/mock-data";
 import { resolveReportPanelContent } from "@/lib/report-utils";
@@ -16,7 +16,13 @@ import { ThumbnailStrip } from "@/components/viewer/ThumbnailStrip";
 import { FindingsPanel } from "@/components/viewer/FindingsPanel";
 import { MarkersPanel } from "@/components/viewer/MarkersPanel";
 import { MultiPlaneGrid } from "@/components/viewer/MultiPlaneGrid";
+import { PriorComparisonPanel } from "@/components/viewer/PriorComparisonPanel";
 import { RadiologyReportPanel } from "@/components/report/RadiologyReportPanel";
+import { CriticalFindingBanner } from "@/components/viewer/CriticalFindingBanner";
+import { ViewerErrorBoundary } from "@/components/viewer/ViewerErrorBoundary";
+import { SessionAnnotationStore } from "@/lib/annotation-store";
+import { AuditTrail } from "@/lib/audit-trail";
+import { useAuthStore } from "@/lib/store";
 import { Drawer } from "@/components/ui/Drawer";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -27,9 +33,10 @@ import { isDecodableUrl } from "@/lib/viewer/slice-source";
 import { useSlicePrefetch } from "@/lib/viewer/use-slice-prefetch";
 import { cn } from "@/lib/utils";
 
-type RightPanelTab = "ai" | "report" | "annotations";
+type RightPanelTab = "ai" | "comparison" | "report" | "annotations";
 const RIGHT_PANEL_TABS: { key: RightPanelTab; label: string; icon: LucideIcon }[] = [
   { key: "ai", label: "AI Findings", icon: Sparkles },
+  { key: "comparison", label: "Comparison", icon: GitCompare },
   { key: "report", label: "Radiology Report", icon: FileText },
   { key: "annotations", label: "Annotations", icon: Pencil },
 ];
@@ -59,11 +66,13 @@ const newId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toStr
 
 export function AnalysisTab({
   study,
+  allStudies,
   onUpdateFinding,
   onAppendFindingToReport,
   onOpenReportTab,
 }: {
   study: Study;
+  allStudies?: Study[];
   onUpdateFinding: (id: string, patch: Partial<Finding>) => void;
   /** Appends a radiologist-authored finding into the report's Findings section — never overwrites existing report content. */
   onAppendFindingToReport: (text: string) => void;
@@ -118,6 +127,46 @@ export function AnalysisTab({
   const [annotations, setAnnotations] = useState<ViewerAnnotation[]>([]);
   const [radiologistFindings, setRadiologistFindings] = useState<RadiologistFinding[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+
+  const { user } = useAuthStore();
+  const [acknowledgedCriticalIds, setAcknowledgedCriticalIds] = useState<string[]>([]);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"saved" | "saving">("saved");
+
+  // Hydrate annotations, measurements, markers, and acknowledged critical findings from SessionAnnotationStore (BUG-02)
+  useEffect(() => {
+    const saved = SessionAnnotationStore.load(study.id);
+    if (saved) {
+      if (saved.markers?.length) setMarkers(saved.markers);
+      if (saved.measurements?.length) setMeasurements(saved.measurements);
+      if (saved.annotations?.length) setAnnotations(saved.annotations);
+      if (saved.acknowledgedCriticalFindings?.length) {
+        setAcknowledgedCriticalIds(saved.acknowledgedCriticalFindings);
+      }
+    }
+    AuditTrail.record(study.id, "STUDY_OPENED", user, {
+      patientAlias: study.patientAlias,
+      modality: study.modality,
+    });
+  }, [study.id, user]);
+
+  // Debounced auto-save to SessionAnnotationStore
+  useEffect(() => {
+    setAutoSaveStatus("saving");
+    const timer = setTimeout(() => {
+      SessionAnnotationStore.save({
+        studyId: study.id,
+        updatedAt: new Date().toISOString(),
+        annotations,
+        measurements,
+        markers,
+        findings: study.findings,
+        acknowledgedCriticalFindings: acknowledgedCriticalIds,
+      });
+      setAutoSaveStatus("saved");
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [study.id, annotations, measurements, markers, acknowledgedCriticalIds, study.findings]);
+
   // Undo/redo history, scoped per "seriesId:sliceIndex" — undo only ever
   // pops the most recently drawn stroke *for the slice currently on screen*.
   const [redoStacks, setRedoStacks] = useState<Record<string, ViewerAnnotation[]>>({});
@@ -758,6 +807,23 @@ export function AnalysisTab({
       </div>
 
       <div ref={fullscreenRef} className="flex flex-col gap-3 bg-base p-4 [&:fullscreen]:justify-center [&:fullscreen]:bg-black">
+        {/* Critical Findings Statutory Banner */}
+        <CriticalFindingBanner
+          studyId={study.id}
+          findings={study.findings}
+          acknowledgedIds={acknowledgedCriticalIds}
+          onAcknowledge={(findingId, action, note) => {
+            setAcknowledgedCriticalIds((prev) => [...prev, findingId]);
+            if (action === "confirmed") {
+              const finding = study.findings.find((f) => f.id === findingId);
+              if (finding) {
+                onAppendFindingToReport(`CRITICAL FINDING: ${finding.label} (${finding.location || "Thoracic"}). Clinical handover documented.`);
+              }
+            }
+          }}
+          onJumpToSlice={onChangeSlice}
+        />
+
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="max-w-full overflow-x-auto">
             <ViewerToolbar
@@ -782,9 +848,19 @@ export function AnalysisTab({
               <MapPin className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Annotations</span> ({markers.length + radiologistFindings.length})
             </Button>
           </div>
-          <p className="hidden text-[11.5px] text-ink-muted lg:block">
-            {activeSeries.label} · {study.modality}
-          </p>
+          <div className="hidden lg:flex items-center gap-2">
+            <span className="flex items-center gap-1 text-[11px]">
+              {autoSaveStatus === "saving" ? (
+                <span className="animate-pulse text-amber-400">Saving…</span>
+              ) : (
+                <span className="text-emerald-400">✓ Auto-saved</span>
+              )}
+            </span>
+            <span className="text-border-strong">•</span>
+            <p className="text-[11.5px] text-ink-muted">
+              {activeSeries.label} · {study.modality}
+            </p>
+          </div>
         </div>
 
         {/*
@@ -924,35 +1000,36 @@ export function AnalysisTab({
               getImageUrl={getSeriesImageUrl}
             />
           ) : view3D ? (
-            <Volume3DViewer
-              studyId={study.id}
-              seriesId={activeSeries.id}
-              modality={study.modality}
-              volumeUrl={imageUrlAt(0)}
-              sliceCount={activeSeries.sliceCount}
-              sliceUrlAt={imageUrlAt}
-              initialAnnotations={annotations3D}
-              onAnnotationsChange={setAnnotations3D}
-              findings={study.findings}
-              activeFindingId={activeFindingId}
-              onSelectFinding={onSelectFinding}
-              crosshairPos={
-                activeSeries.sliceCount > 1
-                  ? { x: 0.5, y: 0.5, z: currentSlice / Math.max(1, activeSeries.sliceCount - 1) }
-                  : null
-              }
-              onPointSelected={(pt) => {
-                // Synchronize 3D voxel click to 2D slice
-                if (activeSeries.sliceCount > 1) {
-                  const targetSlice = Math.max(
-                    0,
-                    Math.min(activeSeries.sliceCount - 1, Math.round(pt.z * (activeSeries.sliceCount - 1)))
-                  );
-                  onChangeSlice(targetSlice);
-                  setView3D(false);
+            <ViewerErrorBoundary fallbackTitle="3D Volumetric Reconstruction Unavailable">
+              <Volume3DViewer
+                studyId={study.id}
+                seriesId={activeSeries.id}
+                modality={study.modality}
+                volumeUrl={imageUrlAt(0)}
+                sliceCount={activeSeries.sliceCount}
+                sliceUrlAt={imageUrlAt}
+                initialAnnotations={annotations3D}
+                onAnnotationsChange={setAnnotations3D}
+                findings={study.findings}
+                activeFindingId={activeFindingId}
+                onSelectFinding={onSelectFinding}
+                crosshairPos={
+                  activeSeries.sliceCount > 1
+                    ? { x: 0.5, y: 0.5, z: currentSlice / Math.max(1, activeSeries.sliceCount - 1) }
+                    : null
                 }
-              }}
-            />
+                onPointSelected={(pt) => {
+                  if (activeSeries.sliceCount > 1) {
+                    const targetSlice = Math.max(
+                      0,
+                      Math.min(activeSeries.sliceCount - 1, Math.round(pt.z * (activeSeries.sliceCount - 1)))
+                    );
+                    onChangeSlice(targetSlice);
+                    setView3D(false);
+                  }
+                }}
+              />
+            </ViewerErrorBoundary>
           ) : (
             <ImageViewer
               modality={study.modality}
@@ -979,6 +1056,7 @@ export function AnalysisTab({
               orientation={activeSeries.orientation}
               seriesLabel={activeSeries.label}
               patientAlias={study.patientAlias}
+              pixelSpacing={activeSeries.pixelSpacing}
               annotations={currentAnnotations}
               brushColor={brushColor}
               brushSizePx={BRUSH_WIDTH_PX[brushSize]}
@@ -1056,6 +1134,14 @@ export function AnalysisTab({
               onUpdate={onUpdateFinding}
               isProcessing={isProcessing}
               series={study.series}
+            />
+          )}
+
+          {rightTab === "comparison" && (
+            <PriorComparisonPanel
+              currentStudy={study}
+              allStudies={allStudies}
+              onApplyIntervalSummaryToReport={onAppendFindingToReport}
             />
           )}
 

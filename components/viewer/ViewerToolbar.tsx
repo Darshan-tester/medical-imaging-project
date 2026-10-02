@@ -94,6 +94,8 @@ function ToolButton({
     <Tooltip label={label}>
       <button
         onClick={onClick}
+        aria-label={label}
+        aria-pressed={active}
         className={cn(
           "relative flex h-8 w-8 items-center justify-center rounded-md text-ink-secondary transition-colors duration-150 hover:bg-[rgb(var(--overlay-hover)/0.07)] hover:text-ink-primary",
           active && "bg-clinical-dim text-clinical-strong hover:bg-clinical-dim"
@@ -150,6 +152,55 @@ export function ViewerToolbar({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      switch (e.key.toLowerCase()) {
+        case "w":
+          setState((s) => ({ ...s, tool: "window" }));
+          break;
+        case "p":
+          setState((s) => ({ ...s, tool: "pan" }));
+          break;
+        case "z":
+          setState((s) => ({ ...s, tool: "zoom" }));
+          break;
+        case "m":
+          setState((s) => ({ ...s, tool: "measure" }));
+          break;
+        case "c":
+          setState((s) => ({ ...s, tool: "crosshair" }));
+          break;
+        case "r":
+          setState((s) => ({ ...s, rotation: (s.rotation + 90) % 360 }));
+          break;
+        case "i":
+          setState((s) => ({ ...s, inverted: !s.inverted }));
+          break;
+        case "f":
+          handleFit();
+          break;
+        case "escape":
+          setState((s) => ({ ...s, tool: "pan" }));
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [setState]);
 
   const handleRotate = () => {
     setState((s) => ({ ...s, rotation: (s.rotation + 90) % 360 }));

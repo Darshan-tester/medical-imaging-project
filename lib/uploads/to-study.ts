@@ -451,7 +451,7 @@ export function uploadedStudyToAppSummary(record: UploadedStudyRecord): Study {
     })),
     report: {
       ...full.report,
-      sections: { clinicalInformation: "", technique: "", findings: "", impression: "" },
+      sections: { clinicalInformation: "", technique: "", comparison: "", findings: "", impression: "" },
     },
   };
 }

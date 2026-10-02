@@ -86,7 +86,7 @@ const MIN_THUMBNAIL_EDGE = 16;
  * invalidates everything rather than serving renders produced by the previous
  * indexer.
  */
-const RENDER_CACHE_MAX_BYTES = envInt("SCANLAB_RENDER_CACHE_MB", 96, 8, 1024) * 1024 * 1024;
+const RENDER_CACHE_MAX_BYTES = envInt("SCANLAB_RENDER_CACHE_MB", 512, 64, 2048) * 1024 * 1024;
 const renderCache = new Map<string, RenderedImage>();
 let renderCacheBytes = 0;
 
@@ -713,11 +713,10 @@ export function computeVolumeWindow(
 /**
  * Decoding a gzipped volume means inflating the whole file, so a browsing
  * session that walks 200 coronal slices would otherwise inflate the same
- * 35 MB volume 200 times. Two entries is enough to cover "scrolling one
- * study, occasionally flipping to its second series" without holding a
- * meaningful amount of memory.
+ * volume 200 times. Configurable via SCANLAB_VOLUME_CACHE_MAX, defaulting to
+ * 8 volumes so multi-planar MPR and prior-study comparisons do not thrash the cache.
  */
-const VOLUME_CACHE_MAX = 2;
+const VOLUME_CACHE_MAX = envInt("SCANLAB_VOLUME_CACHE_MAX", 8, 2, 32);
 const volumeCache = new Map<string, LoadedVolume>();
 
 function loadVolume(absPath: string): LoadedVolume | undefined {

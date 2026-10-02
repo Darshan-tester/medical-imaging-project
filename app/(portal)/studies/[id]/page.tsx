@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Activity, LayoutList, FileText, Loader2, type LucideIcon } from "lucide-react";
-import { fetchStudy } from "@/lib/data-source";
+import { fetchStudy, fetchStudies } from "@/lib/data-source";
 import { Finding, ReportSection, Study } from "@/lib/types";
 import { ModalityBadge, PriorityBadge, StatusBadge } from "@/components/ui/Badge";
 import { ErrorState } from "@/components/ui/EmptyState";
@@ -11,8 +11,9 @@ import { OverviewTab } from "@/components/report/OverviewTab";
 import { AnalysisTab } from "@/components/report/AnalysisTab";
 import { ReportTab } from "@/components/report/ReportTab";
 import { cn } from "@/lib/utils";
-import { useUIStore } from "@/lib/store";
-import { CURRENT_USER } from "@/lib/mock-data";
+import { useUIStore, useAuthStore } from "@/lib/store";
+import { SessionAnnotationStore } from "@/lib/annotation-store";
+import { AuditTrail } from "@/lib/audit-trail";
 
 type Tab = "overview" | "analysis" | "report";
 
@@ -29,6 +30,7 @@ export default function StudyWorkspacePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [study, setStudy] = useState<Study | undefined>(undefined);
+  const [allStudies, setAllStudies] = useState<Study[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Supports deep-linking straight into the viewer, e.g. "View Scan" from the
@@ -36,15 +38,31 @@ export default function StudyWorkspacePage() {
   const requestedTab = searchParams.get("tab");
   const [tab, setTab] = useState<Tab>(VALID_TABS.includes(requestedTab as Tab) ? (requestedTab as Tab) : "overview");
   const pushToast = useUIStore((s) => s.pushToast);
+  const { user } = useAuthStore();
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    fetchStudy(params.id)
-      .then((s) => {
+
+    Promise.all([fetchStudy(params.id), fetchStudies().catch(() => [])])
+      .then(([s, all]) => {
         if (cancelled) return;
-        setStudy(s);
+        let finalStudy = s;
+        if (s) {
+          const saved = SessionAnnotationStore.load(s.id);
+          if (saved?.reportSections) {
+            finalStudy = {
+              ...s,
+              report: {
+                ...s.report,
+                sections: saved.reportSections,
+              },
+            };
+          }
+        }
+        setStudy(finalStudy);
+        setAllStudies(all);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -53,6 +71,7 @@ export default function StudyWorkspacePage() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
@@ -97,7 +116,22 @@ export default function StudyWorkspacePage() {
   };
 
   const onChangeSections = (sections: ReportSection) => {
-    setStudy((prev) => (prev ? { ...prev, report: { ...prev.report, sections } } : prev));
+    setStudy((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, report: { ...prev.report, sections } };
+      const currentSaved = SessionAnnotationStore.load(prev.id);
+      SessionAnnotationStore.save({
+        studyId: prev.id,
+        updatedAt: new Date().toISOString(),
+        annotations: currentSaved?.annotations || [],
+        measurements: currentSaved?.measurements || [],
+        markers: currentSaved?.markers || [],
+        findings: prev.findings,
+        reportSections: sections,
+        acknowledgedCriticalFindings: currentSaved?.acknowledgedCriticalFindings || [],
+      });
+      return updated;
+    });
   };
 
   // Appends a radiologist-authored finding (from a pen annotation) into the
@@ -116,16 +150,37 @@ export default function StudyWorkspacePage() {
   };
 
   const onApprove = () => {
+    if (!study) return;
+    AuditTrail.record(study.id, "REPORT_APPROVED", user, {
+      reportVersion: study.report.version + 1,
+      patientAlias: study.patientAlias,
+    });
     setStudy((prev) =>
       prev
         ? {
             ...prev,
             status: "approved",
-            report: { ...prev.report, status: "approved", reviewer: CURRENT_USER, approvedAt: new Date().toISOString(), version: prev.report.version + 1 },
+            report: {
+              ...prev.report,
+              status: "approved",
+              reviewer: {
+                id: user.id || "usr-chen",
+                name: user.name,
+                initials: user.name
+                  .split(" ")
+                  .map((w) => w[0])
+                  .join("")
+                  .toUpperCase()
+                  .slice(0, 3),
+                role: user.role,
+              },
+              approvedAt: new Date().toISOString(),
+              version: prev.report.version + 1,
+            },
           }
         : prev
     );
-    pushToast({ title: "Report approved", description: `${study.studyId} has been signed and finalized.`, tone: "success" });
+    pushToast({ title: "Report approved", description: `${study.studyId} has been signed and finalized by ${user.name}.`, tone: "success" });
   };
 
   return (
@@ -175,7 +230,13 @@ export default function StudyWorkspacePage() {
       <div className="flex-1 overflow-y-auto">
         {tab === "overview" && <OverviewTab study={study} onOpenViewer={() => setTab("analysis")} />}
         {tab === "analysis" && (
-          <AnalysisTab study={study} onUpdateFinding={onUpdateFinding} onAppendFindingToReport={onAppendFindingToReport} onOpenReportTab={() => setTab("report")} />
+          <AnalysisTab
+            study={study}
+            allStudies={allStudies}
+            onUpdateFinding={onUpdateFinding}
+            onAppendFindingToReport={onAppendFindingToReport}
+            onOpenReportTab={() => setTab("report")}
+          />
         )}
         {tab === "report" && <ReportTab study={study} onChangeSections={onChangeSections} onApprove={onApprove} />}
       </div>

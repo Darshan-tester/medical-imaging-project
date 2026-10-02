@@ -194,7 +194,12 @@ export interface UploadMatchResult {
 export async function matchUploads(files: File[]): Promise<UploadMatchResult[]> {
   const body = new FormData();
   for (const f of files) body.append("files", f, f.name);
-  const res = await fetch("/api/uploads/match", { method: "POST", body });
+  const session = typeof window !== "undefined" ? window.localStorage.getItem("meridian:session") : null;
+  const headers: Record<string, string> = {};
+  if (session) {
+    headers["x-meridian-session"] = session;
+  }
+  const res = await fetch("/api/uploads/match", { method: "POST", headers, body });
   if (!res.ok) {
     const detail = await res.json().catch(() => undefined);
     throw new Error(detail?.error ?? `Upload matching failed (${res.status})`);

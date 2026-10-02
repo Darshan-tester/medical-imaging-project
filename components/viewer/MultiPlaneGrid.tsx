@@ -14,6 +14,7 @@ import {
 import { Study, SeriesInfo, ViewportLayout, Finding, Marker, ViewerMeasurement, ViewerAnnotation, Annotation3D } from "@/lib/types";
 import { ImageViewer } from "./ImageViewer";
 import { ViewerState } from "./ViewerToolbar";
+import { ViewerErrorBoundary } from "./ViewerErrorBoundary";
 import { cn } from "@/lib/utils";
 
 const Volume3DViewer = dynamic(() => import("./Volume3DViewer").then((m) => m.Volume3DViewer), {
@@ -915,25 +916,27 @@ function SingleViewportPanel({
       {/* Viewport Content */}
       <div className="relative min-h-0 flex-1">
         {is3D ? (
-          <Volume3DViewer
-            studyId={study.id}
-            seriesId={panel.seriesId}
-            modality={study.modality}
-            volumeUrl={activeImageUrl}
-            sliceCount={activeSeries?.sliceCount}
-            sliceUrlAt={(idx) => activeSeries ? getImageUrl(activeSeries, idx) : undefined}
-            initialAnnotations={annotations3D}
-            onAnnotationsChange={onAnnotations3DChange}
-            findings={findings}
-            activeFindingId={activeFindingId}
-            onSelectFinding={onSelectFinding}
-            crosshairPos={crosshairPos ? { x: crosshairPos.x, y: crosshairPos.y, z: 0.5 } : null}
-            onPointSelected={(pt) => {
-              if (onCrosshairMove) {
-                onCrosshairMove({ x: pt.x, y: pt.y });
-              }
-            }}
-          />
+          <ViewerErrorBoundary fallbackTitle="3D Volumetric Reconstruction Unavailable">
+            <Volume3DViewer
+              studyId={study.id}
+              seriesId={panel.seriesId}
+              modality={study.modality}
+              volumeUrl={activeImageUrl}
+              sliceCount={activeSeries?.sliceCount}
+              sliceUrlAt={(idx) => activeSeries ? getImageUrl(activeSeries, idx) : undefined}
+              initialAnnotations={annotations3D}
+              onAnnotationsChange={onAnnotations3DChange}
+              findings={findings}
+              activeFindingId={activeFindingId}
+              onSelectFinding={onSelectFinding}
+              crosshairPos={crosshairPos ? { x: crosshairPos.x, y: crosshairPos.y, z: 0.5 } : null}
+              onPointSelected={(pt) => {
+                if (onCrosshairMove) {
+                  onCrosshairMove({ x: pt.x, y: pt.y });
+                }
+              }}
+            />
+          </ViewerErrorBoundary>
         ) : (
           <ImageViewer
             modality={study.modality}
@@ -948,6 +951,7 @@ function SingleViewportPanel({
             orientation={panel.planeType}
             seriesLabel={activeSeries?.label}
             patientAlias={study.patientAlias}
+            pixelSpacing={activeSeries?.pixelSpacing}
             sliceLabel={`Slice ${panel.sliceIndex + 1} / ${activeSeries?.sliceCount ?? 1}`}
             markers={panelMarkers}
             onAddMarker={(m) => onAddMarker({ ...m, seriesId: panel.seriesId, sliceIndex: panel.sliceIndex })}
