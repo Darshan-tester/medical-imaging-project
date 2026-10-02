@@ -16,6 +16,7 @@ import { ImageViewer } from "./ImageViewer";
 import { ViewerState } from "./ViewerToolbar";
 import { ViewerErrorBoundary } from "./ViewerErrorBoundary";
 import { cn } from "@/lib/utils";
+import { OrganMeshState } from "./AIAnalysisPanel";
 
 const Volume3DViewer = dynamic(() => import("./Volume3DViewer").then((m) => m.Volume3DViewer), {
   ssr: false,
@@ -53,6 +54,8 @@ export function MultiPlaneGrid({
   annotations3D,
   onAnnotations3DChange,
   getImageUrl,
+  organMeshes,
+  onOrganMeshesChange,
 }: {
   study: Study;
   layout: ViewportLayout;
@@ -74,6 +77,8 @@ export function MultiPlaneGrid({
   annotations3D: Annotation3D[];
   onAnnotations3DChange: (anns: Annotation3D[]) => void;
   getImageUrl: (series: SeriesInfo, sliceIndex: number) => string | undefined;
+  organMeshes?: OrganMeshState[];
+  onOrganMeshesChange?: (meshes: OrganMeshState[]) => void;
 }) {
   // Find series matching planes if available
   const axialSeries = useMemo(
@@ -305,13 +310,70 @@ export function MultiPlaneGrid({
   };
 
   const updatePanelSlice = (panelId: string, sliceDelta: number) => {
+    const targetPanel = panels.find((p) => p.id === panelId);
+    if (!targetPanel) return;
+    const s = study.series.find((sr) => sr.id === targetPanel.seriesId);
+    if (!s || s.sliceCount <= 1) return;
+
+    const nextSlice = Math.max(0, Math.min(s.sliceCount - 1, targetPanel.sliceIndex + sliceDelta));
+    if (nextSlice === targetPanel.sliceIndex) return;
+
+    const norm = nextSlice / Math.max(1, s.sliceCount - 1);
+    let nextX = crosshairNorm.x;
+    let nextY = crosshairNorm.y;
+    let nextZ = crosshairNorm.z;
+
+    if (targetPanel.planeType === "Axial") {
+      nextZ = norm;
+    } else if (targetPanel.planeType === "Coronal") {
+      nextY = norm;
+    } else if (targetPanel.planeType === "Sagittal") {
+      nextX = norm;
+    }
+
+    setCrosshairNorm({ x: nextX, y: nextY, z: nextZ });
+
     setPanels((prev) =>
       prev.map((p) => {
-        if (p.id !== panelId) return p;
-        const s = study.series.find((sr) => sr.id === p.seriesId);
-        if (!s) return p;
-        const nextSlice = Math.max(0, Math.min(s.sliceCount - 1, p.sliceIndex + sliceDelta));
-        return { ...p, sliceIndex: nextSlice };
+        if (p.id === panelId) {
+          return { ...p, sliceIndex: nextSlice };
+        }
+        const ps = study.series.find((sr) => sr.id === p.seriesId);
+        if (!ps || ps.sliceCount <= 1) return p;
+
+        let targetSyncSlice = p.sliceIndex;
+        if (p.planeType === "Axial" && targetPanel.planeType !== "Axial") {
+          targetSyncSlice = Math.max(0, Math.min(ps.sliceCount - 1, Math.round(nextZ * (ps.sliceCount - 1))));
+        } else if (p.planeType === "Coronal" && targetPanel.planeType !== "Coronal") {
+          targetSyncSlice = Math.max(0, Math.min(ps.sliceCount - 1, Math.round(nextY * (ps.sliceCount - 1))));
+        } else if (p.planeType === "Sagittal" && targetPanel.planeType !== "Sagittal") {
+          targetSyncSlice = Math.max(0, Math.min(ps.sliceCount - 1, Math.round(nextX * (ps.sliceCount - 1))));
+        }
+        return targetSyncSlice !== p.sliceIndex ? { ...p, sliceIndex: targetSyncSlice } : p;
+      })
+    );
+  };
+
+  const handle3DPointSelected = (pt: { x: number; y: number; z: number }) => {
+    const nextX = Math.max(0, Math.min(1, pt.x));
+    const nextY = Math.max(0, Math.min(1, pt.y));
+    const nextZ = Math.max(0, Math.min(1, pt.z));
+    setCrosshairNorm({ x: nextX, y: nextY, z: nextZ });
+
+    setPanels((prev) =>
+      prev.map((p) => {
+        const ps = study.series.find((sr) => sr.id === p.seriesId);
+        if (!ps || ps.sliceCount <= 1) return p;
+
+        let targetSlice = p.sliceIndex;
+        if (p.planeType === "Axial") {
+          targetSlice = Math.max(0, Math.min(ps.sliceCount - 1, Math.round(nextZ * (ps.sliceCount - 1))));
+        } else if (p.planeType === "Coronal") {
+          targetSlice = Math.max(0, Math.min(ps.sliceCount - 1, Math.round(nextY * (ps.sliceCount - 1))));
+        } else if (p.planeType === "Sagittal") {
+          targetSlice = Math.max(0, Math.min(ps.sliceCount - 1, Math.round(nextX * (ps.sliceCount - 1))));
+        }
+        return targetSlice !== p.sliceIndex ? { ...p, sliceIndex: targetSlice } : p;
       })
     );
   };
@@ -638,8 +700,11 @@ export function MultiPlaneGrid({
                 onUpdateState={(u) => updatePanelState(panels[3].id, u)}
                 onSliceScroll={(d) => updatePanelSlice(panels[3].id, d)}
                 onSwitchSeries={(sId, pType) => switchPanelSeries(panels[3].id, sId, pType)}
-                crosshairPos={null}
+                crosshairPos={crosshairNorm}
                 onCrosshairMove={() => {}}
+                onPointSelected={handle3DPointSelected}
+                organMeshes={organMeshes}
+                onOrganMeshesChange={onOrganMeshesChange}
                 getImageUrl={getImageUrl}
                 findings={findings}
                 activeFindingId={activeFindingId}
@@ -783,6 +848,9 @@ function SingleViewportPanel({
   onSwitchSeries,
   crosshairPos,
   onCrosshairMove,
+  onPointSelected,
+  organMeshes,
+  onOrganMeshesChange,
   getImageUrl,
   findings,
   activeFindingId,
@@ -808,8 +876,11 @@ function SingleViewportPanel({
   onUpdateState: (updater: (prev: ViewerState) => ViewerState) => void;
   onSliceScroll: (delta: number) => void;
   onSwitchSeries: (seriesId: string, planeType: PanelPlaneType) => void;
-  crosshairPos: { x: number; y: number } | null;
+  crosshairPos: { x: number; y: number; z?: number } | null;
   onCrosshairMove: (pt: { x: number; y: number }) => void;
+  onPointSelected?: (pt: { x: number; y: number; z: number }) => void;
+  organMeshes?: OrganMeshState[];
+  onOrganMeshesChange?: (meshes: OrganMeshState[]) => void;
   getImageUrl: (series: SeriesInfo, sliceIndex: number) => string | undefined;
   findings: Finding[];
   activeFindingId: string | null;
@@ -929,12 +1000,16 @@ function SingleViewportPanel({
               findings={findings}
               activeFindingId={activeFindingId}
               onSelectFinding={onSelectFinding}
-              crosshairPos={crosshairPos ? { x: crosshairPos.x, y: crosshairPos.y, z: 0.5 } : null}
+              crosshairPos={crosshairPos ? { x: crosshairPos.x, y: crosshairPos.y, z: crosshairPos.z ?? 0.5 } : null}
               onPointSelected={(pt) => {
-                if (onCrosshairMove) {
+                if (onPointSelected) {
+                  onPointSelected(pt);
+                } else if (onCrosshairMove) {
                   onCrosshairMove({ x: pt.x, y: pt.y });
                 }
               }}
+              organMeshes={organMeshes}
+              onOrganMeshesChange={onOrganMeshesChange}
             />
           </ViewerErrorBoundary>
         ) : (

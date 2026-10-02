@@ -22,12 +22,18 @@ import {
   Contrast,
   Activity,
   Compass,
+  Layers,
+  CheckSquare,
+  Square,
+  Box,
 } from "lucide-react";
 import { SceneErrorBoundary } from "@/components/three/SceneErrorBoundary";
 import { isDemoDicomUrl, isDemoVolumeUrl, DEMO_MIN_STACK_SLICES } from "@/lib/demo/types";
 import { usePrefersReducedMotion, useWebGLSupport } from "@/lib/hooks";
 import { ColorMap3D, Quality3D, Annotation3D, Finding, Modality } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { OrganMeshesLayer } from "./OrganMeshesLayer";
+import { OrganMeshState } from "./AIAnalysisPanel";
 
 const COLOR_MAP_INDICES: Record<ColorMap3D, number> = {
   "mri-tissue": 0,
@@ -82,6 +88,10 @@ export function Volume3DViewer({
   onSelectFinding,
   crosshairPos = null,
   onPointSelected,
+  organMeshes,
+  onOrganMeshesChange,
+  onSelectOrgan,
+  activeOrganId,
 }: {
   studyId: string;
   seriesId: string;
@@ -96,6 +106,10 @@ export function Volume3DViewer({
   onSelectFinding?: (id: string) => void;
   crosshairPos?: { x: number; y: number; z: number } | null;
   onPointSelected?: (point: { x: number; y: number; z: number }) => void;
+  organMeshes?: OrganMeshState[];
+  onOrganMeshesChange?: (meshes: OrganMeshState[]) => void;
+  onSelectOrgan?: (organId: string) => void;
+  activeOrganId?: string | null;
 }) {
   const webglSupported = useWebGLSupport();
   const reduced = usePrefersReducedMotion();
@@ -110,6 +124,14 @@ export function Volume3DViewer({
   const [error, setError] = useState<string | null>(null);
   const [gpuError, setGpuError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // 3D Layers Control
+  const [showOriginalVolume, setShowOriginalVolume] = useState(true);
+  const [showOrganMeshes, setShowOrganMeshes] = useState(true);
+  const [showLayersMenu, setShowLayersMenu] = useState(false);
+  const [showOrgansMenu, setShowOrgansMenu] = useState(false);
+  const [internalMeshes, setInternalMeshes] = useState<OrganMeshState[]>([]);
+  const effectiveMeshes = organMeshes ?? internalMeshes;
 
   // Clinical controls
   const [threshold, setThreshold] = useState(modality === "MRI" ? 0.10 : 0.22);
@@ -134,6 +156,64 @@ export function Volume3DViewer({
   const [isAddingMarker, setIsAddingMarker] = useState(false);
 
   const controlsRef = useRef<any>(null);
+
+  // Auto-discover and hydrate derived organ meshes if not passed from parent
+  useEffect(() => {
+    if (organMeshes && organMeshes.length > 0) return;
+    let cancelled = false;
+    fetch(`/api/ai/derived/${studyId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data && data.status === "completed" && Array.isArray(data.segments)) {
+          const loaded: OrganMeshState[] = data.segments.map((seg: any) => ({
+            id: seg.id,
+            name: seg.name,
+            group: seg.group || "organ",
+            color: seg.color || "#38BDF8",
+            opacity: 0.75,
+            visible: true,
+            isolated: false,
+            volumeMl: seg.volumeMl,
+            maxDiameterMm: seg.maxDiameterMm,
+          }));
+          setInternalMeshes(loaded);
+          onOrganMeshesChange?.(loaded);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [studyId, organMeshes, onOrganMeshesChange]);
+
+  const handleToggleOrgan = (organId: string) => {
+    const next = effectiveMeshes.map((m) => (m.id === organId ? { ...m, visible: !m.visible } : m));
+    if (organMeshes) {
+      onOrganMeshesChange?.(next);
+    } else {
+      setInternalMeshes(next);
+    }
+  };
+
+  const handleIsolateOrgan = (organId: string) => {
+    const next = effectiveMeshes.map((m) =>
+      m.id === organId ? { ...m, isolated: !m.isolated, visible: true } : { ...m, isolated: false }
+    );
+    if (organMeshes) {
+      onOrganMeshesChange?.(next);
+    } else {
+      setInternalMeshes(next);
+    }
+  };
+
+  const handleOrganOpacity = (organId: string, opacity: number) => {
+    const next = effectiveMeshes.map((m) => (m.id === organId ? { ...m, opacity } : m));
+    if (organMeshes) {
+      onOrganMeshesChange?.(next);
+    } else {
+      setInternalMeshes(next);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -282,33 +362,69 @@ export function Volume3DViewer({
   const qConfig = QUALITY_CONFIG[quality];
   const volumeScale = getVolumeScale(volume);
 
+  const clippingPlanes = useMemo(() => {
+    const planes: THREE.Plane[] = [];
+    if (clipSagittal < 1.0) {
+      planes.push(new THREE.Plane(new THREE.Vector3(-1, 0, 0), (clipSagittal - 0.5) * volumeScale[0]));
+    }
+    if (clipCoronal < 1.0) {
+      planes.push(new THREE.Plane(new THREE.Vector3(0, 1, 0), (clipCoronal - 0.5) * volumeScale[1]));
+    }
+    if (clipAxial < 1.0) {
+      planes.push(new THREE.Plane(new THREE.Vector3(0, 0, -1), (clipAxial - 0.5) * volumeScale[2]));
+    }
+    return planes;
+  }, [clipSagittal, clipCoronal, clipAxial, volumeScale]);
+
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg bg-black select-none">
       <SceneErrorBoundary fallback={<Notice title="3D render error">3D volume rendering failed on this GPU.</Notice>}>
         <Canvas
           dpr={[1, qConfig.dpr]}
-          gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+          gl={{ antialias: true, alpha: false, powerPreference: "high-performance", localClippingEnabled: true }}
           camera={{ position: [0, 0, 1.8], fov: 45 }}
         >
           <color attach="background" args={["#000000"]} />
           <ShaderErrorReporter onError={setGpuError} />
 
-          <VolumeMesh
-            volume={volume}
-            threshold={threshold}
-            density={density}
-            intensity={intensity}
-            brightness={brightness}
-            contrast={contrast}
-            mip={mip}
-            colorMapIndex={COLOR_MAP_INDICES[colorMap]}
-            qualityConfig={qConfig}
-            clipMax={[clipSagittal - 0.5, clipCoronal - 0.5, clipAxial - 0.5]}
-            crosshairPos={crosshairPos}
-            isAddingMarker={isAddingMarker}
-            onAddMarker={handleAddAnnotation}
-            onPointSelected={onPointSelected}
-          />
+          {/* Lighting for 3D organ surface meshes */}
+          <ambientLight intensity={0.7} />
+          <directionalLight position={[2, 3, 4]} intensity={1.2} />
+          <directionalLight position={[-2, -2, -3]} intensity={0.6} />
+
+          {/* 3D Organ Surface Meshes Layer (MONAI / TotalSegmentator) */}
+          {showOrganMeshes && effectiveMeshes.length > 0 && (
+            <OrganMeshesLayer
+              studyId={studyId}
+              organMeshes={effectiveMeshes}
+              volumeDims={volume.dims}
+              volumeSpacing={volume.spacing}
+              volumeScale={volumeScale}
+              clippingPlanes={clippingPlanes}
+              onSelectOrgan={onSelectOrgan}
+              activeOrganId={activeOrganId}
+            />
+          )}
+
+          {/* Original Volumetric Voxel Field */}
+          {showOriginalVolume && (
+            <VolumeMesh
+              volume={volume}
+              threshold={threshold}
+              density={density}
+              intensity={intensity}
+              brightness={brightness}
+              contrast={contrast}
+              mip={mip}
+              colorMapIndex={COLOR_MAP_INDICES[colorMap]}
+              qualityConfig={qConfig}
+              clipMax={[clipSagittal - 0.5, clipCoronal - 0.5, clipAxial - 0.5]}
+              crosshairPos={crosshairPos}
+              isAddingMarker={isAddingMarker}
+              onAddMarker={handleAddAnnotation}
+              onPointSelected={onPointSelected}
+            />
+          )}
 
           {showAnnotations && (
             <>
@@ -430,10 +546,213 @@ export function Volume3DViewer({
         </div>
 
         <div className="flex items-center gap-1.5 pointer-events-auto">
+          {/* 3D Layers Menu */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                setShowLayersMenu((v) => !v);
+                setShowOrgansMenu(false);
+                setShowClippingMenu(false);
+              }}
+              className={cn(
+                "flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium backdrop-blur shadow",
+                showLayersMenu
+                  ? "border-clinical bg-clinical-dim text-clinical-strong"
+                  : "border-border-strong bg-panel/90 text-ink-secondary hover:text-ink-primary"
+              )}
+              title="3D Render Layers"
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span>Layers</span>
+            </button>
+
+            {showLayersMenu && (
+              <div className="absolute top-9 left-0 z-50 w-56 rounded-xl border border-border-strong bg-panel/95 p-3 shadow-2xl backdrop-blur-md">
+                <div className="mb-2 text-[11px] font-semibold uppercase text-ink-primary border-b border-border pb-1">
+                  Active 3D Layers
+                </div>
+                <div className="space-y-2 text-[11px]">
+                  <label className="flex items-center justify-between cursor-pointer text-ink-secondary hover:text-ink-primary">
+                    <span className="flex items-center gap-1.5">
+                      <Box className="h-3.5 w-3.5 text-clinical" />
+                      Original Volume
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={showOriginalVolume}
+                      onChange={(e) => setShowOriginalVolume(e.target.checked)}
+                      className="rounded accent-clinical"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between cursor-pointer text-ink-secondary hover:text-ink-primary">
+                    <span className="flex items-center gap-1.5">
+                      <Boxes className="h-3.5 w-3.5 text-amber-400" />
+                      Organ Meshes ({effectiveMeshes.length})
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={showOrganMeshes}
+                      onChange={(e) => setShowOrganMeshes(e.target.checked)}
+                      className="rounded accent-clinical"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between cursor-pointer text-ink-secondary hover:text-ink-primary">
+                    <span className="flex items-center gap-1.5">
+                      <MapPin className="h-3.5 w-3.5 text-sky-400" />
+                      3D Annotations ({annotations.length})
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={showAnnotations}
+                      onChange={(e) => setShowAnnotations(e.target.checked)}
+                      className="rounded accent-clinical"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between cursor-pointer text-ink-secondary hover:text-ink-primary">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5 text-rose-400" />
+                      AI Findings ({findings.length})
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={showAnnotations}
+                      onChange={(e) => setShowAnnotations(e.target.checked)}
+                      className="rounded accent-clinical"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Organs Mesh Manager */}
+          {effectiveMeshes.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => {
+                  setShowOrgansMenu((v) => !v);
+                  setShowLayersMenu(false);
+                  setShowClippingMenu(false);
+                }}
+                className={cn(
+                  "flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium backdrop-blur shadow",
+                  showOrgansMenu
+                    ? "border-clinical bg-clinical-dim text-clinical-strong"
+                    : "border-border-strong bg-panel/90 text-ink-secondary hover:text-ink-primary"
+                )}
+                title="Manage Segmented Organ Meshes"
+              >
+                <Boxes className="h-3.5 w-3.5 text-clinical" />
+                <span>Organs ({effectiveMeshes.filter((m) => m.visible).length})</span>
+              </button>
+
+              {showOrgansMenu && (
+                <div className="absolute top-9 left-0 z-50 w-80 max-h-96 overflow-y-auto rounded-xl border border-border-strong bg-panel/95 p-3 shadow-2xl backdrop-blur-md">
+                  <div className="mb-2 flex items-center justify-between border-b border-border pb-1.5">
+                    <span className="text-[11px] font-semibold uppercase text-ink-primary">
+                      Segmented Organs ({effectiveMeshes.length})
+                    </span>
+                    <div className="flex items-center gap-1 text-[10px]">
+                      <button
+                        onClick={() => {
+                          const next = effectiveMeshes.map((m) => ({ ...m, visible: true, isolated: false }));
+                          if (organMeshes) onOrganMeshesChange?.(next);
+                          else setInternalMeshes(next);
+                        }}
+                        className="text-clinical hover:underline"
+                      >
+                        All
+                      </button>
+                      <span>·</span>
+                      <button
+                        onClick={() => {
+                          const next = effectiveMeshes.map((m) => ({ ...m, visible: false, isolated: false }));
+                          if (organMeshes) onOrganMeshesChange?.(next);
+                          else setInternalMeshes(next);
+                        }}
+                        className="text-ink-muted hover:underline"
+                      >
+                        None
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 divide-y divide-border/40">
+                    {effectiveMeshes.map((mesh) => (
+                      <div key={mesh.id} className="pt-1.5 first:pt-0">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="h-2.5 w-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: mesh.color }}
+                            />
+                            <span className="text-[11px] font-medium text-ink-primary truncate max-w-[140px]">
+                              {mesh.name}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleIsolateOrgan(mesh.id)}
+                              className={cn(
+                                "rounded px-1 py-0.5 text-[9.5px] font-mono",
+                                mesh.isolated
+                                  ? "bg-clinical text-white font-semibold"
+                                  : "text-ink-muted hover:text-ink-primary"
+                              )}
+                              title="Solo Isolate this organ"
+                            >
+                              Solo
+                            </button>
+                            <button
+                              onClick={() => handleToggleOrgan(mesh.id)}
+                              className="p-0.5 text-ink-muted hover:text-ink-primary"
+                            >
+                              {mesh.visible ? (
+                                <Eye className="h-3 w-3 text-clinical" />
+                              ) : (
+                                <EyeOff className="h-3 w-3 text-ink-muted" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-1 flex items-center justify-between text-[10px] text-ink-muted">
+                          {mesh.volumeMl !== undefined && (
+                            <span>{mesh.volumeMl.toFixed(1)} ml</span>
+                          )}
+                          <div className="flex items-center gap-1.5">
+                            <span>Op: {Math.round(mesh.opacity * 100)}%</span>
+                            <input
+                              type="range"
+                              min={0.1}
+                              max={1.0}
+                              step={0.05}
+                              value={mesh.opacity}
+                              onChange={(e) => handleOrganOpacity(mesh.id, Number(e.target.value))}
+                              className="h-1 w-16 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Clipping planes toggle */}
           <div className="relative">
             <button
-              onClick={() => setShowClippingMenu((v) => !v)}
+              onClick={() => {
+                setShowClippingMenu((v) => !v);
+                setShowLayersMenu(false);
+                setShowOrgansMenu(false);
+              }}
               className={cn(
                 "flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium backdrop-blur shadow",
                 showClippingMenu || clipAxial < 1.0 || clipCoronal < 1.0 || clipSagittal < 1.0

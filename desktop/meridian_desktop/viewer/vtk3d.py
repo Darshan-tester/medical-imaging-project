@@ -16,6 +16,8 @@ idle.
 
 from __future__ import annotations
 
+import os
+import json
 import numpy as np
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 
@@ -120,6 +122,7 @@ class VTKVolumeWidget(QWidget):
         self._spacing = (1.0, 1.0, 1.0)
         self._modality = ""
         self._lo = self._hi = 0.0
+        self._organ_actors = {}
         if not HAS_VTK:
             return
         try:
@@ -238,3 +241,98 @@ class VTKVolumeWidget(QWidget):
             return
         getattr(self.cam, f"Roll" if axis == "z" else "Azimuth" if axis == "y" else "Elevation")(degrees)
         self.widget.GetRenderWindow().Render()
+
+    # --------------------------------------------------------------- 3D organ surface meshes
+    def load_derived_meshes(self, derived_dir: str) -> dict:
+        """
+        Loads .vtp/.vtk surface meshes from the derived study folder into VTK renderer.
+        Seamlessly integrates the same MONAI TotalSegmentator derived data as the web viewer.
+        """
+        if not HAS_VTK or not os.path.exists(derived_dir):
+            return {}
+
+        manifest_path = os.path.join(derived_dir, "manifest.json")
+        if not os.path.exists(manifest_path):
+            return {}
+
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            return {}
+
+        self.clear_meshes()
+        loaded = {}
+        for seg in manifest.get("segments", []):
+            organ_id = seg.get("id")
+            name = seg.get("name", organ_id)
+            color_hex = seg.get("color", "#38BDF8")
+            vtp_rel = seg.get("vtpPath", f"meshes/{organ_id}.vtp")
+            vtp_path = os.path.join(derived_dir, vtp_rel)
+            if not os.path.exists(vtp_path):
+                continue
+
+            try:
+                # Support both legacy VTK ascii and modern XML .vtp formats seamlessly
+                is_xml = False
+                try:
+                    with open(vtp_path, "r", encoding="utf-8", errors="ignore") as f_check:
+                        header = f_check.read(120)
+                        if "<VTKFile" in header or "<?xml" in header:
+                            is_xml = True
+                except Exception:
+                    pass
+
+                if is_xml and hasattr(vtk, "vtkXMLPolyDataReader"):
+                    reader = vtk.vtkXMLPolyDataReader()
+                else:
+                    reader = vtk.vtkPolyDataReader()
+
+                reader.SetFileName(vtp_path)
+                reader.Update()
+
+                mapper = vtk.vtkPolyDataMapper()
+                mapper.SetInputConnection(reader.GetOutputPort())
+
+                actor = vtk.vtkActor()
+                actor.SetMapper(mapper)
+
+                # Convert hex color to float RGB (0..1)
+                h = color_hex.lstrip("#")
+                r, g, b = tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+                prop = actor.GetProperty()
+                prop.SetColor(r, g, b)
+                prop.SetOpacity(0.75)
+                prop.SetAmbient(0.3)
+                prop.SetDiffuse(0.8)
+                prop.SetSpecular(0.2)
+
+                self.ren.AddActor(actor)
+                self._organ_actors[organ_id] = actor
+                loaded[organ_id] = {"name": name, "actor": actor, "color": color_hex}
+            except Exception:
+                pass
+
+        self.widget.GetRenderWindow().Render()
+        return loaded
+
+    def clear_meshes(self) -> None:
+        """Removes all loaded organ surface mesh actors from the renderer."""
+        if not HAS_VTK:
+            return
+        for actor in self._organ_actors.values():
+            self.ren.RemoveActor(actor)
+        self._organ_actors.clear()
+        if hasattr(self, "widget"):
+            self.widget.GetRenderWindow().Render()
+
+    def set_organ_visible(self, organ_id: str, visible: bool) -> None:
+        if organ_id in self._organ_actors:
+            self._organ_actors[organ_id].SetVisibility(1 if visible else 0)
+            self.widget.GetRenderWindow().Render()
+
+    def set_organ_opacity(self, organ_id: str, opacity: float) -> None:
+        if organ_id in self._organ_actors:
+            self._organ_actors[organ_id].GetProperty().SetOpacity(max(0.0, min(1.0, opacity)))
+            self.widget.GetRenderWindow().Render()

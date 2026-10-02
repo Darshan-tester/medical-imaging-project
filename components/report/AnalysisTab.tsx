@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, Image as ImageIcon, GitCompare, type LucideIcon } from "lucide-react";
+import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Boxes, Square, Image as ImageIcon, GitCompare, type LucideIcon } from "lucide-react";
 import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage, ViewportLayout, Annotation3D, SeriesInfo } from "@/lib/types";
 import { CURRENT_USER } from "@/lib/mock-data";
 import { resolveReportPanelContent } from "@/lib/report-utils";
@@ -20,6 +20,7 @@ import { PriorComparisonPanel } from "@/components/viewer/PriorComparisonPanel";
 import { RadiologyReportPanel } from "@/components/report/RadiologyReportPanel";
 import { CriticalFindingBanner } from "@/components/viewer/CriticalFindingBanner";
 import { ViewerErrorBoundary } from "@/components/viewer/ViewerErrorBoundary";
+import { AIAnalysisPanel, OrganMeshState } from "@/components/viewer/AIAnalysisPanel";
 import { SessionAnnotationStore } from "@/lib/annotation-store";
 import { AuditTrail } from "@/lib/audit-trail";
 import { useAuthStore } from "@/lib/store";
@@ -33,9 +34,10 @@ import { isDecodableUrl } from "@/lib/viewer/slice-source";
 import { useSlicePrefetch } from "@/lib/viewer/use-slice-prefetch";
 import { cn } from "@/lib/utils";
 
-type RightPanelTab = "ai" | "comparison" | "report" | "annotations";
+type RightPanelTab = "ai" | "ai3d" | "comparison" | "report" | "annotations";
 const RIGHT_PANEL_TABS: { key: RightPanelTab; label: string; icon: LucideIcon }[] = [
   { key: "ai", label: "AI Findings", icon: Sparkles },
+  { key: "ai3d", label: "3D AI (MONAI)", icon: Boxes },
   { key: "comparison", label: "Comparison", icon: GitCompare },
   { key: "report", label: "Radiology Report", icon: FileText },
   { key: "annotations", label: "Annotations", icon: Pencil },
@@ -99,6 +101,7 @@ export function AnalysisTab({
   const [view3D, setView3D] = useState(false);
   const [layout, setLayout] = useState<ViewportLayout>("1x1");
   const [annotations3D, setAnnotations3D] = useState<Annotation3D[]>([]);
+  const [organMeshes, setOrganMeshes] = useState<OrganMeshState[]>([]);
 
   /*
    * Original vs. Annotated. The AI overlay used to be drawn unconditionally,
@@ -998,6 +1001,8 @@ export function AnalysisTab({
               annotations3D={annotations3D}
               onAnnotations3DChange={setAnnotations3D}
               getImageUrl={getSeriesImageUrl}
+              organMeshes={organMeshes}
+              onOrganMeshesChange={setOrganMeshes}
             />
           ) : view3D ? (
             <ViewerErrorBoundary fallbackTitle="3D Volumetric Reconstruction Unavailable">
@@ -1028,6 +1033,8 @@ export function AnalysisTab({
                     setView3D(false);
                   }
                 }}
+                organMeshes={organMeshes}
+                onOrganMeshesChange={setOrganMeshes}
               />
             </ViewerErrorBoundary>
           ) : (
@@ -1135,6 +1142,20 @@ export function AnalysisTab({
               isProcessing={isProcessing}
               series={study.series}
             />
+          )}
+
+          {rightTab === "ai3d" && (
+            <div className="h-full overflow-y-auto">
+              <AIAnalysisPanel
+                studyId={study.id}
+                seriesId={activeSeries.id}
+                modality={study.modality}
+                priorStudyId={allStudies?.find((s) => s.id !== study.id)?.id}
+                organMeshes={organMeshes}
+                onOrganMeshesChange={setOrganMeshes}
+                onTriggerRegistration={() => setRightTab("comparison")}
+              />
+            </div>
           )}
 
           {rightTab === "comparison" && (

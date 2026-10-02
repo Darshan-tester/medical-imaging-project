@@ -146,3 +146,6 @@ public/demo-data/mri/KNCH35VQQ5/*.zip
 # so it can never be committed or shipped with a Cloudflare deploy (the
 # deployed site uses index.json, a different, deliberate file).
 public/demo-data/manifest.json
+
+# Test scratch outputs
+tests/scratch/

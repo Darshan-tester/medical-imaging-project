@@ -16,6 +16,7 @@ export const WINDOW_LEVEL_PRESETS: (WindowLevelPreset & { category: "CT" | "MRI"
   { id: "bone", name: "Bone (CT)", description: "Cortical definition & fracture line", windowWidth: 2000, windowCenter: 500, brightness: 90, contrast: 130, category: "CT" },
   { id: "lung", name: "Lung (CT)", description: "Parenchymal air-tissue contrast", windowWidth: 1500, windowCenter: -600, brightness: 125, contrast: 130, category: "CT" },
   { id: "abdomen", name: "Soft Tissue (CT)", description: "Visceral soft tissue margins", windowWidth: 350, windowCenter: 50, brightness: 100, contrast: 110, category: "CT" },
+  { id: "liver", name: "Liver (CT)", description: "Hepatic parenchyma & focal lesions", windowWidth: 150, windowCenter: 30, brightness: 105, contrast: 135, category: "CT" },
   // MRI Presets
   { id: "mri-t1", name: "T1 Weighted (MRI)", description: "Fat bright, CSF dark anatomical", windowWidth: 500, windowCenter: 250, brightness: 105, contrast: 115, category: "MRI" },
   { id: "mri-t2", name: "T2 / FLAIR (MRI)", description: "Fluid and edema hyperintensity", windowWidth: 600, windowCenter: 350, brightness: 115, contrast: 125, category: "MRI" },
