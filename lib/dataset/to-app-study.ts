@@ -401,9 +401,11 @@ export function toAppStudy(
       // will serve this series off disk, `clientVolume` means the browser builds
       // the field itself from committed assets — out of the NIfTI volume it already
       // inflates for the 2-D planes, or by stacking a run of a DICOM series' files.
-      // The viewer's toggle only needs to know that a 3-D view exists.
       volumeAvailable:
-        Boolean(s.volumeId && ds.volumes?.[s.volumeId]) || Boolean(s.clientVolume),
+        Boolean(s.volumeId && ds.volumes?.[s.volumeId]) ||
+        Boolean(s.clientVolume) ||
+        Boolean(s.frames?.kind === "nifti") ||
+        Boolean(ds.modality !== "X-Ray" && s.sliceCount > 1),
 
       images:
         viewerImagesFor(

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Layers, Sparkles, MapPin, FileText, Pencil, Box, Square, Image as ImageIcon, type LucideIcon } from "lucide-react";
-import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage } from "@/lib/types";
+import { Study, Finding, Marker, ViewerMeasurement, ViewerAnnotation, RadiologistFinding, ViewerImage, ViewportLayout, Annotation3D, SeriesInfo } from "@/lib/types";
 import { CURRENT_USER } from "@/lib/mock-data";
 import { resolveReportPanelContent } from "@/lib/report-utils";
 import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
@@ -15,6 +15,7 @@ import { SliceNavigator } from "@/components/viewer/SliceNavigator";
 import { ThumbnailStrip } from "@/components/viewer/ThumbnailStrip";
 import { FindingsPanel } from "@/components/viewer/FindingsPanel";
 import { MarkersPanel } from "@/components/viewer/MarkersPanel";
+import { MultiPlaneGrid } from "@/components/viewer/MultiPlaneGrid";
 import { RadiologyReportPanel } from "@/components/report/RadiologyReportPanel";
 import { Drawer } from "@/components/ui/Drawer";
 import { Button } from "@/components/ui/Button";
@@ -87,6 +88,8 @@ export function AnalysisTab({
    * there is deliberately no 3-D mode that fakes a volume out of one X-ray.
    */
   const [view3D, setView3D] = useState(false);
+  const [layout, setLayout] = useState<ViewportLayout>("1x1");
+  const [annotations3D, setAnnotations3D] = useState<Annotation3D[]>([]);
 
   /*
    * Original vs. Annotated. The AI overlay used to be drawn unconditionally,
@@ -233,6 +236,20 @@ export function AnalysisTab({
       imageByIndex.get(index)?.imageUrl ??
       (study.imageUrls && study.imageUrls.length > 0 ? study.imageUrls[index % study.imageUrls.length] : undefined),
     [imageByIndex, study.imageUrls]
+  );
+
+  const getSeriesImageUrl = useCallback(
+    (s: SeriesInfo, index: number) => {
+      if (s.images && s.images.length > 0) {
+        const match = s.images.find((img) => img.index === index) ?? s.images[index % s.images.length];
+        if (match?.imageUrl) return match.imageUrl;
+      }
+      if (study.imageUrls && study.imageUrls.length > 0) {
+        return study.imageUrls[index % study.imageUrls.length];
+      }
+      return undefined;
+    },
+    [study.imageUrls]
   );
 
   const activeImageUrl = imageUrlAt(currentSlice);
@@ -483,6 +500,36 @@ export function AnalysisTab({
     [activeSeries, currentSlice, study.studyId, brushColor, brushSize, brushOpacity, sliceKey]
   );
 
+  const onCommitAnnotation = useCallback(
+    (ann: ViewerAnnotation) => {
+      if (!activeSeries) return;
+      const fullAnn: ViewerAnnotation = {
+        ...ann,
+        id: ann.id || newId("ann"),
+        studyId: study.studyId,
+        seriesId: activeSeries.id,
+        sliceIndex: currentSlice,
+        color: ann.color || brushColor,
+        strokeWidth: ann.strokeWidth || BRUSH_WIDTH_PX[brushSize],
+        opacity: ann.opacity ?? brushOpacity,
+        createdAt: ann.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setAnnotations((prev) => [...prev, fullAnn]);
+      setRedoStacks((prev) => ({ ...prev, [sliceKey]: [] }));
+      setSelectedAnnotationId(fullAnn.id);
+    },
+    [activeSeries, currentSlice, study.studyId, brushColor, brushSize, brushOpacity, sliceKey]
+  );
+
+  const onJumpToAnnotation = useCallback((ann: ViewerAnnotation) => {
+    setActiveSeriesId(ann.seriesId);
+    setCurrentSlice(ann.sliceIndex);
+    setPlaying(false);
+    setSelectedAnnotationId(ann.id);
+    setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0 }));
+  }, []);
+
   const onUndo = useCallback(() => {
     if (!activeSeries || currentAnnotations.length === 0) return;
     const last = [...currentAnnotations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).pop()!;
@@ -713,7 +760,13 @@ export function AnalysisTab({
       <div ref={fullscreenRef} className="flex flex-col gap-3 bg-base p-4 [&:fullscreen]:justify-center [&:fullscreen]:bg-black">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="max-w-full overflow-x-auto">
-            <ViewerToolbar state={viewerState} setState={setViewerState} onFullscreen={onFullscreen} />
+            <ViewerToolbar
+              state={viewerState}
+              setState={setViewerState}
+              onFullscreen={onFullscreen}
+              currentLayout={layout}
+              onSelectLayout={setLayout}
+            />
           </div>
           <div className="flex w-full items-center gap-1.5 overflow-x-auto sm:w-auto sm:gap-2 lg:hidden">
             <Button size="sm" variant="outline" className="shrink-0" onClick={() => setMobileSeriesOpen(true)}>
@@ -847,23 +900,60 @@ export function AnalysisTab({
         )}
 
         <div className="min-h-0 flex-1 rounded-lg bg-black">
-          {view3D && (
+          {layout !== "1x1" ? (
+            <MultiPlaneGrid
+              study={study}
+              layout={layout}
+              globalViewerState={viewerState}
+              findings={overlayFindings}
+              activeFindingId={activeFindingId}
+              onHoverFinding={setHoveredId}
+              onSelectFinding={onSelectFinding}
+              markers={markers}
+              onAddMarker={(m) => setMarkers((prev) => [...prev, { ...m, createdAt: new Date().toISOString() }])}
+              measurements={measurements}
+              onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+              annotations={annotations}
+              onCommitAnnotation={(ann) => setAnnotations((prev) => [...prev, { ...ann, studyId: study.studyId }])}
+              onDeleteAnnotation={onRequestDeleteAnnotation}
+              onQuickAnnotationNote={onQuickAnnotationNote}
+              onAddFinding={onOpenAddFinding}
+              onEditFinding={onOpenEditFinding}
+              annotations3D={annotations3D}
+              onAnnotations3DChange={setAnnotations3D}
+              getImageUrl={getSeriesImageUrl}
+            />
+          ) : view3D ? (
             <Volume3DViewer
               studyId={study.id}
               seriesId={activeSeries.id}
-              /* Frame 0's URL is how the 3-D view recognises which client-side
-                 route applies: a NIfTI marker names a whole volume, a DICOM marker
-                 names one instance out of a stack. The plane and frame in it are
-                 irrelevant to a whole-volume read. */
+              modality={study.modality}
               volumeUrl={imageUrlAt(0)}
-              /* For the stacked route, which needs the rest of the series. The same
-                 resolver the viewer and the filmstrip use, so the slices that go
-                 into the render are the ones the reader has been scrolling. */
               sliceCount={activeSeries.sliceCount}
               sliceUrlAt={imageUrlAt}
+              initialAnnotations={annotations3D}
+              onAnnotationsChange={setAnnotations3D}
+              findings={study.findings}
+              activeFindingId={activeFindingId}
+              onSelectFinding={onSelectFinding}
+              crosshairPos={
+                activeSeries.sliceCount > 1
+                  ? { x: 0.5, y: 0.5, z: currentSlice / Math.max(1, activeSeries.sliceCount - 1) }
+                  : null
+              }
+              onPointSelected={(pt) => {
+                // Synchronize 3D voxel click to 2D slice
+                if (activeSeries.sliceCount > 1) {
+                  const targetSlice = Math.max(
+                    0,
+                    Math.min(activeSeries.sliceCount - 1, Math.round(pt.z * (activeSeries.sliceCount - 1)))
+                  );
+                  onChangeSlice(targetSlice);
+                  setView3D(false);
+                }
+              }}
             />
-          )}
-          {!view3D && (
+          ) : (
             <ImageViewer
               modality={study.modality}
               seed={study.thumbnailSeed + currentSlice}
@@ -886,6 +976,9 @@ export function AnalysisTab({
               onImageReady={onImageReady}
               resetKey={`${activeSeries.id}:${currentSlice}`}
               sliceLabel={activeSeries.sliceCount > 1 ? `Slice ${currentSlice + 1} / ${activeSeries.sliceCount}` : undefined}
+              orientation={activeSeries.orientation}
+              seriesLabel={activeSeries.label}
+              patientAlias={study.patientAlias}
               annotations={currentAnnotations}
               brushColor={brushColor}
               brushSizePx={BRUSH_WIDTH_PX[brushSize]}
@@ -893,15 +986,17 @@ export function AnalysisTab({
               selectedAnnotationId={selectedAnnotationId}
               onSelectAnnotation={setSelectedAnnotationId}
               onCommitStroke={onCommitStroke}
+              onCommitAnnotation={onCommitAnnotation}
               onDeleteAnnotation={onRequestDeleteAnnotation}
               onQuickAnnotationNote={onQuickAnnotationNote}
               onAddFinding={onOpenAddFinding}
               onEditFinding={onOpenEditFinding}
+              onSliceScroll={(d) => onChangeSlice(currentSlice + d)}
             />
           )}
         </div>
 
-        {!view3D && activeSeries.sliceCount > 1 && (
+        {layout === "1x1" && !view3D && activeSeries.sliceCount > 1 && (
           <ThumbnailStrip
             modality={study.modality}
             thumbnailSeed={study.thumbnailSeed}
@@ -912,7 +1007,7 @@ export function AnalysisTab({
           />
         )}
 
-        {!view3D && activeSeries.sliceCount > 1 && (
+        {layout === "1x1" && !view3D && activeSeries.sliceCount > 1 && (
           <SliceNavigator
             current={currentSlice}
             total={activeSeries.sliceCount}
@@ -985,7 +1080,7 @@ export function AnalysisTab({
                   onAddRadiologistFindingToReport={onAddRadiologistFindingToReport}
                 />
               </div>
-              <div className="h-[220px] shrink-0 overflow-hidden border-t border-border">
+              <div className="h-[260px] shrink-0 overflow-hidden border-t border-border">
                 <MarkersPanel
                   markers={markers}
                   series={study.series}
@@ -993,6 +1088,11 @@ export function AnalysisTab({
                   currentSlice={currentSlice}
                   onJump={onJumpToMarker}
                   onDelete={onDeleteMarker}
+                  annotations={annotations}
+                  measurements={measurements}
+                  annotations3D={annotations3D}
+                  onDeleteAnnotation={onRequestDeleteAnnotation}
+                  onJumpToAnnotation={onJumpToAnnotation}
                 />
               </div>
             </div>

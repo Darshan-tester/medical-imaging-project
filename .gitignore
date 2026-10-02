@@ -137,3 +137,10 @@ desktop.ini
 # MRI archives exceeding Cloudflare Workers 25 MiB asset limit
 public/demo-data/mri/IQT6Z5U6WE/*.zip
 public/demo-data/mri/KNCH35VQQ5/*.zip
+
+# Desktop portable-bundle outputs: build_demo_bundle.py in test mode writes
+# the desktop manifest and extracts MRI volumes into public/demo-data. The
+# .nii.gz patterns above already ignore the volumes; this ignores the manifest
+# so it can never be committed or shipped with a Cloudflare deploy (the
+# deployed site uses index.json, a different, deliberate file).
+public/demo-data/manifest.json

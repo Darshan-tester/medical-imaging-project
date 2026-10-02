@@ -1449,12 +1449,13 @@ const VOLUME3D_MAX_EDGE = envInt("SCANLAB_VOLUME3D_MAX_EDGE", 128, 32, 256);
  * can exist at all — a 512x512x500 float volume is 500 MB and cannot be sent to
  * a browser.
  */
-export function exportDicomVolume(ref: DicomVolumeRef): ExportedVolume | undefined {
+export function exportDicomVolume(ref: DicomVolumeRef, maxEdge: number = 256): ExportedVolume | undefined {
   const stack = loadDicomStack(ref);
   if (!stack) return undefined;
 
+  const targetEdge = Math.max(32, Math.min(256, maxEdge));
   const [nx, ny, nz] = stack.geometry.dims;
-  const step = Math.max(1, Math.ceil(Math.max(nx, ny, nz) / VOLUME3D_MAX_EDGE));
+  const step = Math.max(1, Math.ceil(Math.max(nx, ny, nz) / targetEdge));
   const ox = Math.max(1, Math.ceil(nx / step));
   const oy = Math.max(1, Math.ceil(ny / step));
   const oz = Math.max(1, Math.ceil(nz / step));
@@ -1489,6 +1490,65 @@ export function exportDicomVolume(ref: DicomVolumeRef): ExportedVolume | undefin
     windowHi: lo + range,
   };
 }
+
+/**
+ * Windows the loaded NIfTI volume into 8 bits and decimates it to a GPU-friendly size
+ * with exact physical millimeter voxel spacing.
+ */
+export function exportNiftiVolume(absPath: string, maxEdge: number = 256): ExportedVolume | undefined {
+  const loaded = loadVolume(absPath);
+  if (!loaded) return undefined;
+
+  const { header, data, window } = loaded;
+  const nx = Math.max(1, header.dims?.[1] ?? 1);
+  const ny = Math.max(1, header.dims?.[2] ?? 1);
+  const nz = Math.max(1, header.dims?.[3] ?? 1);
+
+  const sx = positiveOr(header.pixDims?.[1], 1);
+  const sy = positiveOr(header.pixDims?.[2], 1);
+  const sz = positiveOr(header.pixDims?.[3], 1);
+
+  const targetEdge = Math.max(32, Math.min(256, maxEdge));
+  const step = Math.max(1, Math.ceil(Math.max(nx, ny, nz) / targetEdge));
+  const ox = Math.max(1, Math.ceil(nx / step));
+  const oy = Math.max(1, Math.ceil(ny / step));
+  const oz = Math.max(1, Math.ceil(nz / step));
+
+  const { lo, range } = window;
+  const scale = range > 0 ? 255 / range : 0;
+  const bytes = new Uint8Array(ox * oy * oz);
+
+  const slope = header.scl_slope || 1;
+  const inter = header.scl_inter || 0;
+
+  let at = 0;
+  for (let k = 0; k < oz; k++) {
+    const sk = Math.min(k * step, nz - 1);
+    for (let j = 0; j < oy; j++) {
+      const sj = Math.min(j * step, ny - 1);
+      const rowBase = sk * nx * ny + sj * nx;
+      for (let i = 0; i < ox; i++) {
+        const si = Math.min(i * step, nx - 1);
+        const raw = data[rowBase + si] ?? 0;
+        const val = raw * slope + inter;
+        const v = val - lo;
+        let out = v * scale;
+        if (out < 0) out = 0;
+        else if (out > 255) out = 255;
+        bytes[at++] = Math.round(out);
+      }
+    }
+  }
+
+  return {
+    bytes,
+    dims: [ox, oy, oz],
+    spacingMm: [sx * step, sy * step, sz * step],
+    windowLo: lo,
+    windowHi: lo + range,
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // Thumbnail downscaling

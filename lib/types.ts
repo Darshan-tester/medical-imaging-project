@@ -114,10 +114,18 @@ export interface ViewerMeasurement {
   distanceMm?: number;
 }
 
-export type AnnotationShape = "freehand" | "arrow" | "circle" | "rectangle";
+export type AnnotationShape =
+  | "freehand"
+  | "arrow"
+  | "circle"
+  | "rectangle"
+  | "line"
+  | "angle"
+  | "text"
+  | "marker";
 
 /**
- * A radiologist-drawn pen/pencil stroke. Coordinates are normalized (0-1)
+ * A radiologist-drawn pen/pencil stroke or geometric annotation. Coordinates are normalized (0-1)
  * against the image's natural bounds — same convention as `Marker` and
  * `ViewerMeasurement` — so a stroke stays correctly attached to the same
  * image region across zoom/pan/resize. Always scoped to the exact
@@ -141,6 +149,70 @@ export interface ViewerAnnotation {
   radiologistNote?: string;
   /** Set once the radiologist writes a full finding for this stroke via "Add Finding". */
   findingId?: string;
+  /** Optional custom text label */
+  text?: string;
+  /** Calculated measurement string (e.g. "12.4 mm", "45.0°", "180 mm²") */
+  measureValue?: string;
+}
+
+/** 3D spatial annotation attached to anatomical volume coordinates. */
+export interface Annotation3D {
+  id: string;
+  studyId: string;
+  seriesId: string;
+  type: "marker" | "label" | "arrow" | "distance" | "roi";
+  position: [number, number, number]; // normalized -0.5..0.5 in volume object space
+  endPosition?: [number, number, number];
+  label?: string;
+  note?: string;
+  color: string;
+  createdAt: string;
+}
+
+export type ViewportLayout = "1x1" | "1x2" | "2x1" | "1+2" | "2x2";
+export type ColorMap3D =
+  | "mri-tissue"
+  | "mri-t1"
+  | "mri-flair"
+  | "mri-perfusion"
+  | "bone"
+  | "grayscale"
+  | "rainbow"
+  | "hotiron"
+  | "pet"
+  | "viridis"
+  | "coolwarm";
+export type Quality3D = "performance" | "balanced" | "high" | "ultra";
+
+export interface AnnotationVisibilityState {
+  showAiFindings: boolean;
+  showBoundingBoxes: boolean;
+  showSegmentation: boolean;
+  showMeasurements: boolean;
+  showHeatmap: boolean;
+  showMarkers: boolean;
+  showTextLabels: boolean;
+}
+
+export const DEFAULT_ANNOTATION_VISIBILITY: AnnotationVisibilityState = {
+  showAiFindings: true,
+  showBoundingBoxes: true,
+  showSegmentation: true,
+  showMeasurements: true,
+  showHeatmap: false,
+  showMarkers: true,
+  showTextLabels: true,
+};
+
+
+export interface WindowLevelPreset {
+  id: string;
+  name: string;
+  description: string;
+  windowWidth: number;
+  windowCenter: number;
+  brightness: number;
+  contrast: number;
 }
 
 /**

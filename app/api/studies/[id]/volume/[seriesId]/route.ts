@@ -35,54 +35,81 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const series = study.series.find((s) => s.id === seriesId);
   if (!series) return NextResponse.json({ error: "Series not found" }, { status: 404 });
 
-  if (!series.volumeId) {
-    return NextResponse.json({ error: "This series is not a reconstructed volume, so it has no 3D form" }, { status: 404 });
-  }
-
-  const volume = study.volumes?.[series.volumeId];
-  if (!volume) {
-    return NextResponse.json(
-      { error: "This reconstructed series has no volume in the index — re-run `npm run dataset:index`" },
-      { status: 422 }
-    );
-  }
+  // Optional query param for edge resolution (e.g. ?edge=256)
+  const urlObj = new URL(req.url);
+  const edgeParam = Number(urlObj.searchParams.get("edge"));
+  const maxEdge = Number.isFinite(edgeParam) && edgeParam >= 32 && edgeParam <= 256 ? edgeParam : 256;
 
   try {
-    // Same defense in depth as the image route: these paths come from our own
-    // manifest, and they are re-checked against the only two roots a real file
-    // may live under before anything is read.
-    for (const file of volume.files) assertWithinAllowedRoots(file);
+    const { exportDicomVolume, exportNiftiVolume } = await import("@/lib/dataset/image-render");
 
-    // Lazily imported so `dicom-parser` / `pngjs` stay off the statically
-    // reachable graph of this route — on Workers the branch above already
-    // returned, and the bundle is size-limited.
-    const { exportDicomVolume } = await import("@/lib/dataset/image-render");
-    const exported = exportDicomVolume(volume);
-    if (!exported) {
-      return NextResponse.json(
-        { error: "This series could not be reconstructed into a volume — its instances are inconsistent or compressed" },
-        { status: 422 }
-      );
+    // 1. Reconstructed DICOM volume (e.g. CT)
+    if (series.volumeId && study.volumes?.[series.volumeId]) {
+      const volume = study.volumes[series.volumeId];
+      for (const file of volume.files) assertWithinAllowedRoots(file);
+
+      const exported = exportDicomVolume(volume, maxEdge);
+      if (!exported) {
+        return NextResponse.json(
+          { error: "This series could not be reconstructed into a volume" },
+          { status: 422 }
+        );
+      }
+
+      return new NextResponse(new Uint8Array(exported.bytes), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(exported.bytes.byteLength),
+          "X-Volume-Dims": exported.dims.join(","),
+          "X-Volume-Spacing": exported.spacingMm.map((v) => v.toFixed(4)).join(","),
+          "X-Volume-Window": `${Math.round(exported.windowLo)},${Math.round(exported.windowHi)}`,
+          "X-Volume-Modality": study.modality,
+          "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+          ETag: `W/"${manifest?.generatedAt ?? "0"}-${series.volumeId}-3d-${maxEdge}"`,
+        },
+      });
     }
 
-    return new NextResponse(new Uint8Array(exported.bytes), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "Content-Length": String(exported.bytes.byteLength),
-        "X-Volume-Dims": exported.dims.join(","),
-        "X-Volume-Spacing": exported.spacingMm.map((v) => v.toFixed(4)).join(","),
-        "X-Volume-Window": `${Math.round(exported.windowLo)},${Math.round(exported.windowHi)}`,
-        // Same reasoning as the image route: the URL is stable across a re-index
-        // but the bytes are not, so revalidate rather than cache immutably.
-        "Cache-Control": "public, max-age=60, must-revalidate",
-        ETag: `W/"${manifest?.generatedAt ?? "0"}-${series.volumeId}-3d"`,
-      },
-    });
+    // 2. NIfTI volume (e.g. MRI or PET)
+    const niftiPath = series.frames?.kind === "nifti"
+      ? series.frames.absPath
+      : series.images?.find((img) => img.kind === "nifti")?.absPath;
+
+    if (niftiPath) {
+      assertWithinAllowedRoots(niftiPath);
+      const exported = exportNiftiVolume(niftiPath, maxEdge);
+      if (!exported) {
+        return NextResponse.json(
+          { error: "Unable to parse NIfTI volume for 3D rendering" },
+          { status: 422 }
+        );
+      }
+
+      return new NextResponse(new Uint8Array(exported.bytes), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(exported.bytes.byteLength),
+          "X-Volume-Dims": exported.dims.join(","),
+          "X-Volume-Spacing": exported.spacingMm.map((v) => v.toFixed(4)).join(","),
+          "X-Volume-Window": `${Math.round(exported.windowLo)},${Math.round(exported.windowHi)}`,
+          "X-Volume-Modality": study.modality,
+          "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
+          ETag: `W/"${manifest?.generatedAt ?? "0"}-${series.id}-nii-3d-${maxEdge}"`,
+        },
+      });
+    }
+
+    return NextResponse.json(
+      { error: "This series does not have a volumetric stack available for 3D rendering" },
+      { status: 404 }
+    );
   } catch (err) {
     return NextResponse.json({ error: `Unable to build a 3D volume for this series: ${(err as Error).message}` }, { status: 422 });
   }
 }
+
 
 function assertWithinAllowedRoots(absPath: string) {
   try {

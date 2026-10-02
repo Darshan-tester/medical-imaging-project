@@ -1,66 +1,95 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Html } from "@react-three/drei";
 import * as THREE from "three";
-import { Boxes, ImageOff, Loader2 } from "lucide-react";
+import {
+  Boxes,
+  ImageOff,
+  Loader2,
+  Palette,
+  Sparkles,
+  Sliders,
+  RotateCcw,
+  Eye,
+  EyeOff,
+  MapPin,
+  Play,
+  Pause,
+  Scissors,
+  Sun,
+  Contrast,
+  Activity,
+  Compass,
+} from "lucide-react";
 import { SceneErrorBoundary } from "@/components/three/SceneErrorBoundary";
 import { isDemoDicomUrl, isDemoVolumeUrl, DEMO_MIN_STACK_SLICES } from "@/lib/demo/types";
 import { usePrefersReducedMotion, useWebGLSupport } from "@/lib/hooks";
+import { ColorMap3D, Quality3D, Annotation3D, Finding, Modality } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+const COLOR_MAP_INDICES: Record<ColorMap3D, number> = {
+  "mri-tissue": 0,
+  "mri-t1": 1,
+  "mri-flair": 2,
+  "mri-perfusion": 3,
+  bone: 4,
+  grayscale: 5,
+  rainbow: 6,
+  hotiron: 7,
+  pet: 8,
+  viridis: 9,
+  coolwarm: 10,
+};
+
+const QUALITY_CONFIG: Record<Quality3D, { steps: number; dpr: number; normalStep: number }> = {
+  performance: { steps: 256, dpr: 1.0, normalStep: 0.015 },
+  balanced: { steps: 512, dpr: 1.25, normalStep: 0.008 },
+  high: { steps: 768, dpr: 1.5, normalStep: 0.004 },
+  ultra: { steps: 1024, dpr: 2.0, normalStep: 0.002 },
+};
 
 /**
- * Interactive 3-D render of one reconstructed series.
- *
- * The volume is the same one the Coronal/Sagittal planes are cut from, and it
- * arrives by one of three routes:
- *
- *  - `volumeUrl` names a committed NIfTI series. The browser has already inflated
- *    that volume to draw the 2-D planes, so the field is built from the copy in
- *    memory at its full acquired resolution, with no request and no decimation.
- *  - `volumeUrl` names a committed DICOM instance and `sliceUrlAt` can resolve the
- *    rest of the series. One instance is one slice, so a field has to be stacked
- *    out of an evenly spaced sample of the files — see `loadDemoCtVolume8` for the
- *    download budget that fixes how many.
- *  - otherwise — an indexed DICOM stack, fetched from
- *    `/api/studies/<id>/volume/<seriesId>` as an 8-bit scalar field. This is the
- *    only route that needs a filesystem, so it is the only one the deployed Worker
- *    cannot take.
- *
- * Either way it is uploaded as a 3-D texture and ray-marched in the fragment
- * shader. Nothing is modelled, inferred or smoothed into existence: every sample
- * on screen is an interpolated stored value from the series itself.
- *
- * Only offered for series that actually have a volume behind them
- * (`SeriesInfo.volumeAvailable`). There is no fallback that fakes a 3-D view for a
- * series that has no stack.
+ * Session-level volume cache. Avoids re-downloading the full voxel volume
+ * when the user toggles between 2D planes and 3D within the same session.
+ * Keyed by "studyId:seriesId" — cleared when the page unloads naturally.
  */
+const volumeCache = new Map<string, LoadedVolume>();
+
 export function Volume3DViewer({
   studyId,
   seriesId,
+  modality = "CT",
   volumeUrl,
   sliceCount,
   sliceUrlAt,
+  initialAnnotations = [],
+  onAnnotationsChange,
+  findings = [],
+  activeFindingId = null,
+  onSelectFinding,
+  crosshairPos = null,
+  onPointSelected,
 }: {
   studyId: string;
   seriesId: string;
-  /**
-   * Slice URL of the active series, used only to recognise which of the two
-   * client-side routes applies. Anything else — an indexed `/api/studies/...` URL —
-   * falls through to the server route.
-   */
+  modality?: Modality;
   volumeUrl?: string;
-  /** Slices in the active series, for the stacked route. */
   sliceCount?: number;
-  /** Resolves any slice index of the active series to its URL, for the stacked route. */
   sliceUrlAt?: (index: number) => string | undefined;
+  initialAnnotations?: Annotation3D[];
+  onAnnotationsChange?: (annotations: Annotation3D[]) => void;
+  findings?: Finding[];
+  activeFindingId?: string | null;
+  onSelectFinding?: (id: string) => void;
+  crosshairPos?: { x: number; y: number; z: number } | null;
+  onPointSelected?: (point: { x: number; y: number; z: number }) => void;
 }) {
   const webglSupported = useWebGLSupport();
   const reduced = usePrefersReducedMotion();
 
   const clientUrl = volumeUrl && isDemoVolumeUrl(volumeUrl) ? volumeUrl : undefined;
-  /* A stack is only worth reading when there is enough of it to be a volume; the
-     same threshold decides which series advertise a 3-D view in the first place. */
   const stackCount =
     !clientUrl && volumeUrl && isDemoDicomUrl(volumeUrl) && sliceCount && sliceCount >= DEMO_MIN_STACK_SLICES
       ? sliceCount
@@ -68,17 +97,32 @@ export function Volume3DViewer({
 
   const [volume, setVolume] = useState<LoadedVolume | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /**
-   * A shader/program failure, which is the one fault an error boundary cannot
-   * see: three logs it and leaves the program invalid, so the mesh silently
-   * draws nothing and the reader is left looking at a black rectangle with
-   * working sliders. Reported as a notice instead — see `ShaderErrorReporter`.
-   */
   const [gpuError, setGpuError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [threshold, setThreshold] = useState(0.28);
-  const [density, setDensity] = useState(0.55);
-  const [mip, setMip] = useState(true);
+
+  // Clinical controls
+  const [threshold, setThreshold] = useState(modality === "MRI" ? 0.10 : 0.22);
+  const [density, setDensity] = useState(modality === "MRI" ? 0.85 : 0.65);
+  const [intensity, setIntensity] = useState(1.0);
+  const [brightness, setBrightness] = useState(1.0);
+  const [contrast, setContrast] = useState(1.0);
+  const [mip, setMip] = useState(false);
+  const [colorMap, setColorMap] = useState<ColorMap3D>(modality === "MRI" ? "mri-tissue" : "bone");
+  const [quality, setQuality] = useState<Quality3D>("high");
+  const [autoRotate, setAutoRotate] = useState(false);
+
+  // Clipping controls (1.0 = full extent, < 1.0 clips into volume)
+  const [clipAxial, setClipAxial] = useState(1.0);
+  const [clipCoronal, setClipCoronal] = useState(1.0);
+  const [clipSagittal, setClipSagittal] = useState(1.0);
+  const [showClippingMenu, setShowClippingMenu] = useState(false);
+
+  // 3D Annotations & Finding Overlays
+  const [annotations, setAnnotations] = useState<Annotation3D[]>(initialAnnotations);
+  const [showAnnotations, setShowAnnotations] = useState(true);
+  const [isAddingMarker, setIsAddingMarker] = useState(false);
+
+  const controlsRef = useRef<any>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,24 +132,39 @@ export function Volume3DViewer({
     setGpuError(null);
     setProgress(null);
 
+    const cacheKey = `${studyId}:${seriesId}`;
+    const cached = volumeCache.get(cacheKey);
+
     (async () => {
       try {
-        const loaded = clientUrl
-          ? await loadClientVolume(clientUrl)
-          : stackCount && sliceUrlAt
-            ? await loadClientStack(sliceUrlAt, stackCount, `${studyId}:${seriesId}`, {
-                signal: controller.signal,
-                onProgress: (done, total) => {
-                  if (!cancelled) setProgress({ done, total });
-                },
-              })
-            : await loadServerVolume(studyId, seriesId);
+        let loaded: LoadedVolume;
+        if (cached) {
+          loaded = cached;
+        } else {
+          loaded = clientUrl
+            ? await loadClientVolume(clientUrl)
+            : stackCount && sliceUrlAt
+              ? await loadClientStack(sliceUrlAt, stackCount, cacheKey, {
+                  signal: controller.signal,
+                  onProgress: (done, total) => {
+                    if (!cancelled) setProgress({ done, total });
+                  },
+                })
+              : await loadServerVolume(studyId, seriesId);
+          volumeCache.set(cacheKey, loaded);
+        }
         if (!cancelled) {
           setVolume(loaded);
-          /* MIP or Composite, decided by the field rather than fixed: see
-             `clippedFraction`. Set per series, so switching series re-decides and
-             a reader's own choice only lasts as long as the series it was made on. */
-          setMip(clippedFraction(loaded.data) < CLIPPED_FOR_COMPOSITE);
+          const isMri = loaded.modality === "MRI" || modality === "MRI";
+          const isClipped = !isMri && clippedFraction(loaded.data) < CLIPPED_FOR_COMPOSITE;
+          setMip(isClipped);
+          if (isMri) {
+            setColorMap("mri-tissue");
+            setThreshold(0.08);
+            setDensity(0.9);
+          } else {
+            setColorMap(isClipped ? "grayscale" : "bone");
+          }
         }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
@@ -114,151 +173,511 @@ export function Volume3DViewer({
 
     return () => {
       cancelled = true;
-      // Stops the run from downloading slices for a view nobody is looking at.
-      // Requests already in the air are left to finish, as everywhere else.
       controller.abort();
     };
-  }, [studyId, seriesId, clientUrl, stackCount, sliceUrlAt]);
+  }, [studyId, seriesId, clientUrl, stackCount, sliceUrlAt, modality]);
+
+  // Auto-upgrade quality to high once idle
+  useEffect(() => {
+    if (!volume) return;
+    const hasIdle = typeof window !== "undefined" && "requestIdleCallback" in window;
+    const id = hasIdle
+      ? (window as any).requestIdleCallback(() => setQuality((q) => (q === "balanced" ? "high" : q)), { timeout: 2000 })
+      : setTimeout(() => setQuality((q) => (q === "balanced" ? "high" : q)), 1500);
+
+    return () => {
+      if (hasIdle && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        (window as any).cancelIdleCallback(id);
+      } else {
+        clearTimeout(id as ReturnType<typeof setTimeout>);
+      }
+    };
+  }, [volume]);
+
+  const handleAddAnnotation = (pos: [number, number, number]) => {
+    const newAnn: Annotation3D = {
+      id: `ann3d-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      studyId,
+      seriesId,
+      type: "marker",
+      position: pos,
+      label: `Marker ${annotations.length + 1}`,
+      color: "#38BDF8",
+      createdAt: new Date().toISOString(),
+    };
+    const next = [...annotations, newAnn];
+    setAnnotations(next);
+    onAnnotationsChange?.(next);
+    setIsAddingMarker(false);
+  };
+
+  const handleDeleteAnnotation = (id: string) => {
+    const next = annotations.filter((a) => a.id !== id);
+    setAnnotations(next);
+    onAnnotationsChange?.(next);
+  };
+
+  const handleResetCamera = (view?: "anterior" | "posterior" | "lateral" | "superior") => {
+    if (!controlsRef.current) return;
+    const ctrl = controlsRef.current;
+    if (view === "anterior") {
+      ctrl.object.position.set(0, 0, 1.8);
+    } else if (view === "posterior") {
+      ctrl.object.position.set(0, 0, -1.8);
+    } else if (view === "lateral") {
+      ctrl.object.position.set(1.8, 0, 0);
+    } else if (view === "superior") {
+      ctrl.object.position.set(0, 1.8, 0.001);
+    } else {
+      ctrl.object.position.set(0, 0, 1.8);
+    }
+    ctrl.target.set(0, 0, 0);
+    ctrl.update();
+  };
 
   if (webglSupported === false) {
-    return <Notice title="3D view unavailable">This browser or GPU does not support WebGL, which the volume render requires. The 2D planes are unaffected.</Notice>;
+    return <Notice title="3D view unavailable">This browser or GPU does not support WebGL 2.0.</Notice>;
   }
   if (error) {
-    return <Notice title="Unable to build the 3D view">{error}</Notice>;
+    return <Notice title="Unable to build the 3D volume">{error}</Notice>;
   }
   if (gpuError) {
-    return <Notice title="3D view stopped">{gpuError}</Notice>;
+    return <Notice title="3D shader error">{gpuError}</Notice>;
   }
   if (!volume) {
     return (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-lg bg-viewer text-center">
-        <Loader2 className="h-5 w-5 animate-spin text-ink-muted" strokeWidth={1.6} />
-        <p className="text-[12.5px] text-ink-secondary">
-          {progress ? `Reading slice ${progress.done} of ${progress.total}…` : "Building the volume…"}
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-lg bg-black text-center">
+        <Loader2 className="h-6 w-6 animate-spin text-clinical" strokeWidth={1.8} />
+        <p className="text-[13px] font-medium text-ink-primary">
+          {progress
+            ? `Assembling volume… ${progress.done}/${progress.total} slices (${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%)`
+            : "Reconstructing 3D Volume…"}
         </p>
         <p className="max-w-xs text-[11px] text-ink-muted">
-          {clientUrl
-            ? "The whole series is read once. If you have already been scrolling it, the voxels are in memory and this is arithmetic."
-            : stackCount
-              ? `Every slice of this series is a separate file, so the render is stacked from an evenly spaced sample of the ${stackCount} — the first and the last included.`
-              : "Every slice is decoded once, so the first load of a large series takes a few seconds."}
+          Building hardware-accelerated 3D voxel field with calibrated medical transfer functions.
         </p>
+        {progress && (
+          <div className="mt-1 h-1 w-48 overflow-hidden rounded-full bg-[rgb(var(--overlay-hover)/0.15)]">
+            <div
+              className="h-full rounded-full bg-clinical transition-all duration-200"
+              style={{ width: `${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%` }}
+            />
+          </div>
+        )}
       </div>
     );
   }
 
+  const qConfig = QUALITY_CONFIG[quality];
+  const volumeScale = getVolumeScale(volume);
+
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg bg-black">
-      <SceneErrorBoundary fallback={<Notice title="3D view stopped">The volume render failed on this GPU. The 2D planes are unaffected.</Notice>}>
-        {/*
-          The box's longest physical edge is normalized to 1 unit (see `scale`), so
-          at this fov the frame is 2 · 1.8 · tan(22.5°) = 1.49 units tall and the
-          volume fills most of it. Measured over the corpus, this is the difference
-          between the render covering 54-68% of the frame and the 23-29% a 2.6
-          camera gave — a quarter-height model adrift in a black panel was half of
-          why there appeared to be nothing there. Scrolling still zooms.
-        */}
-        <Canvas dpr={[1, 1.5]} gl={{ antialias: false, alpha: false }} camera={{ position: [0, 0, 1.8], fov: 45 }}>
+    <div className="relative h-full w-full overflow-hidden rounded-lg bg-black select-none">
+      <SceneErrorBoundary fallback={<Notice title="3D render error">3D volume rendering failed on this GPU.</Notice>}>
+        <Canvas
+          dpr={[1, qConfig.dpr]}
+          gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+          camera={{ position: [0, 0, 1.8], fov: 45 }}
+        >
+          <color attach="background" args={["#000000"]} />
           <ShaderErrorReporter onError={setGpuError} />
-          <VolumeMesh volume={volume} threshold={threshold} density={density} mip={mip} />
-          <OrbitControls enablePan={false} autoRotate={!reduced} autoRotateSpeed={0.6} minDistance={1.2} maxDistance={6} />
+
+          <VolumeMesh
+            volume={volume}
+            threshold={threshold}
+            density={density}
+            intensity={intensity}
+            brightness={brightness}
+            contrast={contrast}
+            mip={mip}
+            colorMapIndex={COLOR_MAP_INDICES[colorMap]}
+            qualityConfig={qConfig}
+            clipMax={[clipSagittal - 0.5, clipCoronal - 0.5, clipAxial - 0.5]}
+            crosshairPos={crosshairPos}
+            isAddingMarker={isAddingMarker}
+            onAddMarker={handleAddAnnotation}
+            onPointSelected={onPointSelected}
+          />
+
+          {showAnnotations && (
+            <>
+              {/* User 3D markers */}
+              <Annotations3DLayer
+                annotations={annotations}
+                volumeScale={volumeScale}
+                onDelete={handleDeleteAnnotation}
+              />
+
+              {/* AI Findings projected in 3D */}
+              {findings.length > 0 && (
+                <Findings3DLayer
+                  findings={findings}
+                  activeFindingId={activeFindingId}
+                  totalSlices={sliceCount || volume.dims[2]}
+                  volumeScale={volumeScale}
+                  onSelect={onSelectFinding}
+                />
+              )}
+            </>
+          )}
+
+          {/* Crosshair 3D spatial indicator */}
+          {crosshairPos && (
+            <Crosshair3DLayer crosshairPos={crosshairPos} volumeScale={volumeScale} />
+          )}
+
+          <OrbitControls
+            ref={controlsRef}
+            makeDefault
+            enablePan={true}
+            autoRotate={autoRotate && !reduced}
+            autoRotateSpeed={0.8}
+            minDistance={0.5}
+            maxDistance={5}
+            dampingFactor={0.08}
+          />
         </Canvas>
       </SceneErrorBoundary>
 
-      <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center gap-3 rounded-md border border-border-strong bg-panel/85 px-3 py-2 backdrop-blur">
-        <span className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
-          <Boxes className="h-3.5 w-3.5" /> {volume.dims.join("×")}
-        </span>
+      {/* Adding Marker HUD overlay */}
+      {isAddingMarker && (
+        <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 rounded-full border border-clinical bg-panel/90 px-4 py-1.5 text-xs font-semibold text-clinical-strong shadow-lg backdrop-blur">
+          Click anywhere on anatomical structure to drop a 3D Marker
+        </div>
+      )}
 
-        {/* The intensity window that was mapped onto 0-255 — shown so the sliders
-            below are read as display controls over a known range, not as an edit
-            to the stored values. */}
-        {volume.window && (
-          <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
-            {formatLevel(volume.window[0])} … {formatLevel(volume.window[1])}
-            {volume.windowUnit ? ` ${volume.windowUnit}` : ""}
+      {/* Top Controls Bar */}
+      <div className="absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+        <div className="flex flex-wrap items-center gap-2 pointer-events-auto">
+          {/* Transfer Function / Color Map Selector */}
+          <div className="flex items-center gap-1.5 rounded-md border border-border-strong bg-panel/90 px-2.5 py-1 backdrop-blur shadow">
+            <Palette className="h-3.5 w-3.5 text-clinical" />
+            <select
+              value={colorMap}
+              onChange={(e) => setColorMap(e.target.value as ColorMap3D)}
+              className="bg-transparent text-[11px] font-medium text-ink-primary outline-none cursor-pointer"
+            >
+              <optgroup label="MRI Intensity & Tissue" className="bg-panel font-semibold">
+                <option value="mri-tissue">MRI Multi-Tissue (CSF/Gray/White/Tumor)</option>
+                <option value="mri-t1">MRI T1 Anatomical Contrast</option>
+                <option value="mri-flair">MRI T2/FLAIR Pathology & Edema</option>
+                <option value="mri-perfusion">MRI Perfusion / Angio Flow</option>
+              </optgroup>
+              <optgroup label="Radiological & CT" className="bg-panel font-semibold">
+                <option value="bone">CT Bone & Soft Tissue</option>
+                <option value="grayscale">Grayscale (Radiologic)</option>
+                <option value="pet">PET / Thermal Perfusion</option>
+              </optgroup>
+              <optgroup label="Perceptual & Analysis" className="bg-panel font-semibold">
+                <option value="viridis">Viridis Uniform</option>
+                <option value="coolwarm">Cool-Warm Diverging</option>
+                <option value="hotiron">Hot Iron</option>
+                <option value="rainbow">Rainbow Spectral</option>
+              </optgroup>
+            </select>
+          </div>
+
+          {/* Quality Preset Selector */}
+          <div className="flex items-center gap-1.5 rounded-md border border-border-strong bg-panel/90 px-2.5 py-1 backdrop-blur shadow">
+            <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+            <select
+              value={quality}
+              onChange={(e) => setQuality(e.target.value as Quality3D)}
+              className="bg-transparent text-[11px] font-medium text-ink-primary outline-none cursor-pointer"
+            >
+              <option value="performance" className="bg-panel">Performance (256)</option>
+              <option value="balanced" className="bg-panel">Balanced (512)</option>
+              <option value="high" className="bg-panel">High Quality (768)</option>
+              <option value="ultra" className="bg-panel">Ultra Quality (1024)</option>
+            </select>
+          </div>
+
+          {/* Anatomical Camera Views */}
+          <div className="flex items-center gap-0.5 rounded-md border border-border-strong bg-panel/90 p-0.5 backdrop-blur shadow">
+            <button
+              onClick={() => handleResetCamera("anterior")}
+              className="px-1.5 py-0.5 text-[10px] font-mono text-ink-secondary hover:text-ink-primary"
+              title="Anterior (Front) View"
+            >
+              ANT
+            </button>
+            <button
+              onClick={() => handleResetCamera("lateral")}
+              className="px-1.5 py-0.5 text-[10px] font-mono text-ink-secondary hover:text-ink-primary"
+              title="Lateral (Side) View"
+            >
+              LAT
+            </button>
+            <button
+              onClick={() => handleResetCamera("superior")}
+              className="px-1.5 py-0.5 text-[10px] font-mono text-ink-secondary hover:text-ink-primary"
+              title="Superior (Top) View"
+            >
+              SUP
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 pointer-events-auto">
+          {/* Clipping planes toggle */}
+          <div className="relative">
+            <button
+              onClick={() => setShowClippingMenu((v) => !v)}
+              className={cn(
+                "flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium backdrop-blur shadow",
+                showClippingMenu || clipAxial < 1.0 || clipCoronal < 1.0 || clipSagittal < 1.0
+                  ? "border-clinical bg-clinical-dim text-clinical-strong"
+                  : "border-border-strong bg-panel/90 text-ink-secondary hover:text-ink-primary"
+              )}
+              title="3D Anatomical Clipping / Cut Planes"
+            >
+              <Scissors className="h-3.5 w-3.5" />
+              <span>Clipping</span>
+            </button>
+
+            {showClippingMenu && (
+              <div className="absolute top-9 right-0 z-50 w-64 rounded-xl border border-border-strong bg-panel/95 p-3 shadow-2xl backdrop-blur-md">
+                <div className="mb-2 flex items-center justify-between border-b border-border-strong pb-1.5">
+                  <span className="text-[11px] font-semibold uppercase text-ink-primary">Anatomical Cut Planes</span>
+                  <button
+                    onClick={() => {
+                      setClipAxial(1.0);
+                      setClipCoronal(1.0);
+                      setClipSagittal(1.0);
+                    }}
+                    className="text-[10px] text-ink-muted hover:text-ink-primary"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="space-y-2.5 text-[11px]">
+                  <div>
+                    <div className="flex justify-between text-ink-secondary mb-1">
+                      <span>Axial Cut (Superior → Inferior)</span>
+                      <span className="font-mono text-[10px]">{Math.round(clipAxial * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.0}
+                      step={0.01}
+                      value={clipAxial}
+                      onChange={(e) => setClipAxial(Number(e.target.value))}
+                      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-ink-secondary mb-1">
+                      <span>Coronal Cut (Anterior → Posterior)</span>
+                      <span className="font-mono text-[10px]">{Math.round(clipCoronal * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.0}
+                      step={0.01}
+                      value={clipCoronal}
+                      onChange={(e) => setClipCoronal(Number(e.target.value))}
+                      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-ink-secondary mb-1">
+                      <span>Sagittal Cut (Lateral)</span>
+                      <span className="font-mono text-[10px]">{Math.round(clipSagittal * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.0}
+                      step={0.01}
+                      value={clipSagittal}
+                      onChange={(e) => setClipSagittal(Number(e.target.value))}
+                      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Add 3D Marker */}
+          <button
+            onClick={() => setIsAddingMarker((v) => !v)}
+            className={cn(
+              "flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-medium backdrop-blur transition-all shadow",
+              isAddingMarker
+                ? "border-clinical bg-clinical text-white"
+                : "border-border-strong bg-panel/90 text-ink-secondary hover:text-ink-primary"
+            )}
+            title="Place anatomical 3D marker"
+          >
+            <MapPin className="h-3.5 w-3.5" />
+            <span>{isAddingMarker ? "Cancel Marker" : "+ 3D Marker"}</span>
+          </button>
+
+          {/* Show / Hide 3D Annotations & Findings */}
+          <button
+            onClick={() => setShowAnnotations((v) => !v)}
+            className={cn(
+              "flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium backdrop-blur shadow",
+              showAnnotations
+                ? "border-border-strong bg-panel/90 text-ink-primary"
+                : "border-border-strong bg-panel/50 text-ink-muted"
+            )}
+            title="Toggle 3D annotations and AI findings visibility"
+          >
+            {showAnnotations ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            <span>({annotations.length + findings.length})</span>
+          </button>
+
+          {/* Auto Rotate Toggle */}
+          <button
+            onClick={() => setAutoRotate((v) => !v)}
+            className="flex items-center gap-1 rounded-md border border-border-strong bg-panel/90 px-2 py-1 text-[11px] text-ink-secondary backdrop-blur hover:text-ink-primary shadow"
+            title="Toggle turntable camera orbit"
+          >
+            {autoRotate ? <Pause className="h-3.5 w-3.5 text-clinical" /> : <Play className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Bottom Control Bar */}
+      <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-strong bg-panel/90 px-3.5 py-2 backdrop-blur-md shadow-2xl">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
+            <Boxes className="h-3.5 w-3.5 text-clinical" /> {volume.dims.join("×")}
           </span>
-        )}
 
-        {/* How much of the series this field is, when it is not all of it. */}
-        {volume.detail && (
-          <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
-            {volume.detail}
-          </span>
-        )}
+          {volume.spacing && (
+            <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-muted">
+              {volume.spacing.map((s) => s.toFixed(2)).join("×")} mm
+            </span>
+          )}
 
-        <label className="flex items-center gap-2 text-[11px] text-ink-secondary">
-          Threshold
-          <input
-            type="range"
-            min={0}
-            max={0.9}
-            step={0.01}
-            value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
-            aria-label="Density threshold"
-          />
-        </label>
+          {volume.modality && (
+            <span className="rounded bg-clinical/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-clinical">
+              {volume.modality}
+            </span>
+          )}
+        </div>
 
-        {/* Opacity is a compositing control: a MIP is opaque by definition, so the
-            slider is shown disabled there rather than left looking live. */}
-        <label
-          className={`flex items-center gap-2 text-[11px] ${mip ? "text-ink-muted" : "text-ink-secondary"}`}
-          title={mip ? "Opacity applies to the composite mode; a MIP is opaque." : undefined}
-        >
-          Opacity
-          <input
-            type="range"
-            min={0.05}
-            max={1}
-            step={0.01}
-            value={density}
-            disabled={mip}
-            onChange={(e) => setDensity(Number(e.target.value))}
-            className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label="Opacity"
-          />
-        </label>
+        <div className="flex flex-wrap items-center gap-4">
+          {/* Threshold Slider */}
+          <label className="flex items-center gap-2 text-[11px] text-ink-secondary">
+            Threshold
+            <input
+              type="range"
+              min={0.01}
+              max={0.80}
+              step={0.01}
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              className="h-1.5 w-20 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+              aria-label="Density threshold"
+            />
+            <span className="font-mono text-[10px] w-7">{Math.round(threshold * 100)}%</span>
+          </label>
 
-        <button
-          onClick={() => setMip((m) => !m)}
-          className="rounded border border-border-strong px-2 py-0.5 font-mono text-[10.5px] uppercase tracking-wide text-ink-secondary hover:text-ink-primary"
-          aria-pressed={mip}
-        >
-          {mip ? "MIP" : "Composite"}
-        </button>
+          {/* Opacity Slider */}
+          <label
+            className={cn("flex items-center gap-2 text-[11px]", mip ? "text-ink-muted opacity-50" : "text-ink-secondary")}
+          >
+            Opacity
+            <input
+              type="range"
+              min={0.05}
+              max={1.0}
+              step={0.01}
+              value={density}
+              disabled={mip}
+              onChange={(e) => setDensity(Number(e.target.value))}
+              className="h-1.5 w-20 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical disabled:opacity-40"
+              aria-label="Volume opacity"
+            />
+            <span className="font-mono text-[10px] w-7">{Math.round(density * 100)}%</span>
+          </label>
+
+          {/* Intensity / Gamma Slider */}
+          <label className="flex items-center gap-2 text-[11px] text-ink-secondary">
+            Intensity
+            <input
+              type="range"
+              min={0.3}
+              max={2.5}
+              step={0.05}
+              value={intensity}
+              onChange={(e) => setIntensity(Number(e.target.value))}
+              className="h-1.5 w-20 cursor-pointer appearance-none rounded-full bg-[rgb(var(--overlay-hover)/0.18)] accent-clinical"
+              aria-label="Intensity / Gamma"
+            />
+            <span className="font-mono text-[10px] w-7">{intensity.toFixed(1)}x</span>
+          </label>
+
+          {/* Brightness & Contrast quick toggles */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setBrightness((b) => (b === 1.0 ? 1.3 : 1.0))}
+              className={cn(
+                "flex items-center gap-1 rounded border px-2 py-0.5 text-[10.5px] transition-colors",
+                brightness > 1.0 ? "border-clinical bg-clinical-dim text-clinical-strong" : "border-border-strong text-ink-secondary hover:text-ink-primary"
+              )}
+              title="Toggle brightness boost"
+            >
+              <Sun className="h-3 w-3" />
+            </button>
+            <button
+              onClick={() => setContrast((c) => (c === 1.0 ? 1.4 : 1.0))}
+              className={cn(
+                "flex items-center gap-1 rounded border px-2 py-0.5 text-[10.5px] transition-colors",
+                contrast > 1.0 ? "border-clinical bg-clinical-dim text-clinical-strong" : "border-border-strong text-ink-secondary hover:text-ink-primary"
+              )}
+              title="Toggle contrast enhance"
+            >
+              <Contrast className="h-3 w-3" />
+            </button>
+          </div>
+
+          {/* MIP Mode Toggle */}
+          <button
+            onClick={() => setMip((m) => !m)}
+            className={cn(
+              "rounded border px-2 py-0.5 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
+              mip
+                ? "border-clinical bg-clinical-dim text-clinical-strong"
+                : "border-border-strong text-ink-secondary hover:text-ink-primary"
+            )}
+          >
+            {mip ? "MIP Mode" : "Shaded 3D"}
+          </button>
+        </div>
       </div>
     </div>
   );
+}
+
+function getVolumeScale(volume: LoadedVolume): [number, number, number] {
+  const physical = [
+    volume.dims[0] * volume.spacing[0],
+    volume.dims[1] * volume.spacing[1],
+    volume.dims[2] * volume.spacing[2],
+  ];
+  const longest = Math.max(...physical) || 1;
+  return [physical[0] / longest, physical[1] / longest, physical[2] / longest];
 }
 
 interface LoadedVolume {
   data: Uint8Array;
   dims: [number, number, number];
   spacing: [number, number, number];
-  /** The intensity window that was mapped onto 0-255. Undefined if the header was absent. */
   window?: [number, number];
-  /**
-   * Unit for that window. `HU` for either DICOM route; omitted for NIfTI, where
-   * the stored values are MR signal or PET SUV and labelling them HU would be
-   * wrong.
-   */
   windowUnit?: string;
-  /**
-   * What this field is, when it is not the whole acquisition — "48 of 443 slices ·
-   * 7.4 mm". Shown verbatim, so a stacked render is never mistaken for the full
-   * series.
-   */
   detail?: string;
+  modality?: string;
 }
 
-/**
- * The indexed route: the server reads the instance stack off disk and streams it
- * as one 8-bit scalar field, describing its own shape in response headers.
- */
 async function loadServerVolume(studyId: string, seriesId: string): Promise<LoadedVolume> {
-  const res = await fetch(`/api/studies/${studyId}/volume/${seriesId}`, { cache: "no-store" });
+  const res = await fetch(`/api/studies/${studyId}/volume/${seriesId}?edge=256`, { cache: "no-store" });
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
     throw new Error(detail?.error ?? `The server returned ${res.status}`);
@@ -267,33 +686,28 @@ async function loadServerVolume(studyId: string, seriesId: string): Promise<Load
   const spacing = parseTriple(res.headers.get("X-Volume-Spacing"));
   if (!dims || !spacing) throw new Error("The volume response did not describe its own shape");
   const huWindow = parsePair(res.headers.get("X-Volume-Window"));
+  const modality = res.headers.get("X-Volume-Modality") || undefined;
 
   const buf = await res.arrayBuffer();
   const expected = dims[0] * dims[1] * dims[2];
   if (buf.byteLength !== expected) {
     throw new Error(`Expected ${expected} voxels but received ${buf.byteLength}`);
   }
-  return { data: new Uint8Array(buf), dims, spacing, window: huWindow, windowUnit: "HU" };
+  return {
+    data: new Uint8Array(buf),
+    dims,
+    spacing,
+    window: huWindow,
+    windowUnit: modality === "CT" ? "HU" : "Intensity",
+    modality,
+  };
 }
 
-/**
- * The committed-NIfTI route.
- *
- * Imported on demand rather than at module scope so the NIfTI and DICOM decoders
- * do not get pulled into whichever chunk this component lands in — a reader who
- * never opens the 3-D view should not download them twice.
- */
 async function loadClientVolume(volumeUrl: string): Promise<LoadedVolume> {
   const { loadDemoVolume8 } = await import("@/lib/demo/decode");
   return loadDemoVolume8(volumeUrl);
 }
 
-/**
- * The committed-DICOM route: an evenly spaced sample of the series' files, stacked.
- *
- * The window is labelled HU because the instances' rescale slope and intercept are
- * applied before it, exactly as on the server route.
- */
 async function loadClientStack(
   sliceUrlAt: (index: number) => string | undefined,
   sliceCount: number,
@@ -310,26 +724,218 @@ async function loadClientStack(
   };
 }
 
-/**
- * The render itself: a unit cube whose fragment shader walks the ray through the
- * 3-D texture. `side: BackSide` means the far faces are rasterized, so the volume
- * still draws when the camera is inside the box.
- *
- * The box is scaled by dims × spacing, which is why the proportions are
- * anatomically right — a 5 mm-spaced chest CT is 512×512×70 voxels but is not
- * 7× wider than it is tall.
- */
+/** 3D Annotations rendering layer for user-placed markers */
+function Annotations3DLayer({
+  annotations,
+  volumeScale,
+  onDelete,
+}: {
+  annotations: Annotation3D[];
+  volumeScale: [number, number, number];
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <group>
+      {annotations.map((ann) => {
+        const pos: [number, number, number] = [
+          ann.position[0] * volumeScale[0],
+          ann.position[1] * volumeScale[1],
+          ann.position[2] * volumeScale[2],
+        ];
+
+        return (
+          <group key={ann.id} position={pos}>
+            <mesh>
+              <sphereGeometry args={[0.02, 16, 16]} />
+              <meshStandardMaterial
+                color={ann.color || "#38BDF8"}
+                emissive={ann.color || "#38BDF8"}
+                emissiveIntensity={0.7}
+              />
+            </mesh>
+
+            <Html distanceFactor={2.2} center>
+              <div
+                className="flex items-center gap-1.5 rounded-full border border-sky-400/80 bg-black/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-xl backdrop-blur select-none pointer-events-auto"
+                style={{ transform: "translateY(-140%)" }}
+              >
+                <span className="h-2 w-2 rounded-full bg-sky-400 animate-pulse" />
+                <span>{ann.label}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(ann.id);
+                  }}
+                  className="ml-1 text-ink-muted hover:text-red-400"
+                  title="Remove 3D marker"
+                >
+                  ×
+                </button>
+              </div>
+            </Html>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+/** 3D Findings Layer: Projects 2D AI finding detections into spatial 3D volume bounding boxes & markers */
+function Findings3DLayer({
+  findings,
+  activeFindingId,
+  totalSlices,
+  volumeScale,
+  onSelect,
+}: {
+  findings: Finding[];
+  activeFindingId: string | null;
+  totalSlices: number;
+  volumeScale: [number, number, number];
+  onSelect?: (id: string) => void;
+}) {
+  return (
+    <group>
+      {findings.map((f) => {
+        const isNegative = f.label.toLowerCase().startsWith("no ");
+        if (isNegative) return null;
+
+        const isActive = f.id === activeFindingId;
+        const color = f.band === "high" ? "#22C55E" : f.band === "moderate" ? "#F59E0B" : "#EF4444";
+
+        // Map normalized 2D image coordinates [0..1] and slice index into 3D box coordinates [-0.5..0.5]
+        const posX = (f.region.x + f.region.w / 2 - 0.5) * volumeScale[0];
+        const posY = -(f.region.y + f.region.h / 2 - 0.5) * volumeScale[1];
+        const posZ = ((f.sliceIndex / Math.max(1, totalSlices - 1)) - 0.5) * volumeScale[2];
+
+        const boxW = Math.max(0.04, f.region.w * volumeScale[0]);
+        const boxH = Math.max(0.04, f.region.h * volumeScale[1]);
+        const boxD = Math.max(0.03, (2 / Math.max(1, totalSlices)) * volumeScale[2]);
+
+        return (
+          <group
+            key={f.id}
+            position={[posX, posY, posZ]}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect?.(f.id);
+            }}
+          >
+            {/* 3D Wireframe Bounding Box */}
+            <lineSegments>
+              <edgesGeometry args={[new THREE.BoxGeometry(boxW, boxH, boxD)]} />
+              <lineBasicMaterial color={color} linewidth={isActive ? 2 : 1} transparent opacity={isActive ? 0.95 : 0.65} />
+            </lineSegments>
+
+            {/* Glowing 3D Center Sphere */}
+            <mesh>
+              <sphereGeometry args={[0.015, 12, 12]} />
+              <meshBasicMaterial color={color} />
+            </mesh>
+
+            {/* Billboard HTML Pin with Label & Confidence */}
+            <Html distanceFactor={2.4} center>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect?.(f.id);
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9.5px] font-semibold text-white shadow-2xl backdrop-blur transition-all pointer-events-auto",
+                  isActive
+                    ? "border-white bg-black/95 ring-2 ring-clinical scale-110"
+                    : "border-border-strong bg-black/80 hover:bg-black/95"
+                )}
+                style={{
+                  transform: "translateY(-130%)",
+                  borderColor: color,
+                }}
+              >
+                <span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ backgroundColor: color }} />
+                <span className="whitespace-nowrap">{f.label}</span>
+                <span className="opacity-75 font-mono text-[9px]">{f.confidence}%</span>
+              </button>
+            </Html>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+/** 3D Reference Crosshair Layer: Displays the spatial position of the 2D crosshair inside the 3D volume */
+function Crosshair3DLayer({
+  crosshairPos,
+  volumeScale,
+}: {
+  crosshairPos: { x: number; y: number; z: number };
+  volumeScale: [number, number, number];
+}) {
+  const posX = (crosshairPos.x - 0.5) * volumeScale[0];
+  const posY = -(crosshairPos.y - 0.5) * volumeScale[1];
+  const posZ = (crosshairPos.z - 0.5) * volumeScale[2];
+
+  return (
+    <group position={[posX, posY, posZ]}>
+      {/* 3D Focal target crosshair */}
+      <mesh>
+        <sphereGeometry args={[0.012, 12, 12]} />
+        <meshBasicMaterial color="#00F0FF" />
+      </mesh>
+      {/* Orthogonal reference guides */}
+      <lineSegments>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[
+              new Float32Array([
+                -0.08, 0, 0, 0.08, 0, 0,
+                0, -0.08, 0, 0, 0.08, 0,
+                0, 0, -0.08, 0, 0, 0.08,
+              ]),
+              3,
+            ]}
+          />
+        </bufferGeometry>
+        <lineBasicMaterial color="#00F0FF" transparent opacity={0.8} />
+      </lineSegments>
+    </group>
+  );
+}
+
 function VolumeMesh({
   volume,
   threshold,
   density,
+  intensity,
+  brightness,
+  contrast,
   mip,
+  colorMapIndex,
+  qualityConfig,
+  clipMax,
+  crosshairPos,
+  isAddingMarker,
+  onAddMarker,
+  onPointSelected,
 }: {
   volume: LoadedVolume;
   threshold: number;
   density: number;
+  intensity: number;
+  brightness: number;
+  contrast: number;
   mip: boolean;
+  colorMapIndex: number;
+  qualityConfig: { steps: number; normalStep: number };
+  clipMax: [number, number, number];
+  crosshairPos: { x: number; y: number; z: number } | null;
+  isAddingMarker: boolean;
+  onAddMarker: (pos: [number, number, number]) => void;
+  onPointSelected?: (point: { x: number; y: number; z: number }) => void;
 }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+
   const texture = useMemo(() => {
     const t = new THREE.Data3DTexture(volume.data, volume.dims[0], volume.dims[1], volume.dims[2]);
     t.format = THREE.RedFormat;
@@ -351,34 +957,52 @@ function VolumeMesh({
       uVolume: { value: texture },
       uThreshold: { value: threshold },
       uDensity: { value: density },
+      uIntensity: { value: intensity },
+      uBrightness: { value: brightness },
+      uContrast: { value: contrast },
       uMip: { value: mip ? 1 : 0 },
-      // ~1.7 samples per voxel along the longest axis: enough that thin
-      // structures are not stepped over, cheap enough for a 60fps orbit.
-      uSteps: { value: Math.min(768, Math.round(Math.max(...volume.dims) * 1.7)) },
+      uColorMap: { value: colorMapIndex },
+      uSteps: { value: qualityConfig.steps },
+      uNormalStep: { value: qualityConfig.normalStep },
+      uClipMax: { value: new THREE.Vector3(...clipMax) },
     }),
-    // Rebuilt only with the texture; the scalar controls are pushed by mutation below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [texture]
   );
 
   useEffect(() => {
     uniforms.uThreshold.value = threshold;
     uniforms.uDensity.value = density;
+    uniforms.uIntensity.value = intensity;
+    uniforms.uBrightness.value = brightness;
+    uniforms.uContrast.value = contrast;
     uniforms.uMip.value = mip ? 1 : 0;
-  }, [uniforms, threshold, density, mip]);
+    uniforms.uColorMap.value = colorMapIndex;
+    uniforms.uSteps.value = qualityConfig.steps;
+    uniforms.uNormalStep.value = qualityConfig.normalStep;
+    uniforms.uClipMax.value.set(...clipMax);
+  }, [uniforms, threshold, density, intensity, brightness, contrast, mip, colorMapIndex, qualityConfig, clipMax]);
 
-  const scale = useMemo<[number, number, number]>(() => {
-    const physical = [
-      volume.dims[0] * volume.spacing[0],
-      volume.dims[1] * volume.spacing[1],
-      volume.dims[2] * volume.spacing[2],
-    ];
-    const longest = Math.max(...physical) || 1;
-    return [physical[0] / longest, physical[1] / longest, physical[2] / longest];
-  }, [volume]);
+  const scale = useMemo(() => getVolumeScale(volume), [volume]);
+
+  const handlePointerDown = (e: any) => {
+    if (!meshRef.current || !e.point) return;
+    const inv = meshRef.current.matrixWorld.clone().invert();
+    const localPt = e.point.clone().applyMatrix4(inv);
+
+    if (isAddingMarker) {
+      e.stopPropagation();
+      onAddMarker([localPt.x, localPt.y, localPt.z]);
+    } else if (onPointSelected) {
+      // 2D <-> 3D Synchronization: Convert 3D mesh coordinates [-0.5..0.5] to normalized patient space [0..1]
+      const normX = Math.max(0, Math.min(1, localPt.x + 0.5));
+      const normY = Math.max(0, Math.min(1, -localPt.y + 0.5));
+      const normZ = Math.max(0, Math.min(1, localPt.z + 0.5));
+      onPointSelected({ x: normX, y: normY, z: normZ });
+    }
+  };
 
   return (
-    <mesh scale={scale}>
+    <mesh ref={meshRef} scale={scale} onPointerDown={handlePointerDown}>
       <boxGeometry args={[1, 1, 1]} />
       <shaderMaterial
         uniforms={uniforms}
@@ -398,37 +1022,12 @@ const VERTEX_SHADER = /* glsl */ `
   varying vec3 vDirection;
 
   void main() {
-    // Everything is done in object space, so the box's non-uniform scale is
-    // handled by this one inverse instead of by the marching loop.
     vOrigin = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
     vDirection = position - vOrigin;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
 
-/**
- * Ray-marching fragment shader.
- *
- * Two honest modes, no invented geometry in either:
- *  - MIP: the brightest sample along each ray, which is how a radiologist reads
- *    vessels and bone from a CT stack.
- *  - Composite: front-to-back alpha accumulation, which reads more like a
- *    surface but is still nothing but the sampled scalar field.
- *
- * `uThreshold` discards samples below a density, so air and table padding do not
- * fog the render. It is a display control — it never edits the served volume.
- *
- * Note on outputs — this shader MUST declare its own. three.js compiles every
- * non-raw `ShaderMaterial` as `#version 300 es` and injects `#define varying in`
- * and `#define texture2D texture`, but it emits `layout(location = 0) out highp
- * vec4 pc_fragColor;` and `#define gl_FragColor pc_fragColor` only when
- * `glslVersion !== GLSL3` (`WebGLProgram`'s prefixFragment, three 0.160.1). Since
- * the material below asks for GLSL3 explicitly, `gl_FragColor` does not exist:
- * assigning to it is an undeclared identifier, the fragment stage fails to
- * compile, and three leaves an invalid program behind — which draws nothing at
- * all while the React overlay above it still renders. That is a silent black
- * canvas, not an error, and no React error boundary can see it.
- */
 const FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
   precision highp sampler3D;
@@ -438,13 +1037,18 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform sampler3D uVolume;
   uniform float uThreshold;
   uniform float uDensity;
+  uniform float uIntensity;
+  uniform float uBrightness;
+  uniform float uContrast;
   uniform float uMip;
+  uniform int uColorMap;
   uniform float uSteps;
+  uniform float uNormalStep;
+  uniform vec3 uClipMax;
 
   varying vec3 vOrigin;
   varying vec3 vDirection;
 
-  /** Slab intersection against the unit cube the geometry actually occupies. */
   vec2 hitBox(vec3 orig, vec3 dir) {
     const vec3 lo = vec3(-0.5);
     const vec3 hi = vec3(0.5);
@@ -459,6 +1063,120 @@ const FRAGMENT_SHADER = /* glsl */ `
     );
   }
 
+  // Central difference surface normal calculation
+  vec3 sampleNormal(vec3 p, float stepSize) {
+    vec3 tc = p + 0.5;
+    float dx = texture(uVolume, tc + vec3(stepSize, 0.0, 0.0)).r - texture(uVolume, tc - vec3(stepSize, 0.0, 0.0)).r;
+    float dy = texture(uVolume, tc + vec3(0.0, stepSize, 0.0)).r - texture(uVolume, tc - vec3(0.0, stepSize, 0.0)).r;
+    float dz = texture(uVolume, tc + vec3(0.0, 0.0, stepSize)).r - texture(uVolume, tc - vec3(0.0, 0.0, stepSize)).r;
+    vec3 n = vec3(dx, dy, dz);
+    float l = length(n);
+    return l > 0.001 ? n / l : vec3(0.0, 0.0, 1.0);
+  }
+
+  float random(vec2 st) {
+    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+  }
+
+  // Clinical transfer functions
+  vec3 applyColorMap(float val, int cm) {
+    // 0: MRI Multi-Tissue (Anatomical differentiation: CSF, Gray Matter, White Matter, Lesions)
+    if (cm == 0) {
+      if (val < 0.16) {
+        return mix(vec3(0.04, 0.10, 0.25), vec3(0.12, 0.35, 0.55), val / 0.16);
+      } else if (val < 0.45) {
+        float t = (val - 0.16) / 0.29;
+        return mix(vec3(0.68, 0.44, 0.30), vec3(0.86, 0.62, 0.44), t);
+      } else if (val < 0.78) {
+        float t = (val - 0.45) / 0.33;
+        return mix(vec3(0.88, 0.82, 0.72), vec3(1.0, 0.98, 0.94), t);
+      } else {
+        float t = (val - 0.78) / 0.22;
+        return mix(vec3(0.95, 0.25, 0.15), vec3(0.20, 0.95, 0.90), t);
+      }
+    }
+    // 1: MRI T1 Anatomical Contrast
+    if (cm == 1) {
+      if (val < 0.20) {
+        return mix(vec3(0.08, 0.08, 0.12), vec3(0.40, 0.35, 0.32), val / 0.20);
+      } else if (val < 0.60) {
+        return mix(vec3(0.40, 0.35, 0.32), vec3(0.85, 0.80, 0.76), (val - 0.20) / 0.40);
+      } else {
+        return mix(vec3(0.85, 0.80, 0.76), vec3(1.0, 0.98, 0.95), (val - 0.60) / 0.40);
+      }
+    }
+    // 2: MRI T2/FLAIR Pathology & Edema
+    if (cm == 2) {
+      if (val < 0.30) {
+        return mix(vec3(0.02, 0.03, 0.06), vec3(0.35, 0.38, 0.42), val / 0.30);
+      } else if (val < 0.65) {
+        return mix(vec3(0.35, 0.38, 0.42), vec3(0.75, 0.78, 0.82), (val - 0.30) / 0.35);
+      } else {
+        return mix(vec3(0.10, 0.85, 0.95), vec3(1.0, 0.95, 0.20), (val - 0.65) / 0.35);
+      }
+    }
+    // 3: MRI Perfusion / Angio Flow
+    if (cm == 3) {
+      if (val < 0.25) {
+        return mix(vec3(0.02, 0.05, 0.18), vec3(0.10, 0.65, 0.50), val / 0.25);
+      } else if (val < 0.65) {
+        return mix(vec3(0.10, 0.65, 0.50), vec3(0.95, 0.65, 0.10), (val - 0.25) / 0.40);
+      } else {
+        return mix(vec3(0.95, 0.65, 0.10), vec3(1.0, 0.15, 0.20), (val - 0.65) / 0.35);
+      }
+    }
+    // 4: Bone & Soft Tissue (CT)
+    if (cm == 4) {
+      if (val < 0.25) {
+        return mix(vec3(0.05, 0.1, 0.2), vec3(0.65, 0.2, 0.15), val / 0.25);
+      } else if (val < 0.65) {
+        return mix(vec3(0.65, 0.2, 0.15), vec3(0.92, 0.58, 0.35), (val - 0.25) / 0.4);
+      } else {
+        return mix(vec3(0.92, 0.58, 0.35), vec3(1.0, 0.98, 0.92), (val - 0.65) / 0.35);
+      }
+    }
+    // 5: Grayscale
+    if (cm == 5) {
+      return vec3(val);
+    }
+    // 6: Rainbow / Spectrum
+    if (cm == 6) {
+      float h = (1.0 - val) * 0.8;
+      vec3 c = clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+      return c;
+    }
+    // 7: Hot Iron / Thermal
+    if (cm == 7) {
+      return vec3(
+        smoothstep(0.0, 0.33, val),
+        smoothstep(0.33, 0.66, val),
+        smoothstep(0.66, 1.0, val)
+      );
+    }
+    // 8: PET / Perfusion
+    if (cm == 8) {
+      if (val < 0.3) {
+        return mix(vec3(0.02, 0.05, 0.25), vec3(0.0, 0.8, 0.6), val / 0.3);
+      } else if (val < 0.7) {
+        return mix(vec3(0.0, 0.8, 0.6), vec3(0.95, 0.8, 0.1), (val - 0.3) / 0.4);
+      } else {
+        return mix(vec3(0.95, 0.8, 0.1), vec3(1.0, 0.1, 0.4), (val - 0.7) / 0.3);
+      }
+    }
+    // 9: Viridis
+    if (cm == 9) {
+      vec3 c0 = vec3(0.267, 0.004, 0.329);
+      vec3 c1 = vec3(0.127, 0.566, 0.550);
+      vec3 c2 = vec3(0.993, 0.906, 0.143);
+      return val < 0.5 ? mix(c0, c1, val * 2.0) : mix(c1, c2, (val - 0.5) * 2.0);
+    }
+    // 10: Cool-Warm
+    if (cm == 10) {
+      return mix(vec3(0.23, 0.29, 0.75), vec3(0.70, 0.01, 0.15), val);
+    }
+    return vec3(val);
+  }
+
   void main() {
     vec3 rayDir = normalize(vDirection);
     vec2 bounds = hitBox(vOrigin, rayDir);
@@ -466,7 +1184,9 @@ const FRAGMENT_SHADER = /* glsl */ `
     bounds.x = max(bounds.x, 0.0);
 
     float dt = (bounds.y - bounds.x) / uSteps;
-    vec3 p = vOrigin + rayDir * bounds.x;
+    // Stochastic ray jittering to eliminate wood-grain slicing artifacts
+    float jitter = random(gl_FragCoord.xy) * dt;
+    vec3 p = vOrigin + rayDir * (bounds.x + jitter);
     vec3 stepVec = rayDir * dt;
 
     float headroom = max(1.0 - uThreshold, 0.001);
@@ -474,22 +1194,40 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec3 accColor = vec3(0.0);
     float accAlpha = 0.0;
 
+    vec3 lightDir = normalize(vec3(0.5, 0.8, 1.0));
+
     for (float i = 0.0; i < 1024.0; i += 1.0) {
       if (i >= uSteps) break;
 
-      // p is object space (-0.5..0.5); the texture is 0..1 on the same axes.
+      // 3D Clipping Planes Check
+      if (p.x > uClipMax.x || p.y > uClipMax.y || p.z > uClipMax.z) {
+        p += stepVec;
+        continue;
+      }
+
       float v = texture(uVolume, p + 0.5).r;
 
       if (v > uThreshold) {
         float w = (v - uThreshold) / headroom;
+        // Apply Contrast, Brightness & Intensity Gamma
+        w = clamp(((w - 0.5) * uContrast + 0.5) * uBrightness, 0.0, 1.0);
+        w = pow(w, 1.0 / max(0.2, uIntensity));
+
         if (uMip > 0.5) {
           brightest = max(brightest, w);
         } else {
-          // Per-sample alpha is scaled by step count so the result does not get
-          // denser just because the volume has more slices.
-          float a = w * uDensity * (512.0 / uSteps) * 0.09;
+          // Blinn-Phong shaded volume rendering with surface gradient normals
+          vec3 n = sampleNormal(p, uNormalStep);
+          float diffuse = max(dot(n, lightDir), 0.30);
+          float specular = pow(max(dot(reflect(-lightDir, n), -rayDir), 0.0), 24.0) * 0.40;
+
+          vec3 baseColor = applyColorMap(w, uColorMap);
+          vec3 litColor = baseColor * (diffuse + 0.15) + vec3(specular);
+
+          float a = w * uDensity * (512.0 / uSteps) * 0.14;
           a = clamp(a, 0.0, 1.0);
-          accColor += (1.0 - accAlpha) * vec3(w) * a;
+
+          accColor += (1.0 - accAlpha) * litColor * a;
           accAlpha += (1.0 - accAlpha) * a;
           if (accAlpha > 0.985) break;
         }
@@ -500,13 +1238,8 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     if (uMip > 0.5) {
       if (brightest <= 0.0) discard;
-      /* Opaque, and the projected value written straight out. Normal blending
-         multiplies a fragment's colour by its own alpha, so carrying the
-         projection in the alpha channel as well would square it — half of the
-         window would reach the screen as a quarter — which is most of why this
-         render read as an unlit smudge. There is nothing behind the volume but
-         the panel's black backdrop, so transparency buys a MIP nothing. */
-      fragColor = vec4(vec3(brightest), 1.0);
+      vec3 col = applyColorMap(brightest, uColorMap);
+      fragColor = vec4(col, 1.0);
     } else {
       if (accAlpha <= 0.0) discard;
       fragColor = vec4(accColor / max(accAlpha, 0.001) * accAlpha, accAlpha);
@@ -514,22 +1247,6 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-/**
- * How much of the field sits at the very top of its 8-bit range.
- *
- * This decides which mode a series opens in, because the two fail in opposite
- * conditions. A MIP keeps the largest sample along each ray, so a field with a lot
- * of saturated voxels projects to a flat white silhouette with no interior at all.
- * Measured over the corpus: PET SUV 0.5%, MRI FLAIR 0.6%, chest CT 2.0%, head CT
- * 10.4% — the head studies are windowed for soft tissue (-5 to 75 HU), so bone and
- * everything denser clips, and their MIP is an unreadable egg while the same
- * field composites into a legible skull. Anything below the cut reads better as a
- * MIP, which is also how these stacks are read in 2-D.
- *
- * Every seventh voxel is enough to measure it, and 7 is coprime with all the row
- * lengths in the corpus so the walk crosses rows and slices instead of tracking one
- * column. A 16 MB field costs a couple of milliseconds.
- */
 function clippedFraction(data: Uint8Array): number {
   let clipped = 0;
   let seen = 0;
@@ -540,23 +1257,8 @@ function clippedFraction(data: Uint8Array): number {
   return seen > 0 ? clipped / seen : 0;
 }
 
-/** Between the 2.0% of the chest CTs, whose MIP is fine, and the 10.4% of the heads. */
 const CLIPPED_FOR_COMPOSITE = 0.04;
 
-/**
- * Turns a shader/program failure into something the reader can see.
- *
- * A failed link is the only fault in this component that neither the loader's
- * try/catch nor `SceneErrorBoundary` can catch: it happens inside the render
- * loop, three reports it and moves on, and the mesh then draws nothing. The
- * result is a black canvas with a working control bar — indistinguishable, to
- * whoever is looking at it, from a volume that is simply all air.
- *
- * `renderer.debug.onShaderError` is three's supported hook for this (called on
- * `LINK_STATUS === false` at the program's first use). Installing it replaces
- * three's own console reporting, so the logs are re-emitted here rather than
- * swallowed: the one-line cause always, the full shader logs in development.
- */
 function ShaderErrorReporter({ onError }: { onError: (message: string) => void }) {
   const gl = useThree((state) => state.gl);
 
@@ -568,16 +1270,10 @@ function ShaderErrorReporter({ onError }: { onError: (message: string) => void }
       const programLog = context.getProgramInfoLog(program)?.trim() ?? "";
       const first =
         (fragmentLog || vertexLog || programLog).split("\n").find((line) => line.trim().length > 0) ??
-        "no diagnostic was reported";
+        "no diagnostic";
 
-      console.error(`[Volume3D] the volume shader failed to compile: ${first}`);
-      if (process.env.NODE_ENV === "development") {
-        console.error(`[Volume3D] vertex log:\n${vertexLog}\n\nfragment log:\n${fragmentLog}\n\nprogram log:\n${programLog}`);
-      }
-
-      onError(
-        "The volume shader did not compile on this GPU, so nothing could be drawn. The 2D planes are unaffected."
-      );
+      console.error(`[Volume3D] error: ${first}`);
+      onError("The volume shader failed to link on this GPU.");
     };
     return () => {
       gl.debug.onShaderError = previous;
@@ -589,18 +1285,12 @@ function ShaderErrorReporter({ onError }: { onError: (message: string) => void }
 
 function Notice({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-lg bg-viewer text-center">
+    <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-lg bg-black text-center p-6">
       <ImageOff className="h-6 w-6 text-ink-muted" strokeWidth={1.5} />
       <p className="text-[13px] font-medium text-ink-secondary">{title}</p>
       <p className="max-w-sm text-[11.5px] text-ink-muted">{children}</p>
     </div>
   );
-}
-
-/** The window bounds are HU integers on one route and SUV fractions on the other. */
-function formatLevel(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  return Math.abs(value) >= 10 ? String(Math.round(value)) : value.toFixed(2);
 }
 
 function parseTriple(raw: string | null): [number, number, number] | undefined {
@@ -610,7 +1300,6 @@ function parseTriple(raw: string | null): [number, number, number] | undefined {
   return [parts[0], parts[1], parts[2]];
 }
 
-/** The window header is a signed pair (HU can be negative), so no positivity check here. */
 function parsePair(raw: string | null): [number, number] | undefined {
   if (!raw) return undefined;
   const parts = raw.split(",").map(Number);

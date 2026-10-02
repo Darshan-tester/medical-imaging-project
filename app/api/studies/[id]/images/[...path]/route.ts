@@ -99,8 +99,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-/** Short enough that a re-index is picked up on the next reload, long enough that cine scrubbing isn't a conditional request per frame. */
-const CACHE_CONTROL = "public, max-age=60, must-revalidate";
+/** Cache policy: instant response with background revalidation when stale */
+const CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400";
 
 function parseWidth(url: string): number | undefined {
   const raw = new URL(url).searchParams.get("w");

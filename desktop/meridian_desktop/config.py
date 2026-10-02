@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,15 +79,70 @@ class Config:
     def data_root(self) -> str:
         return self.settings.data_root or DEFAULT_DATA_ROOT
 
+    @staticmethod
+    def _portable_demo_manifest() -> str:
+        """Manifest shipped inside a portable demo bundle.
+
+        Layout beside the frozen exe::
+
+            Vedh-Medical-Imaging-Demo/
+              VedhMedicalImaging.exe
+              demo-data/manifest.json   <- paths RELATIVE to demo-data/,
+                                          never absolute Windows paths
+              demo-data/pet/...         <- the actual images
+
+        Paths inside it are relative to the manifest's own folder, so the same
+        bundle works on any machine, from any location, with no
+        ``SCANLAB_DATA_ROOT``. ManifestIndex resolves them at load time.
+        """
+        # Explicit override wins everywhere.
+        env = os.environ.get("MERIDIAN_DEMO_MANIFEST")
+        if env and Path(env).is_file():
+            return env
+
+        if getattr(sys, "frozen", False):
+            # dist/VedhMedicalImaging/VedhMedicalImaging.exe ->
+            # demo-data sits beside the exe.
+            base = Path(sys.executable).resolve().parent
+            candidate = base / "demo-data" / "manifest.json"
+            if candidate.exists():
+                return str(candidate)
+            return ""
+
+        # Source checkout (development): the bundle the generator produced.
+        # Checking this BEFORE public/demo-data matters: the dev bundle lives
+        # in gitignored desktop/dist/, while files written into public/ would
+        # ship with the next Cloudflare deploy.
+        here = Path(__file__).resolve()
+        dev = here.parent / "dist" / "VedhMedicalImaging" / "demo-data" / "manifest.json"
+        if dev.is_file():
+            return str(dev)
+
+        # Last resort: a test-mode manifest written into public/demo-data
+        # (gitignored outputs only — see build_demo_bundle.py's note).
+        for parent in here.parents:
+            candidate = parent / "public" / "demo-data" / "manifest.json"
+            if candidate.exists():
+                return str(candidate)
+        return ""
+
     def manifest_path(self) -> str:
+        # 1. A saved explicit setting always wins — the Settings dialog and
+        #    existing installs rely on it.
         if self.settings.manifest_path:
             return self.settings.manifest_path
+        # 2. The full local dataset (existing workflow, untouched).
         root = self.data_root()
         if root:
             candidate = Path(root).parent / ".scanlab" / "manifest.json"
             if candidate.exists():
                 return str(candidate)
-        # Fall back to the web project's manifest (repo checkout layout).
+        # 3. The portable demo bundle — needs no configuration at all, so a
+        #    clean demo PC with neither setting nor dataset finds it.
+        portable = self._portable_demo_manifest()
+        if portable:
+            return portable
+        # 4. Repo-checkout fallback (web project's manifest).
         here = Path(__file__).resolve()
         for parent in here.parents:
             candidate = parent / ".scanlab" / "manifest.json"

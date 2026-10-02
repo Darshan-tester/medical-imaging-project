@@ -433,6 +433,21 @@ class WorkstationWindow(QMainWindow):
     @staticmethod
     def _study_label(study: Study) -> str:
         patient = study.patient_alias or "Unknown patient"
+
+        # Demographics the source dataset actually states — never invented.
+        # PET's metadata.json carries Age/Sex/Weight; other datasets may not,
+        # in which case the fields are simply absent from the line.
+        demo = []
+        if study.age:
+            demo.append(f"{study.age}y")
+        if study.sex:
+            demo.append(study.sex)
+        weight = study.raw.get("weightKg")
+        if weight:
+            demo.append(f"{weight} kg")
+        if demo:
+            patient = f"{patient} ({', '.join(demo)})"
+
         modality = study.modality or "?"
         date = study.date or ""
         code = study.study_code or study.id
@@ -869,6 +884,19 @@ class WorkstationWindow(QMainWindow):
     # Reports
     # ------------------------------------------------------------------
 
+    # -- reports --------------------------------------------------------------
+    #: Sections of the normalized StudyReport shape, in reading order. Only
+    #: sections the source report actually has are ever populated — the rest
+    #: are skipped, never invented.
+    _REPORT_SECTIONS = (
+        ("clinicalInformation", "Clinical Information"),
+        ("indication", "Indication"),
+        ("technique", "Technique"),
+        ("comparison", "Comparison"),
+        ("findings", "Findings"),
+        ("impression", "Impression"),
+    )
+
     def _update_report(self, study: Study) -> None:
         report = study.report
 
@@ -879,20 +907,33 @@ class WorkstationWindow(QMainWindow):
             return
 
         if isinstance(report, str):
-            text = report
-        elif isinstance(report, dict):
-            parts = []
+            self.report_text.setPlainText(report)
+            return
 
-            for key, value in report.items():
-                if value in (None, ""):
-                    continue
+        if not isinstance(report, dict):
+            self.report_text.setPlainText(str(report))
+            return
 
-                title = str(key).replace("_", " ").title()
-                parts.append(f"{title}\n{value}")
-
-            text = "\n\n".join(parts)
+        # Normalized StudyReport: prefer the parsed sections; fall back to the
+        # verbatim text. Rendering both would duplicate every sentence.
+        sections = [
+            f"{title}\n{report[key]}"
+            for key, title in self._REPORT_SECTIONS
+            if report.get(key)
+        ]
+        if sections:
+            text = "\n\n".join(sections)
         else:
-            text = str(report)
+            text = str(report.get("text", ""))
+
+        # PET-style reports carry extra measured fields (Image ID, SUV data)
+        # in `metadata` — shown after the prose, clearly separated.
+        metadata = report.get("metadata")
+        if isinstance(metadata, dict) and metadata:
+            rows = "\n".join(
+                f"{k}: {v}" for k, v in metadata.items() if v not in (None, "")
+            )
+            text += f"\n\n———\n{rows}" if rows else ""
 
         self.report_text.setPlainText(text)
 

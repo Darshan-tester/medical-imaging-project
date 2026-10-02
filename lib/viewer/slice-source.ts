@@ -24,15 +24,15 @@
 
 import { isDemoDecodeUrl } from "../demo/types";
 import { isUploadDecodeUrl } from "../uploads/types";
-import { PRIORITY } from "./request-queue";
-import { DecodedImage, peekSlice } from "./slice-cache";
+import { PRIORITY, sliceNetworkQueue } from "./request-queue";
+import { DecodedImage, peekSlice, putSlice } from "./slice-cache";
 
 export type { DecodedImage };
 export { peekSlice };
 
-/** True when this URL needs a decoder — i.e. an `<img src>` alone will not show it. */
+/** True when this URL can be managed, preloaded, and rendered through the slice pipeline. */
 export function isDecodableUrl(url: string | undefined): url is string {
-  return url !== undefined && (isDemoDecodeUrl(url) || isUploadDecodeUrl(url));
+  return typeof url === "string" && url.trim().length > 0;
 }
 
 type DemoDecoder = typeof import("../demo/decode");
@@ -51,38 +51,56 @@ function uploadDecoder(): Promise<UploadDecoder> {
   return uploadModule;
 }
 
+async function fetchAndDecodeApiImage(url: string, priority: number): Promise<DecodedImage> {
+  const cached = peekSlice(url);
+  if (cached) return cached;
+
+  return sliceNetworkQueue.run(url, priority, async (signal) => {
+    const res = await fetch(url, { signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load image`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+
+    let width = 512;
+    let height = 512;
+    if (typeof createImageBitmap !== "undefined") {
+      try {
+        const bmp = await createImageBitmap(blob);
+        width = bmp.width;
+        height = bmp.height;
+        bmp.close();
+      } catch {
+        // Fallback default medical image dimensions
+      }
+    }
+
+    const decoded: DecodedImage = { objectUrl, width, height };
+    putSlice(url, decoded);
+    return decoded;
+  });
+}
+
 /**
- * Decodes one slice, scheduled at `priority`.
+ * Decodes or fetches one slice, scheduled at `priority`.
  *
- * Asking twice for the same URL is free: the demo decoder shares one in-flight
- * decode between callers and raises its priority to the best anybody asked for,
- * which is how a slice being preloaded in the background overtakes the queue the
- * moment it becomes the slice on screen.
- *
- * Every call should be balanced by `releaseSlice` when the caller stops caring.
- * Not doing so is not a leak — the pixels are cached and bounded either way — but
- * it does leave background work in the queue that nobody is waiting for.
+ * Asking twice for the same URL is free: the queue and cache share one in-flight
+ * task between callers and raise its priority to the best anybody asked for.
  */
 export function loadSlice(url: string, priority: number = PRIORITY.current): Promise<DecodedImage> {
+  const cached = peekSlice(url);
+  if (cached) return Promise.resolve(cached);
+
   if (isDemoDecodeUrl(url)) {
     return demoDecoder().then((mod) => mod.decodeDemoImage(url, { priority }));
   }
   if (isUploadDecodeUrl(url)) {
-    // Uploaded bytes come from IndexedDB, so there is no network to schedule and
-    // nothing to preempt; the decode still goes through the shared pixel queue
-    // inside that module's own dedupe.
     return uploadDecoder().then((mod) => mod.decodeUploadImage(url));
   }
-  return Promise.reject(new Error("Not a decodable image URL"));
+  return fetchAndDecodeApiImage(url, priority);
 }
 
 /**
- * Warms a slice without waiting for it.
- *
- * Failures are swallowed on purpose: a preload that was dropped because the user
- * scrolled somewhere else rejects with an `AbortError`, and that is the system
- * working. The caller that actually displays a slice gets its own promise and its
- * own error.
+ * Warms a slice in background without waiting for it.
  */
 export function prefetchSlice(url: string, priority: number): void {
   if (!isDecodableUrl(url)) return;
@@ -91,11 +109,12 @@ export function prefetchSlice(url: string, priority: number): void {
 
 /**
  * Drops one caller's claim on a slice.
- *
- * Only the demo decoder schedules work worth cancelling. For uploads this is a
- * no-op, since the decode has no network stage to abandon.
  */
 export function releaseSlice(url: string): void {
-  if (!isDemoDecodeUrl(url)) return;
-  void demoDecoder().then((mod) => mod.releaseDemoImage(url));
+  if (isDemoDecodeUrl(url)) {
+    void demoDecoder().then((mod) => mod.releaseDemoImage(url));
+    return;
+  }
+  sliceNetworkQueue.release(url);
 }
+

@@ -32,15 +32,20 @@ export interface DecodedImage {
 }
 
 /**
- * How many decoded slices to keep.
- *
- * Comfortably more than the preload window plus a filmstrip, so a scroll back and
- * forth across one region of a series never re-decodes; small enough that a long
- * sweep through a 443-slice study does not hold 443 blobs at once.
+ * How many decoded slices to keep in memory.
+ * 256 entries allows seamless back-and-forth scrolling across full studies
+ * while keeping memory consumption bounded.
  */
-const SLICE_CACHE_MAX = 192;
+const SLICE_CACHE_MAX = 256;
 
 const cache = new Map<string, DecodedImage>();
+
+/**
+ * Checks if a slice is already present in cache.
+ */
+export function hasSlice(url: string): boolean {
+  return cache.has(url);
+}
 
 /**
  * The decoded slice for `url`, if it is in memory.
@@ -58,6 +63,14 @@ export function peekSlice(url: string): DecodedImage | undefined {
 
 /** Records a freshly decoded slice, evicting and revoking the least recently used. */
 export function putSlice(url: string, image: DecodedImage): DecodedImage {
+  if (cache.has(url)) {
+    const existing = cache.get(url);
+    if (existing && existing.objectUrl !== image.objectUrl) {
+      URL.revokeObjectURL(existing.objectUrl);
+    }
+    cache.delete(url);
+  }
+
   cache.set(url, image);
   while (cache.size > SLICE_CACHE_MAX) {
     const oldest = cache.keys().next();
@@ -68,3 +81,9 @@ export function putSlice(url: string, image: DecodedImage): DecodedImage {
   }
   return image;
 }
+
+/** Returns the current count of cached slices in memory. */
+export function getSliceCacheSize(): number {
+  return cache.size;
+}
+
