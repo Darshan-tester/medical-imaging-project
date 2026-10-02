@@ -202,38 +202,47 @@ export function MultiPlaneGrid({
   });
 
   const handleCrosshairMoveFromPlane = (plane: PanelPlaneType, point: { x: number; y: number }) => {
-    setCrosshairNorm((prev) => {
-      let next = { ...prev };
-      if (plane === "Axial") {
-        next.x = point.x;
-        next.y = point.y;
-      } else if (plane === "Coronal") {
-        next.x = point.x;
-        next.z = point.y;
-      } else if (plane === "Sagittal") {
-        next.y = point.x;
-        next.z = point.y;
-      }
+    let nextX = crosshairNorm.x;
+    let nextY = crosshairNorm.y;
+    let nextZ = crosshairNorm.z;
 
-      // Synchronize slices across other planes
-      setPanels((currPanels) =>
-        currPanels.map((p) => {
-          const s = study.series.find((sr) => sr.id === p.seriesId);
-          if (!s || s.sliceCount <= 1) return p;
+    if (plane === "Axial") {
+      nextX = point.x;
+      nextY = point.y;
+    } else if (plane === "Coronal") {
+      nextX = point.x;
+      nextZ = point.y;
+    } else if (plane === "Sagittal") {
+      nextY = point.x;
+      nextZ = point.y;
+    }
 
-          let targetSlice = p.sliceIndex;
-          if (p.planeType === "Axial" && plane !== "Axial") {
-            targetSlice = Math.max(0, Math.min(s.sliceCount - 1, Math.round(next.z * (s.sliceCount - 1))));
-          } else if (p.planeType === "Coronal" && plane !== "Coronal") {
-            targetSlice = Math.max(0, Math.min(s.sliceCount - 1, Math.round(next.y * (s.sliceCount - 1))));
-          } else if (p.planeType === "Sagittal" && plane !== "Sagittal") {
-            targetSlice = Math.max(0, Math.min(s.sliceCount - 1, Math.round(next.x * (s.sliceCount - 1))));
-          }
+    setCrosshairNorm({ x: nextX, y: nextY, z: nextZ });
+
+    // Synchronize slices across other planes, returning currPanels if unchanged to prevent re-render storms
+    setPanels((currPanels) => {
+      let changed = false;
+      const nextPanels = currPanels.map((p) => {
+        const s = study.series.find((sr) => sr.id === p.seriesId);
+        if (!s || s.sliceCount <= 1) return p;
+
+        let targetSlice = p.sliceIndex;
+        if (p.planeType === "Axial" && plane !== "Axial") {
+          targetSlice = Math.max(0, Math.min(s.sliceCount - 1, Math.round(nextZ * (s.sliceCount - 1))));
+        } else if (p.planeType === "Coronal" && plane !== "Coronal") {
+          targetSlice = Math.max(0, Math.min(s.sliceCount - 1, Math.round(nextY * (s.sliceCount - 1))));
+        } else if (p.planeType === "Sagittal" && plane !== "Sagittal") {
+          targetSlice = Math.max(0, Math.min(s.sliceCount - 1, Math.round(nextX * (s.sliceCount - 1))));
+        }
+
+        if (targetSlice !== p.sliceIndex) {
+          changed = true;
           return { ...p, sliceIndex: targetSlice };
-        })
-      );
+        }
+        return p;
+      });
 
-      return next;
+      return changed ? nextPanels : currPanels;
     });
   };
 

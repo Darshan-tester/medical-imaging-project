@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Loader2 } from "lucide-react";
+import { Activity, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Loader2 } from "lucide-react";
 import { StudyTable, SortKey } from "@/components/studies/StudyTable";
 import { StudyCard } from "@/components/studies/StudyCard";
 import { IndexStatusBanner } from "@/components/studies/IndexStatusBanner";
@@ -10,6 +10,7 @@ import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { fetchStudies, getDataMode } from "@/lib/data-source";
 import { DATASET_SOURCE_LABEL } from "@/lib/dataset/types";
 import { Study, StudyPriority, StudyStatus } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export default function StudiesPage() {
   const dataMode = getDataMode();
@@ -20,6 +21,8 @@ export default function StudiesPage() {
   const [view, setView] = useState<"table" | "grid">("table");
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +75,17 @@ export default function StudiesPage() {
 
     return result;
   }, [allStudies, filters, sortKey, sortDir]);
+
+  // Reset to first page when filters or sorting change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const paginated = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -140,24 +154,169 @@ export default function StudiesPage() {
             action={{ label: "Clear filters", onClick: () => setFilters(DEFAULT_FILTERS) }}
           />
         ) : view === "table" ? (
-          <div className="overflow-hidden rounded-xl border border-border bg-panel">
-            <StudyTable
-              studies={filtered}
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onSort={onSort}
-              editable
-              onPriorityChange={onPriorityChange}
-              onStatusChange={onStatusChange}
-            />
+          <div className="flex flex-col gap-4">
+            <div className="overflow-hidden rounded-xl border border-border bg-panel">
+              <StudyTable
+                studies={paginated}
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={onSort}
+                editable
+                onPriorityChange={onPriorityChange}
+                onStatusChange={onStatusChange}
+              />
+            </div>
+            {filtered.length > 25 && (
+              <PaginationControls
+                currentPage={currentPage}
+                totalPages={totalPages}
+                pageSize={pageSize}
+                totalItems={filtered.length}
+                onPageChange={setCurrentPage}
+                onPageSizeChange={setPageSize}
+              />
+            )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {filtered.map((s) => (
-              <StudyCard key={s.id} study={s} />
-            ))}
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {paginated.map((s) => (
+                <StudyCard key={s.id} study={s} />
+              ))}
+            </div>
+            {filtered.length > 25 && (
+              <PaginationControls
+                currentPage={currentPage}
+                totalPages={totalPages}
+                pageSize={pageSize}
+                totalItems={filtered.length}
+                onPageChange={setCurrentPage}
+                onPageSizeChange={setPageSize}
+              />
+            )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PaginationControls({
+  currentPage,
+  totalPages,
+  pageSize,
+  totalItems,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  currentPage: number;
+  totalPages: number;
+  pageSize: number;
+  totalItems: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+}) {
+  const startItem = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const endItem = Math.min(totalItems, currentPage * pageSize);
+
+  const getPages = () => {
+    const pages: (number | "...")[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (currentPage > 3) pages.push("...");
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (currentPage < totalPages - 2) pages.push("...");
+      pages.push(totalPages);
+    }
+    return pages;
+  };
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-3 px-3 rounded-xl border border-border bg-panel text-[12px] text-ink-secondary">
+      <div className="flex items-center gap-3">
+        <span>
+          Showing <span className="font-medium text-ink-primary tabular-nums">{startItem}</span>–<span className="font-medium text-ink-primary tabular-nums">{endItem}</span> of <span className="font-medium text-ink-primary tabular-nums">{totalItems}</span> studies
+        </span>
+        <div className="flex items-center gap-1.5 ml-2">
+          <span className="text-ink-muted">Per page:</span>
+          <select
+            value={pageSize}
+            onChange={(e) => {
+              onPageSizeChange(Number(e.target.value));
+              onPageChange(1);
+            }}
+            className="rounded-md border border-border bg-panel-alt px-2 py-1 text-[11px] text-ink-primary outline-none focus:border-clinical/60"
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onPageChange(1)}
+          disabled={currentPage === 1}
+          aria-label="First page"
+          title="First page"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+        >
+          <ChevronsLeft className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => onPageChange(currentPage - 1)}
+          disabled={currentPage === 1}
+          aria-label="Previous page"
+          title="Previous page"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+
+        <div className="flex items-center gap-1 px-1">
+          {getPages().map((p, idx) =>
+            p === "..." ? (
+              <span key={`ellipsis-${idx}`} className="px-1 text-ink-muted select-none">…</span>
+            ) : (
+              <button
+                key={p}
+                onClick={() => onPageChange(p)}
+                className={cn(
+                  "flex h-7 min-w-[28px] px-1.5 items-center justify-center rounded-md border text-[11px] font-medium tabular-nums transition-colors",
+                  currentPage === p
+                    ? "border-clinical bg-clinical text-white font-semibold"
+                    : "border-border bg-panel-alt hover:bg-panel-hover text-ink-secondary"
+                )}
+              >
+                {p}
+              </button>
+            )
+          )}
+        </div>
+
+        <button
+          onClick={() => onPageChange(currentPage + 1)}
+          disabled={currentPage === totalPages}
+          aria-label="Next page"
+          title="Next page"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => onPageChange(totalPages)}
+          disabled={currentPage === totalPages}
+          aria-label="Last page"
+          title="Last page"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+        >
+          <ChevronsRight className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );

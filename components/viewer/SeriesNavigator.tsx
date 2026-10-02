@@ -1,10 +1,11 @@
 "use client";
 
+import { memo } from "react";
 import { Layers } from "lucide-react";
 import { SeriesInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function SeriesNavigator({
+export const SeriesNavigator = memo(function SeriesNavigator({
   series,
   activeSeriesId,
   onSelect,
@@ -38,4 +39,4 @@ export function SeriesNavigator({
       </div>
     </div>
   );
-}
+});

@@ -125,6 +125,8 @@ desktop.ini
 !.vscode/settings.json
 
 .idea/
+AGENTS.md
+CLAUDE.md
 
 # ==========================================
 # Temporary files

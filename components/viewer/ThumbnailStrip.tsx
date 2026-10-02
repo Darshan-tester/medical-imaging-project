@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { Modality } from "@/lib/types";
 import { ScanThumbnail } from "@/components/studies/ScanThumbnail";
 import { PRIORITY } from "@/lib/viewer/request-queue";
@@ -53,37 +53,66 @@ export function ThumbnailStrip({
     >
       {start > 0 && <span className="shrink-0 px-1 font-mono text-[10px] text-ink-muted">···</span>}
       {indices.map((i) => (
-        <button
+        <ThumbnailTile
           key={i}
-          ref={i === current ? activeRef : undefined}
-          role="option"
-          aria-selected={i === current}
-          aria-label={`Go to slice ${i + 1}`}
-          onClick={() => onChange(i)}
-          className={cn(
-            "relative h-11 w-11 shrink-0 overflow-hidden rounded border transition-colors duration-100",
-            i === current ? "border-clinical ring-1 ring-clinical" : "border-border-strong opacity-70 hover:opacity-100"
-          )}
-        >
-          {/* Tiles are scheduled last and, within that, nearest-first. `loading="lazy"`
-              does nothing for a decode-marked URL — the fetch happens in the decode
-              step, not in the <img> — so the band is what keeps thirteen tiles from
-              competing with the slice the reader is waiting for. */}
-          <ScanThumbnail
-            seed={thumbnailSeed + i}
-            modality={modality}
-            imageUrl={thumbEdge(getImageUrl?.(i))}
-            loading="lazy"
-            priority={PRIORITY.thumbnail + Math.abs(i - current)}
-            className="h-full w-full"
-          />
-          <span className="absolute bottom-0 right-0 rounded-tl bg-black/70 px-1 font-mono text-[8.5px] leading-tight text-white">{i + 1}</span>
-        </button>
+          index={i}
+          isCurrent={i === current}
+          modality={modality}
+          seed={thumbnailSeed + i}
+          imageUrl={thumbEdge(getImageUrl?.(i))}
+          distance={Math.abs(i - current)}
+          onChange={onChange}
+          activeRef={i === current ? activeRef : undefined}
+        />
       ))}
       {end < total && <span className="shrink-0 px-1 font-mono text-[10px] text-ink-muted">···</span>}
     </div>
   );
 }
+
+const ThumbnailTile = memo(function ThumbnailTile({
+  index,
+  isCurrent,
+  modality,
+  seed,
+  imageUrl,
+  distance,
+  onChange,
+  activeRef,
+}: {
+  index: number;
+  isCurrent: boolean;
+  modality: Modality;
+  seed: number;
+  imageUrl?: string;
+  distance: number;
+  onChange: (index: number) => void;
+  activeRef?: React.RefObject<HTMLButtonElement | null>;
+}) {
+  return (
+    <button
+      ref={activeRef}
+      role="option"
+      aria-selected={isCurrent}
+      aria-label={`Go to slice ${index + 1}`}
+      onClick={() => onChange(index)}
+      className={cn(
+        "relative h-11 w-11 shrink-0 overflow-hidden rounded border transition-colors duration-100",
+        isCurrent ? "border-clinical ring-1 ring-clinical" : "border-border-strong opacity-70 hover:opacity-100"
+      )}
+    >
+      <ScanThumbnail
+        seed={seed}
+        modality={modality}
+        imageUrl={imageUrl}
+        loading="lazy"
+        priority={PRIORITY.thumbnail + distance}
+        className="h-full w-full"
+      />
+      <span className="absolute bottom-0 right-0 rounded-tl bg-black/70 px-1 font-mono text-[8.5px] leading-tight text-white">{index + 1}</span>
+    </button>
+  );
+});
 
 /**
  * Asks the image route for a tile-sized render (`?w=`). The route ignores the

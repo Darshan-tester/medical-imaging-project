@@ -51,11 +51,22 @@ const QUALITY_CONFIG: Record<Quality3D, { steps: number; dpr: number; normalStep
 };
 
 /**
- * Session-level volume cache. Avoids re-downloading the full voxel volume
- * when the user toggles between 2D planes and 3D within the same session.
- * Keyed by "studyId:seriesId" — cleared when the page unloads naturally.
+ * Session-level volume cache with bounded LRU eviction (max 2 volumes in memory).
+ * Avoids re-downloading the full voxel volume when the user toggles between
+ * 2D planes and 3D while capping memory usage under 35 MB.
  */
+const MAX_CACHED_VOLUMES = 2;
 const volumeCache = new Map<string, LoadedVolume>();
+
+function setCachedVolume(key: string, vol: LoadedVolume) {
+  if (volumeCache.has(key)) {
+    volumeCache.delete(key);
+  } else if (volumeCache.size >= MAX_CACHED_VOLUMES) {
+    const oldestKey = volumeCache.keys().next().value;
+    if (oldestKey) volumeCache.delete(oldestKey);
+  }
+  volumeCache.set(key, vol);
+}
 
 export function Volume3DViewer({
   studyId,
@@ -151,7 +162,7 @@ export function Volume3DViewer({
                   },
                 })
               : await loadServerVolume(studyId, seriesId);
-          volumeCache.set(cacheKey, loaded);
+          setCachedVolume(cacheKey, loaded);
         }
         if (!cancelled) {
           setVolume(loaded);
@@ -821,11 +832,8 @@ function Findings3DLayer({
               onSelect?.(f.id);
             }}
           >
-            {/* 3D Wireframe Bounding Box */}
-            <lineSegments>
-              <edgesGeometry args={[new THREE.BoxGeometry(boxW, boxH, boxD)]} />
-              <lineBasicMaterial color={color} linewidth={isActive ? 2 : 1} transparent opacity={isActive ? 0.95 : 0.65} />
-            </lineSegments>
+            {/* 3D Wireframe Bounding Box with proper GPU buffer disposal */}
+            <Finding3DWireframeBox boxW={boxW} boxH={boxH} boxD={boxD} color={color} isActive={isActive} />
 
             {/* Glowing 3D Center Sphere */}
             <mesh>
@@ -860,6 +868,39 @@ function Findings3DLayer({
         );
       })}
     </group>
+  );
+}
+
+function Finding3DWireframeBox({
+  boxW,
+  boxH,
+  boxD,
+  color,
+  isActive,
+}: {
+  boxW: number;
+  boxH: number;
+  boxD: number;
+  color: string;
+  isActive: boolean;
+}) {
+  const geom = useMemo(() => {
+    const box = new THREE.BoxGeometry(boxW, boxH, boxD);
+    const edges = new THREE.EdgesGeometry(box);
+    box.dispose();
+    return edges;
+  }, [boxW, boxH, boxD]);
+
+  useEffect(() => {
+    return () => {
+      geom.dispose();
+    };
+  }, [geom]);
+
+  return (
+    <lineSegments geometry={geom}>
+      <lineBasicMaterial color={color} linewidth={isActive ? 2 : 1} transparent opacity={isActive ? 0.95 : 0.65} />
+    </lineSegments>
   );
 }
 

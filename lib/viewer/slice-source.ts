@@ -60,21 +60,7 @@ async function fetchAndDecodeApiImage(url: string, priority: number): Promise<De
     if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load image`);
     const blob = await res.blob();
     const objectUrl = URL.createObjectURL(blob);
-
-    let width = 512;
-    let height = 512;
-    if (typeof createImageBitmap !== "undefined") {
-      try {
-        const bmp = await createImageBitmap(blob);
-        width = bmp.width;
-        height = bmp.height;
-        bmp.close();
-      } catch {
-        // Fallback default medical image dimensions
-      }
-    }
-
-    const decoded: DecodedImage = { objectUrl, width, height };
+    const decoded: DecodedImage = { objectUrl, width: 512, height: 512 };
     putSlice(url, decoded);
     return decoded;
   });

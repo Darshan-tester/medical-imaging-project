@@ -44,8 +44,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const { exportDicomVolume, exportNiftiVolume } = await import("@/lib/dataset/image-render");
 
     // 1. Reconstructed DICOM volume (e.g. CT)
-    if (series.volumeId && study.volumes?.[series.volumeId]) {
-      const volume = study.volumes[series.volumeId];
+    const volumeId = series.volumeId ?? Object.keys(study.volumes ?? {})[0];
+    if (volumeId && study.volumes?.[volumeId]) {
+      const volume = study.volumes[volumeId];
       for (const file of volume.files) assertWithinAllowedRoots(file);
 
       const exported = exportDicomVolume(volume, maxEdge);

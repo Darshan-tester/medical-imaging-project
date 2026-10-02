@@ -9,6 +9,7 @@ import {
   SeriesInfo,
   SourceReport,
   Study,
+  StudyStatus,
   ViewerImage,
 } from "../types";
 
@@ -598,8 +599,6 @@ export function toAppStudy(
 export function toAppStudySummary(
   ds: DatasetStudy
 ): Study {
-  const full = toAppStudy(ds);
-
   const series: SeriesInfo[] =
     ds.series.map((s) => ({
       id: s.id,
@@ -611,53 +610,77 @@ export function toAppStudySummary(
   const cover =
     coverImageUrl(ds);
 
+  const status: StudyStatus =
+    ds.report ? "in-review" : "queued";
+
+  const realFindings: Finding[] =
+    (ds.aiFindings ?? []).map((f, i) => ({
+      id: `${ds.id}-ai-${i}`,
+      label: f.label,
+      confidence: f.confidence,
+      band: f.band,
+      region: f.region,
+      sliceIndex: f.sliceIndex,
+      seriesId: f.seriesId,
+      description: "",
+      status: "pending" as const,
+    }));
+
+  let findings = realFindings;
+  let aiStatus: Study["aiStatus"] = realFindings.length > 0 ? "complete" : "not-run";
+
+  if (realFindings.length === 0 && ds.report) {
+    const working = toWorkingReport(ds);
+    const simulated = simulateFindings({
+      studyId: ds.id,
+      modality: ds.modality,
+      series,
+      reportFindings: working.sections.findings,
+      reportImpression: working.sections.impression,
+    });
+    if (simulated.length > 0) {
+      findings = simulated.map((f) => ({
+        ...f,
+        description: "",
+      }));
+      aiStatus = "simulated";
+    }
+  }
+
   return {
-    ...full,
-
+    id: ds.id,
+    studyId: ds.studyCode,
+    patientAlias: ds.patientAlias,
+    age: ds.age,
+    sex: ds.sex,
+    modality: ds.modality,
+    bodyRegion: ds.bodyRegion,
+    date: ds.date,
+    priority: "routine",
+    status,
+    aiConfidence: null,
+    assignedRadiologist: null,
     series,
-
-    /*
-     * The list never renders report prose. Status is preserved above via
-     * `full.status`, which is derived from whether a report was matched.
-     */
+    findings,
+    thumbnailSeed: numericSeed(ds.id),
     report: {
-      ...full.report,
+      status: "in-review",
       sections: {
         clinicalInformation: "",
         technique: "",
         findings: "",
         impression: "",
       },
+      aiAssisted: false,
+      version: 1,
+      reviewer: null,
+      approvedAt: null,
     },
-
-    sourceReport:
-      undefined,
-
-    /*
-     * The card renders `findings.length` and nothing else about them, so the
-     * quoted report sentence in each `description` is dead weight here — about
-     * 390 KB of it across 2,314 studies once findings are simulated for every
-     * study with a report. The count, and therefore the card, is unchanged.
-     */
-    findings:
-      full.findings.map((f) => ({
-        ...f,
-        description: "",
-      })),
-
-    /*
-     * Demographics belong to the report's patient column, which only the detail
-     * route serves. Measured at 1.1 MB across the list, for fields no card or
-     * table reads — the studies list already shows a dash for age and sex, and
-     * `/api/studies/<id>` carries the full profile.
-     */
-    patientProfile:
-      undefined,
-
-    imageUrls:
-      cover
-        ? [cover]
-        : undefined,
+    datasetSource: DATASET_SOURCE_LABEL[ds.dataset],
+    sourceReport: undefined,
+    aiStatus,
+    patientProfile: undefined,
+    imageUrls: cover ? [cover] : undefined,
   };
 }
 

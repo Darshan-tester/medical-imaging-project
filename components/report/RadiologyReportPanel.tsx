@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { FileText, ExternalLink } from "lucide-react";
 import { SourceReport } from "@/lib/types";
 import { DatasetSourceBadge } from "@/components/ui/Badge";
@@ -20,7 +21,7 @@ const SECTIONS: { key: keyof SourceReport; label: string }[] = [
  * always happens on the full Report tab (the "working report") — this panel
  * never mutates anything, and always shows the immutable original verbatim.
  */
-export function RadiologyReportPanel({ sourceReport, onOpenFullReport }: { sourceReport?: SourceReport; onOpenFullReport?: () => void }) {
+export const RadiologyReportPanel = memo(function RadiologyReportPanel({ sourceReport, onOpenFullReport }: { sourceReport?: SourceReport; onOpenFullReport?: () => void }) {
   if (!sourceReport) {
     return (
       <div className="flex h-full flex-col">
@@ -65,7 +66,7 @@ export function RadiologyReportPanel({ sourceReport, onOpenFullReport }: { sourc
       )}
     </div>
   );
-}
+});
 
 function PanelHeader({ source }: { source?: string }) {
   return (

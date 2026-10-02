@@ -148,6 +148,15 @@ export function ImageViewer({
   const [natural, setNatural] = useState<{ width: number; height: number }>();
   const [hoverCoord, setHoverCoord] = useState<Point | null>(null);
 
+  const handleNaturalSize = useCallback((size: { width: number; height: number }) => {
+    setNatural((prev) => {
+      if (prev && prev.width === size.width && prev.height === size.height) {
+        return prev;
+      }
+      return size;
+    });
+  }, []);
+
   const localRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const ref = containerRef ?? localRef;
@@ -324,7 +333,7 @@ export function ImageViewer({
             loadingLabel={sliceLabel}
             onFailure={() => setRenderFailed(true)}
             onReady={onImageReady}
-            onNaturalSize={setNatural}
+            onNaturalSize={handleNaturalSize}
             className="h-full w-full"
           />
         </div>

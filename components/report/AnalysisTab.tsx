@@ -267,9 +267,9 @@ export function AnalysisTab({
    * slice's pixels finish decoding. Placeholder-only studies have nothing to
    * wait for, so they report ready immediately and play at full rate.
    */
-  const [imageReady, setImageReady] = useState(false);
+  const imageReadyRef = useRef(false);
   useEffect(() => {
-    setImageReady(false);
+    imageReadyRef.current = false;
   }, [activeImageUrl]);
 
   /*
@@ -351,7 +351,7 @@ export function AnalysisTab({
   }, [activeImageUrl]);
 
   const onImageReady = useCallback(() => {
-    setImageReady(true);
+    imageReadyRef.current = true;
     const watch = sliceWatch.current;
     if (watch.logged || watch.url === undefined) return;
     watch.logged = true;
@@ -1015,7 +1015,7 @@ export function AnalysisTab({
             orientation={activeSeries.orientation}
             playing={playing}
             onTogglePlay={() => setPlaying((p) => !p)}
-            ready={imageReady || !activeImageUrl}
+            ready={() => imageReadyRef.current || !activeImageUrl}
           />
         )}
       </div>

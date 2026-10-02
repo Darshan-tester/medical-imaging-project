@@ -42,7 +42,7 @@ export function SliceNavigator({
    * that arrive after the UI has moved past them, which presents as a stall.
    * Defaults true so callers that render pre-loaded rasters behave as before.
    */
-  ready?: boolean;
+  ready?: boolean | (() => boolean);
 }) {
   const raf = useRef<number | null>(null);
   const currentRef = useRef(current);
@@ -66,7 +66,8 @@ export function SliceNavigator({
       // current frame actually finished decoding. Speed scales the interval only
       // — the readiness gate still applies, so 2× on a series whose planes are
       // resliced on demand runs as fast as the pixels arrive and no faster.
-      if (t - last > FRAME_MS / speedRef.current && readyRef.current) {
+      const isReady = typeof readyRef.current === "function" ? readyRef.current() : (readyRef.current ?? true);
+      if (t - last > FRAME_MS / speedRef.current && isReady) {
         // Cine playback loops — this is the one place wraparound is intentional.
         onChange((currentRef.current + 1) % total);
         last = t;

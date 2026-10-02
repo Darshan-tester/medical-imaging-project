@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { motion } from "framer-motion";
 import { Sparkles, Pencil } from "lucide-react";
 import { Finding, RadiologistFinding, SeriesInfo } from "@/lib/types";
@@ -17,7 +18,7 @@ function locationFor(series: SeriesInfo[] | undefined, seriesId: string | undefi
   return series[0] && series[0].sliceCount > 1 ? `Slice ${sliceIndex + 1}` : undefined;
 }
 
-export function FindingsPanel({
+export const FindingsPanel = memo(function FindingsPanel({
   findings,
   activeFindingId,
   onHover,
@@ -152,7 +153,7 @@ export function FindingsPanel({
       )}
     </div>
   );
-}
+});
 
 function RadiologistFindingsSection({
   radiologistFindings,
