@@ -326,6 +326,27 @@ export function Volume3DViewer({
     ctrl.update();
   };
 
+  const qConfig = QUALITY_CONFIG[quality];
+  const volumeScale = useMemo(
+    () => (volume ? getVolumeScale(volume) : ([1, 1, 1] as [number, number, number])),
+    [volume]
+  );
+
+  const clippingPlanes = useMemo(() => {
+    if (!volume) return [];
+    const planes: THREE.Plane[] = [];
+    if (clipSagittal < 1.0) {
+      planes.push(new THREE.Plane(new THREE.Vector3(-1, 0, 0), (clipSagittal - 0.5) * volumeScale[0]));
+    }
+    if (clipCoronal < 1.0) {
+      planes.push(new THREE.Plane(new THREE.Vector3(0, 1, 0), (clipCoronal - 0.5) * volumeScale[1]));
+    }
+    if (clipAxial < 1.0) {
+      planes.push(new THREE.Plane(new THREE.Vector3(0, 0, -1), (clipAxial - 0.5) * volumeScale[2]));
+    }
+    return planes;
+  }, [clipSagittal, clipCoronal, clipAxial, volumeScale, volume]);
+
   if (webglSupported === false) {
     return <Notice title="3D view unavailable">This browser or GPU does not support WebGL 2.0.</Notice>;
   }
@@ -358,23 +379,6 @@ export function Volume3DViewer({
       </div>
     );
   }
-
-  const qConfig = QUALITY_CONFIG[quality];
-  const volumeScale = getVolumeScale(volume);
-
-  const clippingPlanes = useMemo(() => {
-    const planes: THREE.Plane[] = [];
-    if (clipSagittal < 1.0) {
-      planes.push(new THREE.Plane(new THREE.Vector3(-1, 0, 0), (clipSagittal - 0.5) * volumeScale[0]));
-    }
-    if (clipCoronal < 1.0) {
-      planes.push(new THREE.Plane(new THREE.Vector3(0, 1, 0), (clipCoronal - 0.5) * volumeScale[1]));
-    }
-    if (clipAxial < 1.0) {
-      planes.push(new THREE.Plane(new THREE.Vector3(0, 0, -1), (clipAxial - 0.5) * volumeScale[2]));
-    }
-    return planes;
-  }, [clipSagittal, clipCoronal, clipAxial, volumeScale]);
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg bg-black select-none">
