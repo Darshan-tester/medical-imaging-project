@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readManifest } from "@/lib/dataset/manifest-store";
-import { mirrorKeys, serveMirroredJson } from "@/lib/dataset/mirror";
+import path from "path";
+import fs from "fs";
 
 export const dynamic = "force-dynamic";
 
@@ -8,12 +9,21 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  // Mirrored for every indexed study, not just the ones whose pixels were
-  // exported: report text is a few hundred bytes and comes verbatim out of the
-  // manifest, so a study can have its real report on the deployed site even
-  // when its images were left out of the pixel mirror.
-  const mirrored = await serveMirroredJson(mirrorKeys.report(id), req);
-  if (mirrored) return mirrored;
+  // Check derived finalized or draft report
+  const derivedDir = path.join(process.cwd(), ".scanlab", "derived", id, "report");
+  const finalFile = path.join(derivedDir, "final.json");
+  const draftFile = path.join(derivedDir, "draft.json");
+  for (const f of [finalFile, draftFile]) {
+    if (fs.existsSync(f)) {
+      try {
+        const rep = JSON.parse(fs.readFileSync(f, "utf-8"));
+        const reportText = rep.sections
+          ? `CLINICAL INFORMATION:\n${rep.sections.clinicalInformation}\n\nTECHNIQUE:\n${rep.sections.technique}\n\nFINDINGS:\n${rep.sections.findings}\n\nIMPRESSION:\n${rep.sections.impression}`
+          : JSON.stringify(rep);
+        return NextResponse.json({ available: true, report: reportText, draft: rep });
+      } catch (e) {}
+    }
+  }
 
   const manifest = readManifest();
   const ds = manifest?.studies.find((s) => s.id === id);

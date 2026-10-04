@@ -11,7 +11,12 @@ import struct
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional, List
 import numpy as np
-from skimage import measure
+try:
+    from skimage import measure
+    HAS_SKIMAGE = True
+except ImportError:
+    measure = None
+    HAS_SKIMAGE = False
 
 try:
     import trimesh
@@ -72,11 +77,12 @@ def extract_surface_mesh(
     if HAS_TRIMESH and len(faces) > target_faces:
         try:
             tm = trimesh.Trimesh(vertices=verts_xyz, faces=faces, process=False)
-            # Quadratic decimation if available, otherwise fast simplify
-            tm_simplified = tm.simplify_quadric_decimation(target_faces)
-            verts_xyz = np.asarray(tm_simplified.vertices, dtype=np.float32)
-            faces = np.asarray(tm_simplified.faces, dtype=np.int32)
-            normals_xyz = np.asarray(tm_simplified.vertex_normals, dtype=np.float32)
+            percent = float(target_faces) / float(len(faces))
+            if 0.0 < percent < 1.0:
+                tm_simplified = tm.simplify_quadric_decimation(percent)
+                verts_xyz = np.asarray(tm_simplified.vertices, dtype=np.float32)
+                faces = np.asarray(tm_simplified.faces, dtype=np.int32)
+                normals_xyz = np.asarray(tm_simplified.vertex_normals, dtype=np.float32)
         except Exception:
             pass
 

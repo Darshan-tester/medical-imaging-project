@@ -1,34 +1,19 @@
 import { NextResponse } from "next/server";
-import { readManifest } from "@/lib/dataset/manifest-store";
+import { readManifest, getManifestStudy } from "@/lib/dataset/manifest-store";
 import { getDataRoot, getZipExtractCacheDir } from "@/lib/dataset/config";
 import { assertWithinRoot } from "@/lib/dataset/fs-utils";
 import { seriesImageAt } from "@/lib/dataset/series-frames";
-import { serveMirroredPixels } from "@/lib/dataset/mirror";
 import { DicomVolumeRef } from "@/lib/dataset/types";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Serves the pixels for one indexed image.
+ * Serves the pixels for one indexed image by rendering on demand from SCANLAB_DATA_ROOT.
  *
  * `?w=<int>` returns the same image downscaled so its longest edge is `<int>`
  * pixels (16-1024, anything else is ignored). Thumbnails and study cards use it
  * so a 44 px box stops downloading a full-resolution reslice. A source JPEG is
  * always returned at full size — see `RenderOptions.maxEdge`.
- *
- * Two ways to answer, in order:
- *
- *  1. From the R2 mirror, when a DATASET binding exists (i.e. on Workers). The
- *     bytes were rendered ahead of time by `npm run mirror:render`. This is the
- *     only path that can work there: a Worker isolate has 128 MB, and one cold
- *     NIfTI slice costs ~375 MB transient while one CT reslice reads 558 files.
- *  2. By rendering on demand from `SCANLAB_DATA_ROOT`, unchanged. This is what
- *     runs on the user's Windows box, and nothing above it alters it.
- *
- * `renderImageCached` is imported lazily for that reason: it pulls in
- * `dicom-parser`, `nifti-reader-js` and `pngjs`, and keeping them off the
- * statically-reachable graph of a route is what holds the Worker bundle under
- * the compressed-size limit.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ id: string; path: string[] }> }) {
   const { id, path: pathParts } = await params;
@@ -36,13 +21,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const index = Number(indexStr);
   const width = parseWidth(req.url);
 
-  if (seriesId && Number.isInteger(index) && index >= 0) {
-    const mirrored = await serveMirroredPixels(id, seriesId, index, width, req);
-    if (mirrored) return mirrored;
-  }
-
   const manifest = readManifest();
-  const study = manifest?.studies.find((s) => s.id === id);
+  const study = getManifestStudy(id);
   if (!study) return NextResponse.json({ error: "Study not found" }, { status: 404 });
 
   const series = study.series.find((s) => s.id === seriesId);

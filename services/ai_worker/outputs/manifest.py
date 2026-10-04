@@ -26,12 +26,19 @@ def get_derived_root() -> Path:
 
 
 def get_study_derived_dir(study_id: str) -> Path:
-    """Returns the path to the study-specific derived directory."""
+    """Returns the path to the study-specific derived directory conforming to Section 20."""
     study_dir = get_derived_root() / study_id
+    (study_dir / "heart").mkdir(parents=True, exist_ok=True)
+    (study_dir / "lungs").mkdir(parents=True, exist_ok=True)
+    (study_dir / "brain" / "meshes").mkdir(parents=True, exist_ok=True)
+    (study_dir / "registration").mkdir(parents=True, exist_ok=True)
+    (study_dir / "motion4d" / "frames").mkdir(parents=True, exist_ok=True)
+    (study_dir / "findings").mkdir(parents=True, exist_ok=True)
+    (study_dir / "report" / "versions").mkdir(parents=True, exist_ok=True)
+    # Maintain backward compatibility aliases
     (study_dir / "segmentation").mkdir(parents=True, exist_ok=True)
     (study_dir / "meshes").mkdir(parents=True, exist_ok=True)
     (study_dir / "metrics").mkdir(parents=True, exist_ok=True)
-    (study_dir / "registration").mkdir(parents=True, exist_ok=True)
     (study_dir / "motion").mkdir(parents=True, exist_ok=True)
     return study_dir
 
@@ -53,11 +60,13 @@ def write_study_manifest(
     **kwargs: Any,
 ) -> Path:
     """
-    Writes the standardized machine-readable manifest.json for this study.
+    Writes the standardized machine-readable metadata.json and manifest.json for this study.
+    Conforms strictly to Section 20 derived data structure.
     """
     version = kwargs.get("modelVersion", model_version)
     study_dir = get_study_derived_dir(study_id)
     manifest_path = study_dir / "manifest.json"
+    metadata_path = study_dir / "metadata.json"
 
     manifest_data: Dict[str, Any] = {
         "studyId": study_id,
@@ -72,26 +81,42 @@ def write_study_manifest(
         "processingTimeMs": processing_time_ms,
         "gpu": gpu,
         "warnings": warnings or [],
-        "generatedAt": os.environ.get("MOCK_TIMESTAMP", None) or "2026-10-02T18:30:00Z",
+        "generatedAt": os.environ.get("MOCK_TIMESTAMP", None) or "2026-10-03T12:00:00Z",
+        "derivedAssets": {
+            "heart": (study_dir / "heart" / "mesh.glb").exists(),
+            "lungs": (study_dir / "lungs" / "mesh.glb").exists(),
+            "brain": (study_dir / "brain" / "parcellation.nii.gz").exists(),
+            "registration": (study_dir / "registration" / "registered_prior.nii.gz").exists(),
+            "motion4d": (study_dir / "motion4d" / "animation.glb").exists(),
+            "findings": (study_dir / "findings" / "findings.json").exists(),
+            "reportDraft": (study_dir / "report" / "draft.json").exists(),
+            "finalReport": (study_dir / "report" / "final_report.json").exists(),
+        }
     }
 
     if extra:
         manifest_data.update(extra)
 
+    # Write both metadata.json (Section 20 standard) and manifest.json (legacy)
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(manifest_data, f, indent=2)
+
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest_data, f, indent=2)
 
-    return manifest_path
+    return metadata_path
 
 
 def read_study_manifest(study_id: str) -> Optional[Dict[str, Any]]:
-    """Reads manifest.json for a study if it exists."""
+    """Reads metadata.json or manifest.json for a study if it exists."""
     study_dir = get_study_derived_dir(study_id)
-    manifest_path = study_dir / "manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    for target in ("metadata.json", "manifest.json"):
+        p = study_dir / target
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return None
+

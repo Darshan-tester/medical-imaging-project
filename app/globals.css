@@ -41,7 +41,8 @@
   --overlay-hover: 15 23 42; /* used at low alpha, e.g. bg-[rgb(var(--overlay-hover)/0.045)] */
 }
 
-html.dark {
+html.dark,
+.dark {
   color-scheme: dark;
 
   --color-canvas: 10 15 28;

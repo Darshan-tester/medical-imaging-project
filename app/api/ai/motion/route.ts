@@ -42,7 +42,9 @@ export async function POST(req: Request) {
     if (fs.existsSync(motionReportPath)) {
       try {
         const cached = JSON.parse(fs.readFileSync(motionReportPath, "utf-8"));
-        return NextResponse.json({ success: true, cached: true, ...cached });
+        if (!cached.isSimulated && cached.motionType === "ACQUIRED 4D") {
+          return NextResponse.json({ success: true, cached: true, ...cached });
+        }
       } catch (err) {}
     }
 
@@ -50,6 +52,24 @@ export async function POST(req: Request) {
     const targetSeries = seriesId
       ? study.series.find((s) => s.id === seriesId) || study.series[0]
       : study.series[0];
+
+    // Check if target series has genuine temporal / multi-phase cine data
+    const isGenuineTemporal = targetSeries && (
+      targetSeries.label.toLowerCase().includes("cine") ||
+      targetSeries.label.toLowerCase().includes("gated") ||
+      targetSeries.label.toLowerCase().includes("multi-phase") ||
+      targetSeries.label.toLowerCase().includes("temporal")
+    ) && targetSeries.sliceCount > 1;
+
+    if (!isGenuineTemporal) {
+      return NextResponse.json({
+        status: "UNSUPPORTED",
+        code: "NO_TEMPORAL_ACQUISITION",
+        message: "4D unavailable — study contains no temporal acquisition.",
+        hasTemporal: false,
+        provenance: "UNAVAILABLE",
+      });
+    }
 
     const volumeId = targetSeries?.volumeId || Object.keys(study.volumes || {})[0];
     const files = volumeId && study.volumes?.[volumeId]

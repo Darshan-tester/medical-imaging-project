@@ -50,29 +50,6 @@
 		"directory": ".open-next/assets",
 		"binding": "ASSETS"
 	},
-	// The real ScanLab_Datasets content. Workers have no filesystem and a 128 MB
-	// isolate ceiling, so the deployed app neither reads SCANLAB_DATA_ROOT nor
-	// renders pixels: every response it serves was precomputed on the machine that
-	// has the data and stored here under a key derived from the request.
-	//
-	//   npm run mirror:export   -> meta/*     precomputed API response bodies
-	//   npm run mirror:render   -> pixels/*   one object per slice per width
-	//                              volume/*   the decimated CT stacks
-	//   npm run mirror:upload   -> ships the staging dir to this bucket
-	//
-	// `lib/dataset/mirror.ts` is the only reader. When this binding is absent —
-	// which is always the case on Windows — every route falls through to its
-	// original filesystem path unchanged, so local development is unaffected.
-	//
-	// Create the bucket once before the first deploy:
-	//   npx wrangler r2 bucket create vedh-medical-imaging-dataset
-	"r2_buckets": [
-    {
-        "binding": "DATASET",
-        "bucket_name": "vedh-medical-imaging-dataset",
-        "remote": true
-    }
-],
 	"observability": {
 		"enabled": true
 	}

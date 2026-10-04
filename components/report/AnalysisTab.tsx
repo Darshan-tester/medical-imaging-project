@@ -92,6 +92,8 @@ export function AnalysisTab({
   const [mobileFindingsOpen, setMobileFindingsOpen] = useState(false);
   const [mobileMarkersOpen, setMobileMarkersOpen] = useState(false);
   const [mobileReportOpen, setMobileReportOpen] = useState(false);
+  /** Full-screen MONAI Physio AI Workstation — hides the 3-col layout */
+  const [monaiOpen, setMonaiOpen] = useState(false);
 
   /*
    * 2-D planes vs. the interactive volume render. Only offered for a series the
@@ -355,6 +357,7 @@ export function AnalysisTab({
     current: currentSlice,
     urlAt: imageUrlAt,
     enabled: !view3D,
+    playing,
   });
 
   /*
@@ -803,6 +806,30 @@ export function AnalysisTab({
     );
   }
 
+  /* ── Full-screen MONAI Workspace ────────────────────────────── */
+  if (monaiOpen) {
+    return (
+      <div className="h-[calc(100dvh-56px)] overflow-hidden" style={{ contain: "strict" }}>
+        <AIAnalysisPanel
+          studyId={study.id}
+          seriesId={activeSeries.id}
+          modality={study.modality}
+          priorStudyId={allStudies?.find((s) => s.id !== study.id)?.id}
+          organMeshes={organMeshes}
+          onOrganMeshesChange={setOrganMeshes}
+          onTriggerRegistration={() => setRightTab("comparison")}
+          onAppendFindingToReport={onAppendFindingToReport}
+          onOpenReportTab={onOpenReportTab}
+          onJumpToSlice={(slice) => setCurrentSlice(slice)}
+          fullscreen={true}
+          onClose={() => setMonaiOpen(false)}
+          patientAlias={study.patientAlias}
+          studyDescription={`${study.modality} · ${activeSeries.label}`}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="grid h-[calc(100dvh-56px)] grid-cols-1 lg:grid-cols-[220px_1fr_320px]">
       <div className="hidden overflow-y-auto border-r border-border bg-panel lg:block">
@@ -1100,7 +1127,7 @@ export function AnalysisTab({
             orientation={activeSeries.orientation}
             playing={playing}
             onTogglePlay={() => setPlaying((p) => !p)}
-            ready={() => imageReadyRef.current || !activeImageUrl}
+            ready={() => (activeImageUrl ? peekSlice(activeImageUrl) !== undefined || imageReadyRef.current : true)}
           />
         )}
       </div>
@@ -1145,16 +1172,42 @@ export function AnalysisTab({
           )}
 
           {rightTab === "ai3d" && (
-            <div className="h-full overflow-y-auto">
-              <AIAnalysisPanel
-                studyId={study.id}
-                seriesId={activeSeries.id}
-                modality={study.modality}
-                priorStudyId={allStudies?.find((s) => s.id !== study.id)?.id}
-                organMeshes={organMeshes}
-                onOrganMeshesChange={setOrganMeshes}
-                onTriggerRegistration={() => setRightTab("comparison")}
-              />
+            <div className="flex flex-col h-full overflow-hidden">
+              {/* Entry point card */}
+              <div className="shrink-0 border-b border-border bg-panel-alt/50 p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex h-6 w-6 items-center justify-center rounded bg-clinical/15 text-clinical">
+                    <Boxes className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="text-xs font-semibold text-ink-primary">MONAI Physio AI Workstation</span>
+                </div>
+                <p className="text-[11px] text-ink-muted mb-3">Full 3D Anatomy, 4D Motion, Findings &amp; Report workspace. Opens in full screen for optimal analysis.</p>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  className="w-full gap-1.5"
+                  onClick={() => setMonaiOpen(true)}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Open MONAI Workspace
+                  <span className="ml-auto opacity-70">→</span>
+                </Button>
+              </div>
+              {/* Compact preview panel for quick status */}
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <AIAnalysisPanel
+                  studyId={study.id}
+                  seriesId={activeSeries.id}
+                  modality={study.modality}
+                  priorStudyId={allStudies?.find((s) => s.id !== study.id)?.id}
+                  organMeshes={organMeshes}
+                  onOrganMeshesChange={setOrganMeshes}
+                  onTriggerRegistration={() => setRightTab("comparison")}
+                  onAppendFindingToReport={onAppendFindingToReport}
+                  onOpenReportTab={onOpenReportTab}
+                  onJumpToSlice={(slice) => setCurrentSlice(slice)}
+                />
+              </div>
             </div>
           )}
 

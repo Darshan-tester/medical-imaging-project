@@ -297,6 +297,7 @@ export function MultiPlaneGrid({
         return [panels[0], panels[2]];
       case "1+2":
         return [panels[0], panels[1], panels[2]];
+      case "mpr-3d":
       case "2x2":
       default:
         return panels;
@@ -830,6 +831,161 @@ export function MultiPlaneGrid({
                 onAnnotations3DChange={onAnnotations3DChange}
               />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MPR + 3D Section 9 Diagnostic Layout (Axial top, Coronal + Sagittal bottom, Patient 3D right full-height) */}
+      {layout === "mpr-3d" && !maximizedPanelId && (
+        <div className="relative flex h-full w-full">
+          {/* Left Column: 2D Orthogonal MPR Views */}
+          <div style={{ width: `${splitX}%` }} className="flex flex-col h-full">
+            {/* Top Row: Axial */}
+            <div style={{ height: `${splitY}%` }} className="w-full">
+              <SingleViewportPanel
+                panel={panels[0]}
+                study={study}
+                isMaximized={false}
+                onToggleMaximize={() => setMaximizedPanelId(panels[0].id)}
+                onUpdateState={(u) => updatePanelState(panels[0].id, u)}
+                onSliceScroll={(d) => updatePanelSlice(panels[0].id, d)}
+                onSwitchSeries={(sId, pType) => switchPanelSeries(panels[0].id, sId, pType)}
+                crosshairPos={{ x: crosshairNorm.x, y: crosshairNorm.y }}
+                onCrosshairMove={(pt) => handleCrosshairMoveFromPlane("Axial", pt)}
+                getImageUrl={getImageUrl}
+                findings={findings}
+                activeFindingId={activeFindingId}
+                onHoverFinding={onHoverFinding}
+                onSelectFinding={onSelectFinding}
+                markers={markers}
+                onAddMarker={onAddMarker}
+                measurements={measurements}
+                onAddMeasurement={onAddMeasurement}
+                annotations={annotations}
+                onCommitAnnotation={onCommitAnnotation}
+                onDeleteAnnotation={onDeleteAnnotation}
+                onQuickAnnotationNote={onQuickAnnotationNote}
+                onAddFinding={onAddFinding}
+                onEditFinding={onEditFinding}
+                annotations3D={annotations3D}
+                onAnnotations3DChange={onAnnotations3DChange}
+              />
+            </div>
+
+            {/* Horizontal Divider */}
+            <div
+              onMouseDown={onDividerMouseDown("y")}
+              className="h-1.5 cursor-row-resize bg-border-strong hover:bg-clinical transition-colors z-20"
+            />
+
+            {/* Bottom Row: Coronal (left) & Sagittal (right) */}
+            <div style={{ height: `${100 - splitY}%` }} className="flex w-full">
+              <div className="w-1/2 h-full">
+                <SingleViewportPanel
+                  panel={panels[2]}
+                  study={study}
+                  isMaximized={false}
+                  onToggleMaximize={() => setMaximizedPanelId(panels[2].id)}
+                  onUpdateState={(u) => updatePanelState(panels[2].id, u)}
+                  onSliceScroll={(d) => updatePanelSlice(panels[2].id, d)}
+                  onSwitchSeries={(sId, pType) => switchPanelSeries(panels[2].id, sId, pType)}
+                  crosshairPos={{ x: crosshairNorm.x, y: crosshairNorm.z }}
+                  onCrosshairMove={(pt) => handleCrosshairMoveFromPlane("Coronal", pt)}
+                  getImageUrl={getImageUrl}
+                  findings={findings}
+                  activeFindingId={activeFindingId}
+                  onHoverFinding={onHoverFinding}
+                  onSelectFinding={onSelectFinding}
+                  markers={markers}
+                  onAddMarker={onAddMarker}
+                  measurements={measurements}
+                  onAddMeasurement={onAddMeasurement}
+                  annotations={annotations}
+                  onCommitAnnotation={onCommitAnnotation}
+                  onDeleteAnnotation={onDeleteAnnotation}
+                  onQuickAnnotationNote={onQuickAnnotationNote}
+                  onAddFinding={onAddFinding}
+                  onEditFinding={onEditFinding}
+                  annotations3D={annotations3D}
+                  onAnnotations3DChange={onAnnotations3DChange}
+                />
+              </div>
+
+              {/* Sub-divider between Coronal & Sagittal */}
+              <div className="w-1 bg-border-strong/60" />
+
+              <div className="flex-1 h-full">
+                <SingleViewportPanel
+                  panel={panels[1]}
+                  study={study}
+                  isMaximized={false}
+                  onToggleMaximize={() => setMaximizedPanelId(panels[1].id)}
+                  onUpdateState={(u) => updatePanelState(panels[1].id, u)}
+                  onSliceScroll={(d) => updatePanelSlice(panels[1].id, d)}
+                  onSwitchSeries={(sId, pType) => switchPanelSeries(panels[1].id, sId, pType)}
+                  crosshairPos={{ x: crosshairNorm.y, y: crosshairNorm.z }}
+                  onCrosshairMove={(pt) => handleCrosshairMoveFromPlane("Sagittal", pt)}
+                  getImageUrl={getImageUrl}
+                  findings={findings}
+                  activeFindingId={activeFindingId}
+                  onHoverFinding={onHoverFinding}
+                  onSelectFinding={onSelectFinding}
+                  markers={markers}
+                  onAddMarker={onAddMarker}
+                  measurements={measurements}
+                  onAddMeasurement={onAddMeasurement}
+                  annotations={annotations}
+                  onCommitAnnotation={onCommitAnnotation}
+                  onDeleteAnnotation={onDeleteAnnotation}
+                  onQuickAnnotationNote={onQuickAnnotationNote}
+                  onAddFinding={onAddFinding}
+                  onEditFinding={onEditFinding}
+                  annotations3D={annotations3D}
+                  onAnnotations3DChange={onAnnotations3DChange}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Vertical Divider Between MPR and 3D */}
+          <div
+            onMouseDown={onDividerMouseDown("x")}
+            className="w-1.5 cursor-col-resize bg-border-strong hover:bg-clinical transition-colors z-20"
+          />
+
+          {/* Right Column: Full-Height Patient 3D Anatomy Pane */}
+          <div style={{ width: `${100 - splitX}%` }} className="h-full">
+            <SingleViewportPanel
+              panel={panels[3]}
+              study={study}
+              isMaximized={false}
+              onToggleMaximize={() => setMaximizedPanelId(panels[3].id)}
+              onUpdateState={(u) => updatePanelState(panels[3].id, u)}
+              onSliceScroll={(d) => updatePanelSlice(panels[3].id, d)}
+              onSwitchSeries={(sId, pType) => switchPanelSeries(panels[3].id, sId, pType)}
+              crosshairPos={crosshairNorm}
+              onCrosshairMove={() => {}}
+              onPointSelected={handle3DPointSelected}
+              organMeshes={organMeshes}
+              onOrganMeshesChange={onOrganMeshesChange}
+              getImageUrl={getImageUrl}
+              findings={findings}
+              activeFindingId={activeFindingId}
+              onHoverFinding={onHoverFinding}
+              onSelectFinding={onSelectFinding}
+              markers={markers}
+              onAddMarker={onAddMarker}
+              measurements={measurements}
+              onAddMeasurement={onAddMeasurement}
+              annotations={annotations}
+              onCommitAnnotation={onCommitAnnotation}
+              onDeleteAnnotation={onDeleteAnnotation}
+              onQuickAnnotationNote={onQuickAnnotationNote}
+              onAddFinding={onAddFinding}
+              onEditFinding={onEditFinding}
+              annotations3D={annotations3D}
+              onAnnotations3DChange={onAnnotations3DChange}
+            />
           </div>
         </div>
       )}

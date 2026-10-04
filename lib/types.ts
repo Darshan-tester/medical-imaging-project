@@ -199,7 +199,7 @@ export interface Annotation3D {
   createdAt: string;
 }
 
-export type ViewportLayout = "1x1" | "1x2" | "2x1" | "1+2" | "2x2";
+export type ViewportLayout = "1x1" | "1x2" | "2x1" | "1+2" | "2x2" | "mpr-3d";
 export type ColorMap3D =
   | "mri-tissue"
   | "mri-t1"

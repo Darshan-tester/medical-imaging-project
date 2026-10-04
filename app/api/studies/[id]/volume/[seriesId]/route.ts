@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import { readManifest } from "@/lib/dataset/manifest-store";
 import { getDataRoot, getZipExtractCacheDir } from "@/lib/dataset/config";
 import { assertWithinRoot } from "@/lib/dataset/fs-utils";
-import { serveMirroredVolume } from "@/lib/dataset/mirror";
-
 export const dynamic = "force-dynamic";
 
 /**
@@ -17,16 +15,9 @@ export const dynamic = "force-dynamic";
  * Only series that were indexed as a reconstructed stack have a volume. A
  * single-instance X-ray or a NIfTI series returns 404, which is the honest answer
  * — there is no CT stack to render.
- *
- * On Workers the export is served from R2, because `exportDicomVolume` reads the
- * whole stack (558 instances into a 146 MB buffer for CT-C48B2F) and that fits
- * neither the 128 MB isolate ceiling nor any sane R2 request budget.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ id: string; seriesId: string }> }) {
   const { id, seriesId } = await params;
-
-  const mirrored = await serveMirroredVolume(id, seriesId, req);
-  if (mirrored) return mirrored;
 
   const manifest = readManifest();
   const study = manifest?.studies.find((s) => s.id === id);

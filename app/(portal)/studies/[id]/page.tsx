@@ -1,29 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Activity, LayoutList, FileText, Loader2, type LucideIcon } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { fetchStudy, fetchStudies } from "@/lib/data-source";
 import { Finding, ReportSection, Study } from "@/lib/types";
-import { ModalityBadge, PriorityBadge, StatusBadge } from "@/components/ui/Badge";
 import { ErrorState } from "@/components/ui/EmptyState";
-import { OverviewTab } from "@/components/report/OverviewTab";
-import { AnalysisTab } from "@/components/report/AnalysisTab";
-import { ReportTab } from "@/components/report/ReportTab";
-import { cn } from "@/lib/utils";
+import { ClinicalWorkstation } from "@/components/viewer/ClinicalWorkstation";
+import { ClinicalWorkflowMode } from "@/components/viewer/ClinicalTopBar";
 import { useUIStore, useAuthStore } from "@/lib/store";
 import { SessionAnnotationStore } from "@/lib/annotation-store";
 import { AuditTrail } from "@/lib/audit-trail";
-
-type Tab = "overview" | "analysis" | "report";
-
-const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
-  { key: "overview", label: "Overview", icon: LayoutList },
-  { key: "analysis", label: "Viewer & AI Analysis", icon: Activity },
-  { key: "report", label: "Report", icon: FileText },
-];
-
-const VALID_TABS: Tab[] = ["overview", "analysis", "report"];
 
 export default function StudyWorkspacePage() {
   const params = useParams<{ id: string }>();
@@ -33,10 +20,17 @@ export default function StudyWorkspacePage() {
   const [allStudies, setAllStudies] = useState<Study[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Supports deep-linking straight into the viewer, e.g. "View Scan" from the
-  // studies list/table links to `?tab=analysis`.
+
+  // Map requested tab query to ClinicalWorkflowMode
   const requestedTab = searchParams.get("tab");
-  const [tab, setTab] = useState<Tab>(VALID_TABS.includes(requestedTab as Tab) ? (requestedTab as Tab) : "overview");
+  const initialMode: ClinicalWorkflowMode = useMemo(() => {
+    if (requestedTab === "3d") return "3d";
+    if (requestedTab === "4d") return "4d";
+    if (requestedTab === "ai") return "ai";
+    if (requestedTab === "report") return "report";
+    return "images"; // default 2D / MPR
+  }, [requestedTab]);
+
   const pushToast = useUIStore((s) => s.pushToast);
   const { user } = useAuthStore();
 
@@ -45,8 +39,9 @@ export default function StudyWorkspacePage() {
     setLoading(true);
     setLoadError(null);
 
-    Promise.all([fetchStudy(params.id), fetchStudies().catch(() => [])])
-      .then(([s, all]) => {
+    // Fast path: load the active study directly (<100ms) without waiting for all 2,300+ studies
+    fetchStudy(params.id)
+      .then((s) => {
         if (cancelled) return;
         let finalStudy = s;
         if (s) {
@@ -62,31 +57,36 @@ export default function StudyWorkspacePage() {
           }
         }
         setStudy(finalStudy);
-        setAllStudies(all);
+        setLoading(false);
       })
       .catch((err) => {
         if (cancelled) return;
-        setLoadError(err instanceof Error ? err.message : "Failed to load study");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        setLoadError(err instanceof Error ? err.message : "Unable to load this clinical study.");
+        setLoading(false);
       });
+
+    // Asynchronous background hydration of priors for comparison panel
+    fetchStudies()
+      .then((all) => {
+        if (!cancelled) setAllStudies(all);
+      })
+      .catch(() => {});
 
     return () => {
       cancelled = true;
     };
   }, [params.id]);
 
-  useEffect(() => {
-    if (VALID_TABS.includes(requestedTab as Tab)) setTab(requestedTab as Tab);
-    // Only react to the URL changing (e.g. a fresh "View Scan" navigation) — not to `tab` itself.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestedTab]);
-
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center py-24">
-        <Loader2 className="h-5 w-5 animate-spin text-ink-muted" />
+      <div className="flex h-full w-full flex-col items-center justify-center bg-base py-24 select-none">
+        <div className="flex items-center gap-3 rounded-xl border border-border bg-panel px-6 py-4 shadow-sm">
+          <Loader2 className="h-5 w-5 animate-spin text-clinical" />
+          <div className="flex flex-col">
+            <span className="text-[13px] font-semibold text-ink-primary">Opening Study...</span>
+            <span className="text-[11.5px] text-ink-muted">Loading DICOM metadata and initial slices</span>
+          </div>
+        </div>
       </div>
     );
   }
@@ -94,7 +94,11 @@ export default function StudyWorkspacePage() {
   if (loadError) {
     return (
       <div className="mx-auto max-w-lg px-4 py-16">
-        <ErrorState title="Unable to load this study" description={loadError} action={{ label: "Retry", onClick: () => router.refresh() }} />
+        <ErrorState
+          title="Unable to load this series"
+          description={loadError}
+          action={{ label: "Retry", onClick: () => router.refresh() }}
+        />
       </div>
     );
   }
@@ -104,7 +108,7 @@ export default function StudyWorkspacePage() {
       <div className="mx-auto max-w-lg px-4 py-16">
         <ErrorState
           title="Study not found"
-          description="This study may have been removed, or the link is incorrect."
+          description="This patient study could not be located in the PACS archive or may have been archived."
           action={{ label: "Back to Studies", onClick: () => router.push("/studies") }}
         />
       </div>
@@ -112,7 +116,9 @@ export default function StudyWorkspacePage() {
   }
 
   const onUpdateFinding = (id: string, patch: Partial<Finding>) => {
-    setStudy((prev) => (prev ? { ...prev, findings: prev.findings.map((f) => (f.id === id ? { ...f, ...patch } : f)) } : prev));
+    setStudy((prev) =>
+      prev ? { ...prev, findings: prev.findings.map((f) => (f.id === id ? { ...f, ...patch } : f)) } : prev
+    );
   };
 
   const onChangeSections = (sections: ReportSection) => {
@@ -134,10 +140,6 @@ export default function StudyWorkspacePage() {
     });
   };
 
-  // Appends a radiologist-authored finding (from a pen annotation) into the
-  // report's Findings section. Always appends — never overwrites or rewrites
-  // whatever the radiologist has already written; the exact text they typed
-  // is preserved verbatim.
   const onAppendFindingToReport = (text: string) => {
     setStudy((prev) => {
       if (!prev) return prev;
@@ -146,7 +148,11 @@ export default function StudyWorkspacePage() {
       const findings = existing.length > 0 ? `${existing}\n\n${block}` : block;
       return { ...prev, report: { ...prev.report, sections: { ...prev.report.sections, findings } } };
     });
-    pushToast({ title: "Added to report", description: "Your finding was appended to the Findings section.", tone: "success" });
+    pushToast({
+      title: "Added to report",
+      description: "Observation appended to the report Findings section.",
+      tone: "success",
+    });
   };
 
   const onApprove = () => {
@@ -180,66 +186,23 @@ export default function StudyWorkspacePage() {
           }
         : prev
     );
-    pushToast({ title: "Report approved", description: `${study.studyId} has been signed and finalized by ${user.name}.`, tone: "success" });
+    pushToast({
+      title: "Report Finalized",
+      description: `Study ${study.studyId} signed and finalized by ${user.name}.`,
+      tone: "success",
+    });
   };
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-col gap-3 border-b border-border bg-base px-4 py-3.5 md:px-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <button onClick={() => router.push("/studies")} className="flex items-center gap-1.5 text-[12.5px] text-ink-secondary hover:text-ink-primary">
-            <ArrowLeft className="h-3.5 w-3.5" /> Studies
-          </button>
-          <span className="text-ink-muted">/</span>
-          <span className="font-mono text-[12.5px] text-ink-primary">{study.studyId}</span>
-
-          <div className="ml-auto flex items-center gap-2">
-            <ModalityBadge modality={study.modality} />
-            <PriorityBadge priority={study.priority} />
-            <StatusBadge status={study.status} />
-          </div>
-        </div>
-
-        <div>
-          <h1 className="text-[19px] font-semibold text-ink-primary">{study.patientAlias}</h1>
-          <p className="mt-0.5 text-[12.5px] text-ink-secondary">
-            {[study.age !== undefined ? `${study.age}y` : undefined, study.sex, study.bodyRegion, study.modality].filter(Boolean).join(" · ")}
-          </p>
-        </div>
-
-        <div className="flex gap-1 overflow-x-auto">
-          {TABS.map((t) => {
-            const Icon = t.icon;
-            return (
-              <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={cn(
-                  "flex items-center gap-1.5 whitespace-nowrap rounded-t-md border-b-2 px-3.5 py-2 text-[13px] font-medium transition-colors",
-                  tab === t.key ? "border-clinical text-ink-primary" : "border-transparent text-ink-secondary hover:text-ink-primary"
-                )}
-              >
-                <Icon className="h-[15px] w-[15px]" />
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        {tab === "overview" && <OverviewTab study={study} onOpenViewer={() => setTab("analysis")} />}
-        {tab === "analysis" && (
-          <AnalysisTab
-            study={study}
-            allStudies={allStudies}
-            onUpdateFinding={onUpdateFinding}
-            onAppendFindingToReport={onAppendFindingToReport}
-            onOpenReportTab={() => setTab("report")}
-          />
-        )}
-        {tab === "report" && <ReportTab study={study} onChangeSections={onChangeSections} onApprove={onApprove} />}
-      </div>
-    </div>
+    <ClinicalWorkstation
+      study={study}
+      initialMode={initialMode}
+      onUpdateFinding={onUpdateFinding}
+      onChangeSections={onChangeSections}
+      onAppendFindingToReport={onAppendFindingToReport}
+      onApprove={onApprove}
+      allStudies={allStudies}
+    />
   );
 }
+

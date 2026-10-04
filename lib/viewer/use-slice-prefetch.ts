@@ -35,10 +35,14 @@ import { isDecodableUrl, prefetchSlice, releaseSlice } from "./slice-source";
  * corrections — a step or two to re-check something — while looking forward is
  * how a series is read.
  */
-export const PRELOAD_BEFORE = 5;
+export const PRELOAD_BEFORE = 6;
 
 /** How far ahead, in the direction of travel. Roughly a second of steady scrolling. */
-export const PRELOAD_AFTER = 8;
+export const PRELOAD_AFTER = 14;
+
+/** How far ahead to aggressively buffer during active cine playback. */
+export const PRELOAD_CINE_AFTER = 32;
+export const PRELOAD_CINE_BEFORE = 8;
 
 interface SlicePrefetchOptions {
   /** Slices in the series. */
@@ -53,6 +57,8 @@ interface SlicePrefetchOptions {
   urlAt: (index: number) => string | undefined;
   /** Set false to hold everything (the 3-D view is open, or there is nothing to page through). */
   enabled?: boolean;
+  /** True when cine playback is actively running, triggering forward pipeline streaming. */
+  playing?: boolean;
 }
 
 interface Claim {
@@ -63,14 +69,6 @@ interface Claim {
 /**
  * Scheduling band for a slice `offset` away from the current one, travelling in
  * `direction`.
- *
- * The next slice in the direction of travel is the one a scroll is about to land
- * on, so it sits alone in its own band directly behind the visible slice.
- * Everything else is ordered by distance, with the trailing half pushed behind
- * the leading half at equal distance — a slice ahead is worth more than its
- * mirror image behind. `PRELOAD_AFTER` as the penalty keeps the whole window
- * inside the preload band, so no preload can ever outrank a visible slice or fall
- * behind a filmstrip tile.
  */
 function bandFor(offset: number, direction: 1 | -1): number {
   if (offset === 0) return PRIORITY.current;
@@ -80,7 +78,7 @@ function bandFor(offset: number, direction: 1 | -1): number {
   return PRIORITY.preload + distance + (trailing ? PRELOAD_AFTER : 0);
 }
 
-export function useSlicePrefetch({ total, current, urlAt, enabled = true }: SlicePrefetchOptions): void {
+export function useSlicePrefetch({ total, current, urlAt, enabled = true, playing = false }: SlicePrefetchOptions): void {
   /** Position → what we are holding for it. The single source of truth for what to release. */
   const held = useRef(new Map<number, Claim>());
   const lastIndex = useRef(current);
@@ -112,17 +110,21 @@ export function useSlicePrefetch({ total, current, urlAt, enabled = true }: Slic
     lastIndex.current = current;
 
     const dir = direction.current;
-    const ahead = dir > 0 ? PRELOAD_AFTER : PRELOAD_BEFORE;
-    const behind = dir > 0 ? PRELOAD_BEFORE : PRELOAD_AFTER;
+    const isPlaying = Boolean(playing);
+    const ahead = isPlaying ? PRELOAD_CINE_AFTER : dir > 0 ? PRELOAD_AFTER : PRELOAD_BEFORE;
+    const behind = isPlaying ? PRELOAD_CINE_BEFORE : dir > 0 ? PRELOAD_BEFORE : PRELOAD_AFTER;
 
     const wanted = new Map<number, Claim>();
-    for (let at = current - behind; at <= current + ahead; at++) {
-      if (at < 0 || at >= total) continue;
+    for (let offset = -behind; offset <= ahead; offset++) {
+      let at = current + offset;
+      if (isPlaying) {
+        at = ((at % total) + total) % total;
+      } else if (at < 0 || at >= total) {
+        continue;
+      }
       const url = urlAt(at);
-      // A plain image needs no decode and no scheduling — the browser's own cache
-      // is better at this than we would be.
       if (!isDecodableUrl(url)) continue;
-      wanted.set(at, { url, priority: bandFor(at - current, dir) });
+      wanted.set(at, { url, priority: bandFor(offset, dir) });
     }
 
     const stale: number[] = [];

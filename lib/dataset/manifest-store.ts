@@ -37,7 +37,12 @@ export const MANIFEST_BUILDER_VERSION = 4;
  * mtime+size means `dataset:index` still takes effect immediately — a re-index
  * always changes both.
  */
-let cached: { key: string; manifest: DatasetManifest } | undefined;
+let cached: {
+  key: string;
+  manifest: DatasetManifest;
+  studyMap: Map<string, DatasetStudy>;
+  lastStatAt: number;
+} | undefined;
 
 /**
  * Why the last `readManifest()` returned undefined. Kept separate from the
@@ -49,17 +54,27 @@ let lastReadError: string | undefined;
 
 export function readManifest(): DatasetManifest | undefined {
   const p = getManifestPath();
+  const now = Date.now();
+  if (cached && now - cached.lastStatAt < 1000) {
+    return cached.manifest;
+  }
+
   try {
     const stat = fs.statSync(p);
     const key = `${p}::${stat.mtimeMs}::${stat.size}`;
     if (cached?.key === key) {
+      cached.lastStatAt = now;
       lastReadError = undefined;
       return cached.manifest;
     }
 
     const raw = fs.readFileSync(p, "utf-8");
     const manifest = JSON.parse(raw) as DatasetManifest;
-    cached = { key, manifest };
+    const studyMap = new Map<string, DatasetStudy>();
+    for (const s of manifest.studies) {
+      studyMap.set(s.id, s);
+    }
+    cached = { key, manifest, studyMap, lastStatAt: now };
     lastReadError = undefined;
     return manifest;
   } catch (err) {
@@ -80,6 +95,14 @@ export function readManifest(): DatasetManifest | undefined {
       : `${e.name ?? "Error"}: ${e.message}`;
     return undefined;
   }
+}
+
+/**
+ * Instant O(1) lookup of a study by its stable ID, backed by the manifest index.
+ */
+export function getManifestStudy(id: string): DatasetStudy | undefined {
+  readManifest();
+  return cached?.studyMap.get(id);
 }
 
 /**

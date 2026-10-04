@@ -214,13 +214,22 @@ export function ScanThumbnail({
     };
   }, [imageUrl]);
 
+  const lastRenderedSrc = useRef<string | undefined>(undefined);
+  if (ready) {
+    lastRenderedSrc.current = ready;
+  } else if (!needsDecode && imageUrl) {
+    lastRenderedSrc.current = imageUrl;
+  }
+
   /*
-   * Decoding a slice takes a fetch plus a canvas pass, and the placeholder
-   * texture is not an honest thing to show in the meantime: it is synthetic
-   * noise, and on a real study it would read as data. An empty viewer-coloured
-   * frame is what is actually true — the pixels are on their way.
+   * Decoding a slice takes a fetch plus a canvas pass. When starting cold with no prior
+   * frame, an honest loading frame is shown. When paging or scrubbing an existing
+   * series, the previous frame is held (double-buffering) until the new pixels are ready,
+   * completely eliminating black-screen flashes and animation stutter.
    */
-  if (needsDecode && !ready && !failed) {
+  const displaySrc = (needsDecode ? ready : imageUrl) || lastRenderedSrc.current;
+
+  if (needsDecode && !ready && !lastRenderedSrc.current && !failed) {
     return (
       <div
         className={cn(
@@ -237,9 +246,7 @@ export function ScanThumbnail({
     );
   }
 
-  const src = needsDecode ? ready : imageUrl;
-
-  if (src && !failed) {
+  if (displaySrc && !failed) {
     return (
       <div className={cn("relative overflow-hidden bg-viewer", className)}>
         {/* Real uploaded scan — a plain <img> is intentional: next/image can't
@@ -247,7 +254,7 @@ export function ScanThumbnail({
             for zero benefit on an in-memory demo file. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={src}
+          src={displaySrc}
           alt={`${modality} scan`}
           draggable={false}
           loading={loading}

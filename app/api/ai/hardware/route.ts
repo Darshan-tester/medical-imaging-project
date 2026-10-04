@@ -13,15 +13,15 @@ let lastCheckTime = 0;
 
 export async function GET() {
   const now = Date.now();
-  // Cache for 60 seconds
-  if (cachedHardwareInfo && now - lastCheckTime < 60000) {
+  // Cache for 10 minutes - hardware does not change frequently
+  if (cachedHardwareInfo && now - lastCheckTime < 600000) {
     return NextResponse.json(cachedHardwareInfo);
   }
 
   try {
     const pythonPaths = [
+      path.join(process.cwd(), ".venv", "Scripts", "python.exe"),
       path.join(process.cwd(), "services", "ai_worker", ".venv", "Scripts", "python.exe"),
-      "C:\\Users\\QUIKCARE COMPUTERS\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
       "python",
     ];
 
@@ -37,7 +37,7 @@ export async function GET() {
 
     const { stdout } = await execFileAsync(pythonExe, [scriptPath], {
       env: { ...process.env, PYTHONPATH: process.cwd() },
-      timeout: 10000,
+      timeout: 2500,
     });
 
     const info = JSON.parse(stdout);

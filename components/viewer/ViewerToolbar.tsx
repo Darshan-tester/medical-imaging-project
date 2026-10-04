@@ -402,10 +402,11 @@ export function ViewerToolbar({
                 <div className="space-y-0.5">
                   {[
                     { id: "1x1", label: "Single View (1×1)" },
+                    { id: "mpr-3d", label: "MPR + 3D Patient (Axial | Sag | Cor + 3D)" },
                     { id: "1x2", label: "Side-by-Side (1×2)" },
                     { id: "2x1", label: "Stacked (2×1)" },
                     { id: "1+2", label: "3 Views (1 + 2)" },
-                    { id: "2x2", label: "4-Panel Quad (2×2: MPR + 3D)" },
+                    { id: "2x2", label: "4-Panel Quad (2×2)" },
                   ].map((l) => (
                     <button
                       key={l.id}

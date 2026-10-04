@@ -47,7 +47,7 @@ def run_pipeline(
         JobManager.update_job(job_id, status="running", progress=5, stage="initializing_pipeline")
 
     try:
-        if pipeline_name == "segmentation":
+        if pipeline_name in ("segmentation", "heart", "lungs", "brain", "all"):
             pipeline = SegmentationPipeline(hw)
             result = pipeline.run(
                 study_id=study_id,
@@ -73,7 +73,7 @@ def run_pipeline(
                 current_study_id=study_id,
                 prior_study_id=prior_study_id or "",
             )
-        elif pipeline_name == "motion":
+        elif pipeline_name in ("motion", "motion4d"):
             pipeline = MotionPipeline(hw)
             result = pipeline.run(
                 study_id=study_id,
@@ -109,7 +109,7 @@ def run_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(description="Meridian AI Worker Service")
-    parser.add_argument("--pipeline", choices=["segmentation", "registration", "longitudinal", "motion", "qc", "hardware"])
+    parser.add_argument("--pipeline", choices=["segmentation", "heart", "lungs", "brain", "registration", "longitudinal", "motion", "motion4d", "qc", "all", "hardware"])
     parser.add_argument("--study", default="", help="Current study ID")
     parser.add_argument("--series", default="", help="Current series ID")
     parser.add_argument("--modality", default="CT", help="Modality (CT or MRI)")

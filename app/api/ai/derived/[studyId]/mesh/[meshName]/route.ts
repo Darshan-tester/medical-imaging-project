@@ -7,7 +7,7 @@ import { isValidIdentifier, isPathInside } from "@/lib/ai-security";
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  req: Request,
+  _req: Request,
   { params }: { params: Promise<{ studyId: string; meshName: string }> }
 ) {
   const { studyId, meshName } = await params;
@@ -20,10 +20,31 @@ export async function GET(
     return NextResponse.json({ error: "Invalid studyId or meshName parameter" }, { status: 400 });
   }
 
-  const meshesDir = path.join(process.cwd(), ".scanlab", "derived", studyId, "meshes");
-  const meshPath = path.join(meshesDir, meshName);
+  const derivedDir = path.join(process.cwd(), ".scanlab", "derived", studyId);
+  const meshesDir = path.join(derivedDir, "meshes");
+  let meshPath = path.join(meshesDir, meshName);
 
-  if (!isPathInside(meshPath, meshesDir) || !fs.existsSync(meshPath)) {
+  if (!fs.existsSync(meshPath)) {
+    const stem = meshName.replace(/\.(glb|vtp|vtk)$/i, "");
+    const candidates = [
+      path.join(derivedDir, "heart", meshName),
+      path.join(derivedDir, "heart", "mesh.glb"),
+      path.join(derivedDir, "lungs", meshName),
+      path.join(derivedDir, "lungs", "mesh.glb"),
+      path.join(derivedDir, "brain", "meshes", meshName),
+      path.join(derivedDir, "motion4d", "frames", meshName),
+      path.join(derivedDir, "motion4d", meshName),
+      path.join(derivedDir, stem, "mesh.glb"),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) {
+        meshPath = c;
+        break;
+      }
+    }
+  }
+
+  if (!isPathInside(meshPath, derivedDir) || !fs.existsSync(meshPath)) {
     return NextResponse.json({ error: "Mesh file not found" }, { status: 404 });
   }
 
@@ -32,11 +53,9 @@ export async function GET(
 
   const contentType = meshName.endsWith(".glb")
     ? "model/gltf-binary"
-    : meshName.endsWith(".vtp") || meshName.endsWith(".vtk")
-    ? "application/octet-stream"
     : "application/octet-stream";
 
-  return new NextResponse(fileBuffer, {
+  return new NextResponse(new Uint8Array(fileBuffer), {
     status: 200,
     headers: {
       "Content-Type": contentType,

@@ -67,20 +67,24 @@ export function IndexStatusBanner() {
 
         {status.error && <p className="mt-1.5 break-words font-mono text-meta text-ink-muted">{status.error}</p>}
 
-        {status.remedy && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <code className="rounded-md border border-border bg-panel-alt px-2 py-1 font-mono text-meta text-ink-primary">{status.remedy}</code>
-            <span className="text-meta text-ink-muted">then reload this page</span>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-meta font-medium text-ink-secondary transition-colors hover:bg-panel-hover hover:text-ink-primary"
-            >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-              Reload
-            </button>
-          </div>
-        )}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-1.5 text-meta font-medium text-ink-primary transition-colors hover:bg-panel-hover"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+            Refresh Archive
+          </button>
+          {status.remedy && (
+            <details className="text-[11px] text-ink-muted cursor-pointer">
+              <summary className="hover:text-ink-secondary">PACS Administrator Info</summary>
+              <div className="mt-1.5 p-2 rounded bg-panel-alt border border-border font-mono text-[10.5px]">
+                <code>{status.remedy}</code>
+              </div>
+            </details>
+          )}
+        </div>
       </div>
     </div>
   );

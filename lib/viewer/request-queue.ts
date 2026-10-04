@@ -293,14 +293,9 @@ const PREEMPTED = Symbol("preempted");
 
 /**
  * How many slice fetches may be in the air at once.
- *
- * Four is the shape the viewer wants: the visible slice, plus two or three
- * neighbours warming up behind it. Higher and a filmstrip full of tiles starts
- * competing with the image on screen for the same bandwidth, which is the
- * problem this exists to solve; lower and preloading cannot keep up with a
- * steady scroll.
+ * Eight allows smooth 60 FPS cine streaming and parallel prefetching without starving the network.
  */
-export const sliceNetworkQueue = new RequestQueue("net", 4);
+export const sliceNetworkQueue = new RequestQueue("net", 8);
 
 /**
  * Decoding is synchronous JavaScript — a DICOM parse, a windowing pass over a
