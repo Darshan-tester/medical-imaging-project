@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import { FileText, MessageSquare, Trash2, X, Check, Type, Move } from "lucide-react";
+import { FileText, MessageSquare, Trash2, X, Check, Type, Move, Box } from "lucide-react";
 import { ViewerAnnotation, AnnotationShape } from "@/lib/types";
 import { ViewerTool } from "./ViewerToolbar";
 import { cn } from "@/lib/utils";
@@ -102,6 +102,7 @@ export function AnnotationCanvas({
   onQuickNote,
   onAddFinding,
   onEditFinding,
+  onViewIn3D,
 }: {
   annotations: ViewerAnnotation[];
   active: boolean;
@@ -118,6 +119,7 @@ export function AnnotationCanvas({
   onQuickNote: (id: string, note: string) => void;
   onAddFinding: (id: string) => void;
   onEditFinding: (id: string) => void;
+  onViewIn3D?: (id: string) => void;
 }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const livePathRef = useRef<SVGPathElement | null>(null);
@@ -708,6 +710,17 @@ export function AnnotationCanvas({
             >
               <FileText className="h-3 w-3" />
               <span>+ Finding</span>
+            </button>
+          )}
+
+          {onViewIn3D && (
+            <button
+              onClick={() => onViewIn3D(selected.id)}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-cyan-300 hover:text-cyan-100 hover:bg-cyan-950/60 border border-cyan-500/30"
+              title="View this annotation in 3D Anatomy"
+            >
+              <Box className="h-3 w-3" />
+              <span>3D</span>
             </button>
           )}
 

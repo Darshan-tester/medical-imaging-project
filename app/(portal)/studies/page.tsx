@@ -147,26 +147,26 @@ export default function StudiesPage() {
   };
 
   return (
-    <div className="mx-auto max-w-[1500px] px-4 py-5 md:px-6 md:py-6 space-y-4">
-      {/* 1. Header & Clinical Triage Overview */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className="mx-auto max-w-[1580px] px-4 py-5 md:px-6 md:py-6 space-y-4">
+      {/* 1. Executive PACS Worklist Header */}
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between border-b border-[#1b263b] pb-4">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-[22px] font-semibold tracking-tight text-ink-primary">
+          <div className="flex items-center gap-3">
+            <h1 className="text-[22px] font-bold tracking-tight text-slate-100">
               Diagnostic Imaging Worklist
             </h1>
-            <span className="rounded-full bg-slate-800/80 px-2.5 py-0.5 font-mono text-[11px] font-medium text-slate-300 border border-slate-700/60">
-              {triageStats.total.toLocaleString()} Studies
+            <span className="rounded-md bg-[#131f33] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-sky-400 border border-sky-500/20">
+              {triageStats.total.toLocaleString()} Examinations
             </span>
           </div>
-          <p className="mt-1 text-[13px] text-ink-secondary">
-            Reading-room PACS worklist · Filter, triage, and launch patient examinations
+          <p className="mt-1 text-[13px] text-slate-400">
+            PACS Reading Room Archive · Double-click row or press Read to launch high-speed workstation
           </p>
         </div>
 
-        {/* Clinical Triage Filter Badges */}
+        {/* Clinical Triage Indicators */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* STAT Studies Filter Pill */}
+          {/* STAT Studies Filter */}
           <button
             onClick={() =>
               setFilters((f) => ({
@@ -175,20 +175,23 @@ export default function StudiesPage() {
               }))
             }
             className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold border transition-all shadow-sm",
+              "flex items-center gap-2 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-all shadow-sm",
               filters.priority === "stat"
-                ? "bg-rose-500 text-white border-rose-600 shadow-rose-900/30"
-                : "bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20"
+                ? "bg-rose-600 text-white border-rose-500 shadow-rose-950/40"
+                : "bg-[#14121a] text-rose-400 border-rose-500/25 hover:bg-rose-950/30"
             )}
           >
-            <span className="h-2 w-2 rounded-full bg-rose-500 animate-pulse" />
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+            </span>
             <span>STAT Emergent</span>
-            <span className="rounded bg-black/30 px-1.5 py-0.2 font-mono text-[11px]">
+            <span className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[11px] tabular-nums">
               {triageStats.statCount}
             </span>
           </button>
 
-          {/* In Review Filter Pill */}
+          {/* In Review Filter */}
           <button
             onClick={() =>
               setFilters((f) => ({
@@ -197,20 +200,20 @@ export default function StudiesPage() {
               }))
             }
             className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-all shadow-sm",
+              "flex items-center gap-2 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-all shadow-sm",
               filters.status === "in-review"
-                ? "bg-sky-500 text-white border-sky-600"
-                : "bg-sky-500/10 text-sky-400 border-sky-500/30 hover:bg-sky-500/20"
+                ? "bg-sky-600 text-white border-sky-500 shadow-sky-950/40"
+                : "bg-[#0d1624] text-sky-400 border-sky-500/25 hover:bg-sky-950/30"
             )}
           >
             <Clock className="h-3.5 w-3.5" />
             <span>In Review</span>
-            <span className="rounded bg-black/30 px-1.5 py-0.2 font-mono text-[11px]">
+            <span className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[11px] tabular-nums">
               {triageStats.inReviewCount}
             </span>
           </button>
 
-          {/* AI Complete Filter Pill */}
+          {/* AI Complete Filter */}
           <button
             onClick={() =>
               setFilters((f) => ({
@@ -219,15 +222,15 @@ export default function StudiesPage() {
               }))
             }
             className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-all shadow-sm",
+              "flex items-center gap-2 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-all shadow-sm",
               filters.status === "ai-complete"
-                ? "bg-purple-500 text-white border-purple-600"
-                : "bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20"
+                ? "bg-purple-600 text-white border-purple-500 shadow-purple-950/40"
+                : "bg-[#141021] text-purple-400 border-purple-500/25 hover:bg-purple-950/30"
             )}
           >
             <Sparkles className="h-3.5 w-3.5" />
             <span>AI Ready</span>
-            <span className="rounded bg-black/30 px-1.5 py-0.2 font-mono text-[11px]">
+            <span className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[11px] tabular-nums">
               {triageStats.aiCompleteCount}
             </span>
           </button>
@@ -237,33 +240,37 @@ export default function StudiesPage() {
       {dataMode === "dataset" && <IndexStatusBanner />}
 
       {/* 2. Modality Quick Select Strip & Filters */}
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-panel p-3.5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
+      <div className="flex flex-col gap-3 rounded-xl border border-[#1e293b] bg-[#090d16] p-4 shadow-md">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#172236] pb-3">
           {/* Modality Tabs */}
-          <div className="flex flex-wrap items-center gap-1">
-            {MODALITY_SHORTCUTS.map((m) => (
-              <button
-                key={m.value}
-                onClick={() => setFilters((f) => ({ ...f, modality: m.value }))}
-                className={cn(
-                  "rounded-md px-3 py-1 text-[12px] font-medium transition-all",
-                  filters.modality === m.value
-                    ? "bg-clinical text-white font-semibold shadow-sm"
-                    : "text-ink-secondary hover:text-ink-primary hover:bg-panel-hover"
-                )}
-              >
-                {m.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {MODALITY_SHORTCUTS.map((m) => {
+              const active = filters.modality === m.value;
+              return (
+                <button
+                  key={m.value}
+                  onClick={() => setFilters((f) => ({ ...f, modality: m.value }))}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-[12px] font-medium transition-all",
+                    active
+                      ? "bg-sky-600 text-white font-semibold shadow-sm shadow-sky-950/40"
+                      : "text-slate-400 hover:text-slate-100 hover:bg-[#131d2e]"
+                  )}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Clear Filters Reset */}
           {JSON.stringify(filters) !== JSON.stringify(DEFAULT_FILTERS) && (
             <button
               onClick={() => setFilters(DEFAULT_FILTERS)}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-200 transition-colors"
+              className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] font-medium text-slate-400 hover:text-slate-100 transition-colors"
             >
-              <X className="h-3 w-3" /> Reset Filters
+              <X className="h-3.5 w-3.5" />
+              <span>Reset Filters</span>
             </button>
           )}
         </div>
@@ -389,20 +396,20 @@ function PaginationControls({
   };
 
   return (
-    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-2.5 px-3.5 rounded-lg border border-border bg-panel text-[12px] text-ink-secondary">
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-3 px-4 rounded-xl border border-[#1e293b] bg-[#090d16] text-[12px] text-slate-400 shadow-md">
       <div className="flex items-center gap-3">
         <span>
-          Showing <span className="font-semibold text-ink-primary tabular-nums">{startItem}</span>–<span className="font-semibold text-ink-primary tabular-nums">{endItem}</span> of <span className="font-semibold text-ink-primary tabular-nums">{totalItems}</span> studies
+          Showing <span className="font-semibold text-slate-100 tabular-nums">{startItem}</span>–<span className="font-semibold text-slate-100 tabular-nums">{endItem}</span> of <span className="font-semibold text-slate-100 tabular-nums">{totalItems}</span> examinations
         </span>
         <div className="flex items-center gap-1.5 ml-2">
-          <span className="text-ink-muted">Per page:</span>
+          <span className="text-slate-400">Rows:</span>
           <select
             value={pageSize}
             onChange={(e) => {
               onPageSizeChange(Number(e.target.value));
               onPageChange(1);
             }}
-            className="rounded border border-border bg-panel-alt px-2 py-0.5 text-[11px] text-ink-primary outline-none focus:border-clinical"
+            className="rounded border border-[#26354a] bg-[#0e1626] px-2 py-0.5 text-[11px] text-slate-200 outline-none focus:border-sky-500 cursor-pointer"
           >
             <option value={25}>25</option>
             <option value={50}>50</option>
@@ -417,7 +424,7 @@ function PaginationControls({
           disabled={currentPage === 1}
           aria-label="First page"
           title="First page"
-          className="flex h-7 w-7 items-center justify-center rounded border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+          className="flex h-7 w-7 items-center justify-center rounded border border-[#26354a] bg-[#0e1626] hover:bg-[#152033] hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors text-slate-400"
         >
           <ChevronsLeft className="h-3.5 w-3.5" />
         </button>
@@ -426,7 +433,7 @@ function PaginationControls({
           disabled={currentPage === 1}
           aria-label="Previous page"
           title="Previous page"
-          className="flex h-7 w-7 items-center justify-center rounded border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+          className="flex h-7 w-7 items-center justify-center rounded border border-[#26354a] bg-[#0e1626] hover:bg-[#152033] hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors text-slate-400"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
         </button>
@@ -434,7 +441,7 @@ function PaginationControls({
         <div className="flex items-center gap-1 px-1">
           {getPages().map((p, idx) =>
             p === "..." ? (
-              <span key={`ellipsis-${idx}`} className="px-1 text-ink-muted select-none">…</span>
+              <span key={`ellipsis-${idx}`} className="px-1 text-slate-400 select-none">…</span>
             ) : (
               <button
                 key={p}
@@ -442,8 +449,8 @@ function PaginationControls({
                 className={cn(
                   "flex h-7 min-w-[28px] px-1.5 items-center justify-center rounded border text-[11px] font-medium tabular-nums transition-colors",
                   currentPage === p
-                    ? "border-clinical bg-clinical text-white font-semibold shadow-sm"
-                    : "border-border bg-panel-alt hover:bg-panel-hover text-ink-secondary"
+                    ? "border-sky-500 bg-sky-600 text-white font-semibold shadow-sm"
+                    : "border-[#26354a] bg-[#0e1626] hover:bg-[#152033] text-slate-300"
                 )}
               >
                 {p}
@@ -457,7 +464,7 @@ function PaginationControls({
           disabled={currentPage === totalPages}
           aria-label="Next page"
           title="Next page"
-          className="flex h-7 w-7 items-center justify-center rounded border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+          className="flex h-7 w-7 items-center justify-center rounded border border-[#26354a] bg-[#0e1626] hover:bg-[#152033] hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors text-slate-400"
         >
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
@@ -466,7 +473,7 @@ function PaginationControls({
           disabled={currentPage === totalPages}
           aria-label="Last page"
           title="Last page"
-          className="flex h-7 w-7 items-center justify-center rounded border border-border bg-panel-alt hover:bg-panel-hover disabled:opacity-30 disabled:pointer-events-none transition-colors text-ink-secondary"
+          className="flex h-7 w-7 items-center justify-center rounded border border-[#26354a] bg-[#0e1626] hover:bg-[#152033] hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors text-slate-400"
         >
           <ChevronsRight className="h-3.5 w-3.5" />
         </button>

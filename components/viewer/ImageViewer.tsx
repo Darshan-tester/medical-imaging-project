@@ -85,6 +85,7 @@ export function ImageViewer({
   onQuickAnnotationNote,
   onAddFinding,
   onEditFinding,
+  onViewIn3D,
   crosshairPos,
   onCrosshairMove,
   onSliceScroll,
@@ -129,6 +130,7 @@ export function ImageViewer({
   onQuickAnnotationNote?: (id: string, note: string) => void;
   onAddFinding?: (annotationId: string) => void;
   onEditFinding?: (annotationId: string) => void;
+  onViewIn3D?: (id: string) => void;
   crosshairPos?: Point | null;
   onCrosshairMove?: (pos: Point) => void;
   onSliceScroll?: (delta: number) => void;
@@ -500,6 +502,7 @@ export function ImageViewer({
           onQuickNote={onQuickAnnotationNote ?? (() => {})}
           onAddFinding={onAddFinding ?? (() => {})}
           onEditFinding={onEditFinding ?? (() => {})}
+          onViewIn3D={onViewIn3D}
         />
 
       </div>

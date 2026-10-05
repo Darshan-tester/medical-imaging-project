@@ -39,6 +39,8 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
+    ".next",
+    ".next/**/*",
     "node_modules",
     "**/node_modules",
     "meridian",

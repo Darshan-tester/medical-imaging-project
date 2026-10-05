@@ -30,7 +30,7 @@ import {
 import { SceneErrorBoundary } from "@/components/three/SceneErrorBoundary";
 import { isDemoDicomUrl, isDemoVolumeUrl, DEMO_MIN_STACK_SLICES } from "@/lib/demo/types";
 import { useWebGLSupport, usePrefersReducedMotion } from "@/lib/hooks";
-import { ColorMap3D, Quality3D, Annotation3D, Finding, Modality } from "@/lib/types";
+import { ColorMap3D, Quality3D, Annotation3D, Finding, Modality, ViewerAnnotation } from "@/lib/types";
 import {
   AnatomicalLayer,
   AnatomicalClipping,
@@ -177,8 +177,16 @@ export interface Patient3DAnatomyViewerProps {
   initialAnnotations?: Annotation3D[];
   onAnnotationsChange?: (annotations: Annotation3D[]) => void;
   findings?: Finding[];
+  annotations?: ViewerAnnotation[];
   activeFindingId?: string | null;
   onSelectFinding?: (id: string) => void;
+  onSelectFindingMarker?: (
+    findingId: string,
+    sliceIndex: number,
+    normX: number,
+    normY: number,
+    seriesId?: string
+  ) => void;
   // Legacy organ mesh bridges
   organMeshes?: any[];
   onOrganMeshesChange?: (meshes: any[]) => void;
@@ -211,8 +219,10 @@ export function Patient3DAnatomyViewer({
   initialAnnotations,
   onAnnotationsChange,
   findings = [],
+  annotations = [],
   activeFindingId = null,
   onSelectFinding,
+  onSelectFindingMarker,
   organMeshes,
   onOrganMeshesChange,
   onSelectOrgan,
@@ -719,6 +729,16 @@ export function Patient3DAnatomyViewer({
                 {crosshairPos && (
                   <CrosshairOrthogonalLayer crosshairPos={crosshairPos} volumeScale={volumeScale} />
                 )}
+
+                {/* 4. Interactive Finding & Annotation 3D Markers Layer */}
+                <InteractiveFindingMarkersLayer
+                  findings={findings}
+                  annotations={annotations}
+                  activeFindingId={activeFindingId}
+                  volumeDims={volume.dims}
+                  volumeScale={volumeScale}
+                  onSelectFindingMarker={onSelectFindingMarker}
+                />
 
                 <OrbitControls
                   ref={controlsRef}
@@ -1385,6 +1405,226 @@ function CrosshairOrthogonalLayer({
         </bufferGeometry>
         <lineBasicMaterial color="#00F0FF" transparent opacity={0.85} />
       </lineSegments>
+    </group>
+  );
+}
+
+/** 3D Interactive Finding & Annotation Marker Pin */
+interface InteractiveMarkerData {
+  id: string;
+  label: string;
+  sliceIndex: number;
+  seriesId?: string;
+  normX: number;
+  normY: number;
+  normZ: number;
+  isAi?: boolean;
+  measureValue?: string;
+  note?: string;
+}
+
+function InteractiveFindingPin({
+  marker,
+  volumeScale,
+  isSelected,
+  onSelect,
+}: {
+  marker: InteractiveMarkerData;
+  volumeScale: [number, number, number];
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const posX = (marker.normX - 0.5) * volumeScale[0];
+  const posY = -(marker.normY - 0.5) * volumeScale[1];
+  const posZ = (marker.normZ - 0.5) * volumeScale[2];
+
+  const pinColor = isSelected ? "#00F0FF" : marker.isAi ? "#F59E0B" : "#EF4444";
+
+  return (
+    <group position={[posX, posY, posZ]}>
+      {/* Ground Pulse Ring on Axial Plane */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[isSelected ? 0.025 : 0.015, isSelected ? 0.035 : 0.02, 32]} />
+        <meshBasicMaterial color={pinColor} transparent opacity={isSelected ? 0.9 : 0.5} side={THREE.DoubleSide} />
+      </mesh>
+
+      {/* Vertical Pin Needle */}
+      <mesh position={[0, 0.025, 0]}>
+        <cylinderGeometry args={[0.002, 0.002, 0.05, 8]} />
+        <meshBasicMaterial color={pinColor} />
+      </mesh>
+
+      {/* Target Head Sphere */}
+      <mesh
+        position={[0, 0.055, 0]}
+        onPointerOver={(e: any) => {
+          e.stopPropagation();
+          setHovered(true);
+        }}
+        onPointerOut={(e: any) => {
+          e.stopPropagation();
+          setHovered(false);
+        }}
+        onClick={(e: any) => {
+          e.stopPropagation();
+          onSelect();
+        }}
+      >
+        <sphereGeometry args={[isSelected ? 0.02 : 0.014, 16, 16]} />
+        <meshStandardMaterial
+          color={pinColor}
+          emissive={pinColor}
+          emissiveIntensity={isSelected ? 0.8 : 0.4}
+          roughness={0.2}
+        />
+      </mesh>
+
+      {/* Interactive 3D Label & Navigation Card */}
+      {(hovered || isSelected) && (
+        <Html position={[0, 0.08, 0]} center distanceFactor={2.2} zIndexRange={[100, 0]}>
+          <div
+            className={cn(
+              "flex flex-col gap-1 rounded-lg border bg-[#0d121c]/95 p-2 shadow-2xl backdrop-blur-md whitespace-nowrap select-none transition-all",
+              isSelected ? "border-cyan-400 ring-2 ring-cyan-400/30 text-white" : "border-[#1e293b] text-slate-200"
+            )}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: pinColor }} />
+                <span className="text-[11px] font-bold text-white tracking-tight">{marker.label}</span>
+              </div>
+              <span className="rounded bg-sky-950/80 px-1.5 py-0.5 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
+                Slice {marker.sliceIndex + 1}
+              </span>
+            </div>
+
+            {marker.measureValue && (
+              <div className="font-mono text-[9.5px] text-slate-300">
+                Size: <strong className="text-white">{marker.measureValue}</strong>
+              </div>
+            )}
+
+            {marker.note && (
+              <div className="max-w-[160px] truncate text-[9.5px] text-slate-400 italic">
+                "{marker.note}"
+              </div>
+            )}
+
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect();
+              }}
+              className="mt-1 flex items-center justify-center gap-1 rounded bg-cyan-600 hover:bg-cyan-500 px-2 py-1 text-[10px] font-semibold text-white shadow transition-colors cursor-pointer"
+            >
+              <Target className="h-3 w-3" />
+              <span>Jump to 2D Slice</span>
+            </button>
+          </div>
+        </Html>
+      )}
+    </group>
+  );
+}
+
+function InteractiveFindingMarkersLayer({
+  findings = [],
+  annotations = [],
+  activeFindingId,
+  volumeDims,
+  volumeScale,
+  onSelectFindingMarker,
+}: {
+  findings?: Finding[];
+  annotations?: ViewerAnnotation[];
+  activeFindingId?: string | null;
+  volumeDims: [number, number, number];
+  volumeScale: [number, number, number];
+  onSelectFindingMarker?: (
+    findingId: string,
+    sliceIndex: number,
+    normX: number,
+    normY: number,
+    seriesId?: string
+  ) => void;
+}) {
+  const markerItems: InteractiveMarkerData[] = useMemo(() => {
+    const list: InteractiveMarkerData[] = [];
+    const maxSlice = Math.max(1, volumeDims[2] - 1);
+
+    // 1. Registered Findings (AI and Promoted Radiologist Findings)
+    for (const f of findings) {
+      const normX = f.region.x + f.region.w / 2;
+      const normY = f.region.y + f.region.h / 2;
+      const normZ = f.sliceIndex / maxSlice;
+      list.push({
+        id: f.id,
+        label: f.label || "Diagnostic Finding",
+        sliceIndex: f.sliceIndex,
+        seriesId: f.seriesId,
+        normX,
+        normY,
+        normZ,
+        isAi: f.confidence > 0,
+        note: f.radiologistNote || f.description,
+      });
+    }
+
+    // 2. 2D Bounding Boxes & Marker Annotations
+    for (const a of annotations) {
+      if (list.some((item) => item.id === a.id || item.id === a.findingId)) continue;
+      if (a.type === "rectangle" && a.points.length >= 2) {
+        const [p0, p1] = a.points;
+        const normX = (p0.x + p1.x) / 2;
+        const normY = (p0.y + p1.y) / 2;
+        const normZ = a.sliceIndex / maxSlice;
+        list.push({
+          id: a.id,
+          label: a.text || "Lesion ROI",
+          sliceIndex: a.sliceIndex,
+          seriesId: a.seriesId,
+          normX,
+          normY,
+          normZ,
+          isAi: false,
+          measureValue: a.measureValue,
+          note: a.radiologistNote,
+        });
+      } else if (a.type === "marker" && a.points.length >= 1) {
+        const p0 = a.points[0];
+        const normZ = a.sliceIndex / maxSlice;
+        list.push({
+          id: a.id,
+          label: a.text || "Point of Interest",
+          sliceIndex: a.sliceIndex,
+          seriesId: a.seriesId,
+          normX: p0.x,
+          normY: p0.y,
+          normZ,
+          isAi: false,
+          note: a.radiologistNote,
+        });
+      }
+    }
+
+    return list;
+  }, [findings, annotations, volumeDims]);
+
+  return (
+    <group>
+      {markerItems.map((m) => (
+        <InteractiveFindingPin
+          key={m.id}
+          marker={m}
+          volumeScale={volumeScale}
+          isSelected={activeFindingId === m.id}
+          onSelect={() => {
+            onSelectFindingMarker?.(m.id, m.sliceIndex, m.normX, m.normY, m.seriesId);
+          }}
+        />
+      ))}
     </group>
   );
 }

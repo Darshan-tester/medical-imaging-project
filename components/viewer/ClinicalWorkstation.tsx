@@ -26,6 +26,14 @@ import {
   Flame,
   Check,
   ChevronRight,
+  ChevronLeft,
+  ChevronDown,
+  Circle,
+  Type,
+  Compass,
+  ArrowUpRight,
+  Target,
+  Ruler,
   Info,
   Download,
   AlertTriangle,
@@ -184,11 +192,14 @@ export function ClinicalWorkstation({
   const [brushSize, setBrushSize] = useState<AnnotationBrushSize>("medium");
   const [brushOpacity, setBrushOpacity] = useState(1);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [annotateMenuOpen, setAnnotateMenuOpen] = useState(false);
 
   // Dialogs
   const [patientInfoOpen, setPatientInfoOpen] = useState(false);
   const [studyInfoOpen, setStudyInfoOpen] = useState(false);
   const [rightSubTab, setRightSubTab] = useState<"tools" | "findings" | "annotations">("tools");
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 
   // Determine active series with fallback
   const activeSeries = useMemo(() => {
@@ -236,6 +247,30 @@ export function ClinicalWorkstation({
       setCurrentSlice(maxSlice);
     }
   }, [activeSeries, currentSlice]);
+
+  // Intelligent slice preloading: pre-caches adjacent ±4 slices into browser cache
+  useEffect(() => {
+    if (!activeSeries.sliceCount || activeSeries.sliceCount <= 1) return;
+    const preloadRadius = 4;
+    const preloadedImages: HTMLImageElement[] = [];
+
+    for (let offset = -preloadRadius; offset <= preloadRadius; offset++) {
+      if (offset === 0) continue;
+      const idx = currentSlice + offset;
+      if (idx >= 0 && idx < activeSeries.sliceCount) {
+        const url = imageUrlAt(idx);
+        if (url && typeof Image !== "undefined") {
+          const img = new Image();
+          img.src = url;
+          preloadedImages.push(img);
+        }
+      }
+    }
+
+    return () => {
+      preloadedImages.length = 0;
+    };
+  }, [currentSlice, activeSeries.sliceCount, imageUrlAt]);
 
   // Hydrate annotations from session store
   useEffect(() => {
@@ -410,6 +445,44 @@ export function ClinicalWorkstation({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeSeries.sliceCount, handleToggleFullscreen]);
 
+  const isAnnotationToolActive = [
+    "pen",
+    "rect",
+    "circle",
+    "annotate",
+    "line",
+    "angle",
+    "text",
+    "arrow",
+    "measure",
+  ].includes(viewerState.tool);
+
+  const handleSelect3DMarker = useCallback(
+    (findingId: string, sliceIdx: number, normX: number, normY: number, seriesId?: string) => {
+      setActiveMode("images");
+      if (seriesId && seriesId !== activeSeries.id) {
+        setActiveSeriesId(seriesId);
+      }
+      setCurrentSlice(sliceIdx);
+      setViewerState((prev) => ({
+        ...prev,
+        pan: { x: (0.5 - normX) * 180, y: (0.5 - normY) * 180 },
+        zoom: Math.max(prev.zoom, 1.4),
+      }));
+      setSelectedFindingId(findingId);
+      const linked = annotations.find((a) => a.id === findingId || a.findingId === findingId);
+      if (linked) {
+        setSelectedAnnotationId(linked.id);
+      }
+      pushToast({
+        title: "Navigated from 3D Anatomy",
+        description: `Targeted finding on Slice ${sliceIdx + 1} with centered ROI.`,
+        tone: "default",
+      });
+    },
+    [activeSeries.id, annotations]
+  );
+
   return (
     <div
       ref={containerRef}
@@ -445,20 +518,45 @@ export function ClinicalWorkstation({
 
       {/* 2. MAIN WORKSPACE: Left Series Sidebar + Center Viewport + Right Context Panel */}
       <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
-        {/* Left Sidebar: Studies & Series Navigation (hidden in distraction-free fullscreen unless hovered) */}
+        {/* Left Sidebar: Studies & Series Navigation */}
         {!isFullscreen && (
-          <div className="w-[240px] shrink-0 h-full border-r border-border bg-panel overflow-hidden flex flex-col">
-            <ClinicalSeriesSidebar
-              study={study}
-              series={study.series}
-              activeSeriesId={activeSeries.id}
-              onSelectSeries={(id) => {
-                setActiveSeriesId(id);
-                setCurrentSlice(0);
-                setPlaying(false);
-              }}
-            />
-          </div>
+          leftSidebarCollapsed ? (
+            <div className="w-9 shrink-0 h-full border-r border-border bg-panel flex flex-col items-center py-3 select-none">
+              <button
+                onClick={() => setLeftSidebarCollapsed(false)}
+                className="rounded p-1.5 text-ink-muted hover:text-ink-primary hover:bg-base transition-colors"
+                title="Expand Series Browser"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <div className="mt-6 [writing-mode:vertical-rl] rotate-180 font-mono text-[10.5px] text-ink-secondary uppercase tracking-widest flex items-center gap-1.5">
+                <span>Series ({study.series.length})</span>
+              </div>
+            </div>
+          ) : (
+            <div className="w-[240px] shrink-0 h-full border-r border-border bg-panel overflow-hidden flex flex-col relative">
+              <div className="flex items-center justify-between border-b border-border px-3 py-1.5 bg-panel-alt">
+                <span className="text-[11px] font-semibold text-ink-primary tracking-tight">Series Browser</span>
+                <button
+                  onClick={() => setLeftSidebarCollapsed(true)}
+                  className="rounded p-1 text-ink-muted hover:text-ink-primary hover:bg-base transition-colors"
+                  title="Collapse Series Browser"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <ClinicalSeriesSidebar
+                study={study}
+                series={study.series}
+                activeSeriesId={activeSeries.id}
+                onSelectSeries={(id) => {
+                  setActiveSeriesId(id);
+                  setCurrentSlice(0);
+                  setPlaying(false);
+                }}
+              />
+            </div>
+          )
         )}
 
         {/* Center Viewport Area: 2D/MPR, 3D, 4D, AI Workstation, or Report */}
@@ -552,18 +650,122 @@ export function ClinicalWorkstation({
                       </button>
                     </Tooltip>
 
-                    <Tooltip label="Radiologist pen annotation & notes">
-                      <button
-                        onClick={() => setViewerState((s) => ({ ...s, tool: "pen" }))}
-                        className={cn(
-                          "flex items-center gap-1 rounded px-2 py-1 transition-colors",
-                          viewerState.tool === "pen" ? "bg-clinical text-white font-medium" : "text-gray-400 hover:bg-white/10 hover:text-white"
-                        )}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        <span className="hidden md:inline">Annotate</span>
-                      </button>
-                    </Tooltip>
+                    {/* Professional 2D Annotation Tool Selector */}
+                    <div className="relative">
+                      <div className="flex items-center rounded border border-white/15 bg-black/40">
+                        <button
+                          onClick={() => {
+                            if (isAnnotationToolActive) {
+                              setViewerState((s) => ({ ...s, tool: "window" }));
+                            } else {
+                              setViewerState((s) => ({ ...s, tool: "rect" }));
+                            }
+                          }}
+                          className={cn(
+                            "flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium transition-colors rounded-l",
+                            isAnnotationToolActive
+                              ? "bg-clinical text-white font-semibold"
+                              : "text-gray-300 hover:bg-white/10 hover:text-white"
+                          )}
+                          title="Toggle ROI Annotation mode"
+                        >
+                          {viewerState.tool === "rect" ? (
+                            <>
+                              <Square className="h-3.5 w-3.5 text-cyan-300" />
+                              <span>Box ROI</span>
+                            </>
+                          ) : viewerState.tool === "annotate" ? (
+                            <>
+                              <Target className="h-3.5 w-3.5 text-amber-300" />
+                              <span>Point</span>
+                            </>
+                          ) : viewerState.tool === "circle" ? (
+                            <>
+                              <Circle className="h-3.5 w-3.5 text-emerald-300" />
+                              <span>Circle ROI</span>
+                            </>
+                          ) : viewerState.tool === "angle" ? (
+                            <>
+                              <Compass className="h-3.5 w-3.5 text-purple-300" />
+                              <span>Angle</span>
+                            </>
+                          ) : viewerState.tool === "arrow" ? (
+                            <>
+                              <ArrowUpRight className="h-3.5 w-3.5 text-rose-300" />
+                              <span>Arrow</span>
+                            </>
+                          ) : viewerState.tool === "text" ? (
+                            <>
+                              <Type className="h-3.5 w-3.5 text-sky-300" />
+                              <span>Text</span>
+                            </>
+                          ) : (
+                            <>
+                              <Pencil className="h-3.5 w-3.5" />
+                              <span>Annotate</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => setAnnotateMenuOpen((prev) => !prev)}
+                          className={cn(
+                            "px-1 py-1 text-gray-400 hover:text-white border-l border-white/10 transition-colors rounded-r",
+                            annotateMenuOpen && "bg-white/15 text-white"
+                          )}
+                          title="Choose annotation shape (Bounding Box, Point, Freehand, Circle, Text)"
+                        >
+                          <ChevronDown className="h-3 w-3" />
+                        </button>
+                      </div>
+
+                      {/* Dropdown Menu for choosing Annotation Shape */}
+                      {annotateMenuOpen && (
+                        <div
+                          className="absolute left-0 top-full mt-1.5 z-50 w-52 rounded-lg border border-[#1e293b] bg-[#0d121c]/95 p-1 shadow-2xl backdrop-blur-md"
+                          onClick={() => setAnnotateMenuOpen(false)}
+                        >
+                          <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-slate-400 border-b border-[#1e293b] mb-1">
+                            Diagnostic Markups
+                          </div>
+                          {[
+                            { tool: "rect", label: "Box ROI (Lesion)", icon: Square, desc: "Draw box linked to 3D" },
+                            { tool: "annotate", label: "Anatomical Point", icon: Target, desc: "Mark focal point / marker" },
+                            { tool: "pen", label: "Freehand Pen", icon: Pencil, desc: "Contour / drawing stroke" },
+                            { tool: "circle", label: "Circle ROI", icon: Circle, desc: "Circular region of interest" },
+                            { tool: "measure", label: "Linear Caliper", icon: Scissors, desc: "Calibrated distance in mm" },
+                            { tool: "angle", label: "Angle (3 Points)", icon: Compass, desc: "Cobb / anatomical angle" },
+                            { tool: "arrow", label: "Pointer Arrow", icon: ArrowUpRight, desc: "Point to finding" },
+                            { tool: "text", label: "Text Callout", icon: Type, desc: "Radiologist note on slice" },
+                          ].map((item) => {
+                            const Icon = item.icon;
+                            const isSelected = viewerState.tool === item.tool;
+                            return (
+                              <button
+                                key={item.tool}
+                                onClick={() => {
+                                  setViewerState((s) => ({ ...s, tool: item.tool as any }));
+                                  setAnnotateMenuOpen(false);
+                                }}
+                                className={cn(
+                                  "flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors",
+                                  isSelected
+                                    ? "bg-clinical/20 text-clinical font-semibold"
+                                    : "text-slate-300 hover:bg-white/10 hover:text-white"
+                                )}
+                              >
+                                <Icon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                <div>
+                                  <div className="leading-tight">{item.label}</div>
+                                  <div className="text-[9.5px] font-normal text-slate-400 leading-tight">
+                                    {item.desc}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="h-4 w-[1px] bg-white/15 mx-0.5" />
@@ -635,8 +837,8 @@ export function ClinicalWorkstation({
                 </div>
               </div>
 
-              {/* Pen Toolbar when Pen Tool is active */}
-              {viewerState.tool === "pen" && (
+              {/* Annotation Toolbar when any annotation tool is active */}
+              {isAnnotationToolActive && (
                 <div className="border-b border-white/10 bg-[#111722] px-3 py-1.5 z-10">
                   <AnnotationToolbar
                     color={brushColor}
@@ -771,7 +973,7 @@ export function ClinicalWorkstation({
                     onCommitStroke={(points) => {
                       const stroke: ViewerAnnotation = {
                         id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                        studyId: study.studyId,
+                        studyId: study.id,
                         seriesId: activeSeries.id,
                         sliceIndex: currentSlice,
                         type: "freehand",
@@ -784,6 +986,107 @@ export function ClinicalWorkstation({
                       };
                       setAnnotations((prev) => [...prev, stroke]);
                       setSelectedAnnotationId(stroke.id);
+                    }}
+                    onCommitAnnotation={(ann) => {
+                      const completeAnn: ViewerAnnotation = {
+                        ...ann,
+                        studyId: study.id,
+                        seriesId: activeSeries.id,
+                        sliceIndex: currentSlice,
+                      };
+                      setAnnotations((prev) => [...prev, completeAnn]);
+                      setSelectedAnnotationId(completeAnn.id);
+
+                      // If rectangle or marker, promote to official Finding and link to 3D Anatomy
+                      if (completeAnn.type === "rectangle" && completeAnn.points.length >= 2) {
+                        const [p0, p1] = completeAnn.points;
+                        const minX = Math.min(p0.x, p1.x);
+                        const minY = Math.min(p0.y, p1.y);
+                        const w = Math.abs(p1.x - p0.x);
+                        const h = Math.abs(p1.y - p0.y);
+                        const newFinding: Finding = {
+                          id: `f-${completeAnn.id}`,
+                          label: completeAnn.text || "Lesion ROI",
+                          confidence: 100,
+                          band: "high",
+                          region: { x: minX, y: minY, w, h },
+                          sliceIndex: currentSlice,
+                          seriesId: activeSeries.id,
+                          description: completeAnn.measureValue
+                            ? `Region of Interest · Area: ${completeAnn.measureValue}`
+                            : "Radiologist-marked lesion region",
+                          status: "accepted",
+                          radiologistNote: completeAnn.radiologistNote,
+                        };
+                        study.findings = [newFinding, ...study.findings.filter((f) => f.id !== newFinding.id)];
+                        completeAnn.findingId = newFinding.id;
+                        setSelectedFindingId(newFinding.id);
+                        pushToast({
+                          title: "Lesion ROI Created",
+                          description: `Box attached to Slice ${currentSlice + 1} and linked to 3D anatomical volume.`,
+                          tone: "default",
+                        });
+                      } else if (completeAnn.type === "marker" && completeAnn.points.length >= 1) {
+                        const p0 = completeAnn.points[0];
+                        const newFinding: Finding = {
+                          id: `f-${completeAnn.id}`,
+                          label: completeAnn.text || "Anatomical Point",
+                          confidence: 100,
+                          band: "high",
+                          region: { x: Math.max(0, p0.x - 0.02), y: Math.max(0, p0.y - 0.02), w: 0.04, h: 0.04 },
+                          sliceIndex: currentSlice,
+                          seriesId: activeSeries.id,
+                          description: "Radiologist marked point of interest",
+                          status: "accepted",
+                          radiologistNote: completeAnn.radiologistNote,
+                        };
+                        study.findings = [newFinding, ...study.findings.filter((f) => f.id !== newFinding.id)];
+                        completeAnn.findingId = newFinding.id;
+                        setSelectedFindingId(newFinding.id);
+                      }
+                    }}
+                    onDeleteAnnotation={(id) => {
+                      setAnnotations((prev) => prev.filter((a) => a.id !== id));
+                      study.findings = study.findings.filter((f) => f.id !== `f-${id}`);
+                      if (selectedAnnotationId === id) setSelectedAnnotationId(null);
+                    }}
+                    onQuickAnnotationNote={(id, note) => {
+                      setAnnotations((prev) =>
+                        prev.map((a) => (a.id === id ? { ...a, radiologistNote: note, updatedAt: new Date().toISOString() } : a))
+                      );
+                      const f = study.findings.find((item) => item.id === `f-${id}`);
+                      if (f) f.radiologistNote = note;
+                    }}
+                    onAddFinding={(annId) => {
+                      const ann = annotations.find((a) => a.id === annId);
+                      if (!ann) return;
+                      const c = ann.points[0] || { x: 0.5, y: 0.5 };
+                      const newFinding: Finding = {
+                        id: `f-${ann.id}`,
+                        label: ann.text || `${ann.type.toUpperCase()} Finding`,
+                        confidence: 100,
+                        band: "high",
+                        region: { x: Math.max(0, c.x - 0.03), y: Math.max(0, c.y - 0.03), w: 0.06, h: 0.06 },
+                        sliceIndex: currentSlice,
+                        seriesId: activeSeries.id,
+                        description: ann.measureValue ? `Measurement: ${ann.measureValue}` : "Clinical observation",
+                        status: "accepted",
+                        radiologistNote: ann.radiologistNote,
+                      };
+                      study.findings = [newFinding, ...study.findings.filter((f) => f.id !== newFinding.id)];
+                      ann.findingId = newFinding.id;
+                      setSelectedFindingId(newFinding.id);
+                      setRightSubTab("findings");
+                      pushToast({
+                        title: "Finding Added",
+                        description: "Observation registered and linked to 3D anatomy.",
+                        tone: "default",
+                      });
+                    }}
+                    onViewIn3D={(annId) => {
+                      const ann = annotations.find((a) => a.id === annId);
+                      if (ann?.findingId) setSelectedFindingId(ann.findingId);
+                      setActiveMode("3d");
                     }}
                   />
                 )}
@@ -914,8 +1217,10 @@ export function ClinicalWorkstation({
                     initialAnnotations={annotations3D}
                     onAnnotationsChange={setAnnotations3D}
                     findings={study.findings}
+                    annotations={annotations}
                     activeFindingId={selectedFindingId}
                     onSelectFinding={setSelectedFindingId}
+                    onSelectFindingMarker={handleSelect3DMarker}
                     crosshairPos={{ x: 0.5, y: 0.5, z: currentSlice / Math.max(1, activeSeries.sliceCount - 1) }}
                     onPointSelected={(pt) => {
                       const target = Math.round(pt.z * (activeSeries.sliceCount - 1));
@@ -970,8 +1275,10 @@ export function ClinicalWorkstation({
                       sliceCount={activeSeries.sliceCount}
                       sliceUrlAt={imageUrlAt}
                       findings={study.findings}
+                      annotations={annotations}
                       activeFindingId={selectedFindingId}
                       onSelectFinding={setSelectedFindingId}
+                      onSelectFindingMarker={handleSelect3DMarker}
                       crosshairPos={{ x: 0.5, y: 0.5, z: currentSlice / Math.max(1, activeSeries.sliceCount - 1) }}
                       onPointSelected={(pt) => {
                         const target = Math.round(pt.z * (activeSeries.sliceCount - 1));
@@ -1123,7 +1430,31 @@ export function ClinicalWorkstation({
 
         {/* 3. RIGHT CONTEXT PANEL: Contextual based on active workflow mode */}
         {!isFullscreen && activeMode !== "report" && activeMode !== "ai" && (
-          <aside className="w-[320px] shrink-0 h-full border-l border-border bg-panel overflow-hidden flex flex-col">
+          rightPanelCollapsed ? (
+            <div className="w-9 shrink-0 h-full border-l border-border bg-panel flex flex-col items-center py-3 select-none">
+              <button
+                onClick={() => setRightPanelCollapsed(false)}
+                className="rounded p-1.5 text-ink-muted hover:text-ink-primary hover:bg-base transition-colors"
+                title="Expand Clinical Inspector"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <div className="mt-6 [writing-mode:vertical-rl] rotate-180 font-mono text-[10.5px] text-ink-secondary uppercase tracking-widest flex items-center gap-1.5">
+                <span>Inspector ({study.findings.length})</span>
+              </div>
+            </div>
+          ) : (
+            <aside className="w-[320px] shrink-0 h-full border-l border-border bg-panel overflow-hidden flex flex-col relative">
+              <div className="flex items-center justify-between border-b border-border px-3 py-1.5 bg-panel-alt">
+                <span className="text-[11px] font-semibold text-ink-primary tracking-tight">Clinical Inspector</span>
+                <button
+                  onClick={() => setRightPanelCollapsed(true)}
+                  className="rounded p-1 text-ink-muted hover:text-ink-primary hover:bg-base transition-colors"
+                  title="Collapse Inspector"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
             {/* Mode: 2D / MPR */}
             {activeMode === "images" && (
               <div className="flex-1 flex flex-col min-h-0">
@@ -1425,6 +1756,7 @@ export function ClinicalWorkstation({
               </div>
             )}
           </aside>
+          )
         )}
       </div>
 
