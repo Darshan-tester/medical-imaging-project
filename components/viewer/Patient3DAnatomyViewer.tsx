@@ -202,6 +202,7 @@ export interface Patient3DAnatomyViewerProps {
   clipping?: AnatomicalClipping;
   onClippingChange?: (clipping: AnatomicalClipping) => void;
   // UI Layout
+  bodyRegion?: string;
   className?: string;
   height?: string | number;
   showLayerPanel?: boolean;
@@ -211,6 +212,7 @@ export function Patient3DAnatomyViewer({
   studyId,
   seriesId,
   modality = "CT",
+  bodyRegion,
   volumeUrl,
   sliceCount,
   sliceUrlAt,
@@ -285,6 +287,7 @@ export function Patient3DAnatomyViewer({
   const [mip, setMip] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeCategoryTab, setActiveCategoryTab] = useState<AnatomicalCategory>("ORGANS");
+  const [hoveredFindingMarker, setHoveredFindingMarker] = useState<InteractiveMarkerData | null>(null);
 
   // Load canonical volume data
   useEffect(() => {
@@ -351,13 +354,14 @@ export function Patient3DAnatomyViewer({
           data.segments || [],
           data.meshes || [],
           modality,
-          false
+          false,
+          bodyRegion
         );
         setLayers(initialLayers);
       })
       .catch(() => {
         if (!cancelled) {
-          const fallbackLayers = buildAnatomicalLayers(studyId, [], [], modality, false);
+          const fallbackLayers = buildAnatomicalLayers(studyId, [], [], modality, false, bodyRegion);
           setLayers(fallbackLayers);
         }
       });
@@ -365,7 +369,7 @@ export function Patient3DAnatomyViewer({
     return () => {
       cancelled = true;
     };
-  }, [studyId, modality]);
+  }, [studyId, modality, bodyRegion]);
 
   // Synchronize 2D crosshair position with 3D clipping planes if syncWithSlice is enabled
   useEffect(() => {
@@ -725,7 +729,7 @@ export function Patient3DAnatomyViewer({
                   />
                 )}
 
-                {/* 3. 2D Crosshair Orthogonal Spatial Indicator */}
+                {/* 3. 2D Crosshair Orthogonal Spatial Indicator (Disabled to prevent line clutter) */}
                 {crosshairPos && (
                   <CrosshairOrthogonalLayer crosshairPos={crosshairPos} volumeScale={volumeScale} />
                 )}
@@ -738,6 +742,7 @@ export function Patient3DAnatomyViewer({
                   volumeDims={volume.dims}
                   volumeScale={volumeScale}
                   onSelectFindingMarker={onSelectFindingMarker}
+                  onHoverMarker={setHoveredFindingMarker}
                 />
 
                 <OrbitControls
@@ -780,6 +785,44 @@ export function Patient3DAnatomyViewer({
             <span className="text-slate-600">|</span>
             <span className="text-slate-500">Click 3D anatomy to reposition 2D slices</span>
           </div>
+
+          {/* Hovered Finding Telemetry Pill (Fixed 2D screen space - Never balloons or distorts) */}
+          {hoveredFindingMarker && (
+            <div className="flex items-center gap-2 rounded-lg bg-[#0d121c]/95 px-3 py-1.5 backdrop-blur-md border border-sky-500/50 shadow-xl text-[11px] text-white pointer-events-auto animate-in fade-in duration-150">
+              <span
+                className="h-2 w-2 rounded-full shrink-0"
+                style={{
+                  backgroundColor:
+                    hoveredFindingMarker.color || (hoveredFindingMarker.isAi ? "#F59E0B" : "#00F0FF"),
+                }}
+              />
+              <span className="font-semibold text-white">{hoveredFindingMarker.label}</span>
+              <span className="rounded bg-sky-950 px-1.5 py-0.2 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
+                Slice {hoveredFindingMarker.sliceIndex + 1}
+              </span>
+              {hoveredFindingMarker.measureValue && (
+                <span className="font-mono text-slate-300 text-[10px]">
+                  {hoveredFindingMarker.measureValue}
+                </span>
+              )}
+              <button
+                onClick={() => {
+                  onSelectFindingMarker?.(
+                    hoveredFindingMarker.id,
+                    hoveredFindingMarker.sliceIndex,
+                    hoveredFindingMarker.normX,
+                    hoveredFindingMarker.normY,
+                    hoveredFindingMarker.seriesId
+                  );
+                }}
+                className="ml-1.5 flex items-center gap-1 rounded bg-sky-600 hover:bg-sky-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm transition-colors cursor-pointer"
+                title="View in 2D slice viewer"
+              >
+                <Target className="h-3 w-3" />
+                <span>View in 2D</span>
+              </button>
+            </div>
+          )}
 
           {/* Quick Render Modes */}
           <div className="flex items-center gap-1 rounded-lg bg-[#0d121c]/90 p-1 backdrop-blur-md border border-[#1e293b] text-[11px] font-mono pointer-events-auto">
@@ -1347,8 +1390,8 @@ function SingleMeshActor({
       }}
     >
       {hovered && hoverPt && (
-        <Html position={hoverPt} center distanceFactor={2.4}>
-          <div className="pointer-events-none z-50 flex flex-col gap-0.5 rounded-lg border border-sky-400 bg-[#0d121c]/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md text-white whitespace-nowrap">
+        <Html position={hoverPt} center zIndexRange={[50, 0]}>
+          <div className="pointer-events-none z-50 flex flex-col gap-0.5 rounded-lg border border-sky-400 bg-[#0d121c]/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md text-white whitespace-nowrap text-[11px]">
             <div className="flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: layer.color }} />
               <span className="text-[11px] font-bold text-sky-300">{layer.name}</span>
@@ -1369,7 +1412,7 @@ function SingleMeshActor({
   );
 }
 
-/** 3D Spatial Crosshair Orthogonal Guide */
+/** 3D Spatial Crosshair Orthogonal Guide - Disabled to keep 3D volume view clean */
 function CrosshairOrthogonalLayer({
   crosshairPos,
   volumeScale,
@@ -1377,36 +1420,7 @@ function CrosshairOrthogonalLayer({
   crosshairPos: { x: number; y: number; z: number };
   volumeScale: [number, number, number];
 }) {
-  const posX = (crosshairPos.x - 0.5) * volumeScale[0];
-  const posY = -(crosshairPos.y - 0.5) * volumeScale[1];
-  const posZ = (crosshairPos.z - 0.5) * volumeScale[2];
-
-  return (
-    <group position={[posX, posY, posZ]}>
-      {/* Central Precision Target Reticle (Micro ring + crosshairs, no oversized spheres) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.007, 0.009, 32]} />
-        <meshBasicMaterial color="#00F0FF" side={THREE.DoubleSide} />
-      </mesh>
-      {/* Orthogonal Guide Lines */}
-      <lineSegments>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[
-              new Float32Array([
-                -0.08, 0, 0, 0.08, 0, 0,
-                0, -0.08, 0, 0, 0.08, 0,
-                0, 0, -0.08, 0, 0, 0.08,
-              ]),
-              3,
-            ]}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#00F0FF" transparent opacity={0.8} />
-      </lineSegments>
-    </group>
-  );
+  return null;
 }
 
 /** 3D Interactive Finding & Annotation Spatial Model */
@@ -1438,11 +1452,13 @@ function AnatomicalRegionHighlight({
   volumeScale,
   isSelected,
   onSelect,
+  onHover,
 }: {
   marker: InteractiveMarkerData;
   volumeScale: [number, number, number];
   isSelected: boolean;
   onSelect: () => void;
+  onHover?: (hovered: boolean, marker: InteractiveMarkerData | null) => void;
 }) {
   const [hovered, setHovered] = useState(false);
 
@@ -1453,30 +1469,6 @@ function AnatomicalRegionHighlight({
   const highlightColor = isSelected
     ? "#00F0FF"
     : marker.color || (marker.isAi ? "#F59E0B" : "#EF4444");
-
-  // Calculate 3D bounding box for the anatomical region
-  const boxW = Math.max(
-    0.025,
-    marker.bounds ? (marker.bounds.maxX - marker.bounds.minX) * volumeScale[0] : 0.035
-  );
-  const boxH = Math.max(
-    0.025,
-    marker.bounds ? (marker.bounds.maxY - marker.bounds.minY) * volumeScale[1] : 0.035
-  );
-  const boxD = Math.max(0.016, volumeScale[2] * 0.04);
-
-  const boxCenterX = marker.bounds
-    ? ((marker.bounds.minX + marker.bounds.maxX) / 2 - 0.5) * volumeScale[0]
-    : posX;
-  const boxCenterY = marker.bounds
-    ? -(((marker.bounds.minY + marker.bounds.maxY) / 2) - 0.5) * volumeScale[1]
-    : posY;
-
-  // Box edges geometry
-  const edgesGeometry = useMemo(() => {
-    const box = new THREE.BoxGeometry(boxW, boxH, boxD);
-    return new THREE.EdgesGeometry(box);
-  }, [boxW, boxH, boxD]);
 
   // Projected 2D contour points in 3D volume coordinates on the slice cut
   const contourArray = useMemo(() => {
@@ -1492,199 +1484,82 @@ function AnatomicalRegionHighlight({
     return new Float32Array(coords);
   }, [marker.contourPoints, volumeScale, posZ]);
 
+  const handlePointerOver = (e: any) => {
+    e.stopPropagation();
+    setHovered(true);
+    onHover?.(true, marker);
+  };
+
+  const handlePointerOut = (e: any) => {
+    e.stopPropagation();
+    setHovered(false);
+    onHover?.(false, null);
+  };
+
+  const handleClick = (e: any) => {
+    e.stopPropagation();
+    onSelect();
+  };
+
   return (
     <group>
-      {/* 1. Subtle semi-transparent VOI volume box */}
-      <mesh
-        position={[boxCenterX, boxCenterY, posZ]}
-        onPointerOver={(e: any) => {
-          e.stopPropagation();
-          setHovered(true);
-        }}
-        onPointerOut={(e: any) => {
-          e.stopPropagation();
-          setHovered(false);
-        }}
-        onClick={(e: any) => {
-          e.stopPropagation();
-          onSelect();
-        }}
-      >
-        <boxGeometry args={[boxW, boxH, boxD]} />
-        <meshStandardMaterial
-          color={highlightColor}
-          transparent
-          opacity={isSelected ? 0.3 : hovered ? 0.22 : 0.14}
-          roughness={0.4}
-          metalness={0.1}
-          depthWrite={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      {/* 2. Thin, crisp medical boundary edges around the VOI */}
-      <lineSegments geometry={edgesGeometry} position={[boxCenterX, boxCenterY, posZ]}>
-        <lineBasicMaterial
-          color={highlightColor}
-          transparent
-          opacity={isSelected ? 0.95 : hovered ? 0.8 : 0.45}
-        />
-      </lineSegments>
-
-      {/* 3. Real 2D slice contour projected directly on the 3D axial plane */}
+      {/* 1. Real 2D slice contour projected directly on the 3D axial plane slice */}
       {contourArray && (
-        <lineLoop>
+        <lineLoop
+          onPointerOver={handlePointerOver}
+          onPointerOut={handlePointerOut}
+          onClick={handleClick}
+        >
           <bufferGeometry>
             <bufferAttribute attach="attributes-position" args={[contourArray, 3]} />
           </bufferGeometry>
           <lineBasicMaterial
             color={highlightColor}
             transparent
-            opacity={isSelected ? 0.95 : 0.75}
+            opacity={isSelected ? 1.0 : hovered ? 0.95 : 0.8}
+            depthWrite={false}
           />
         </lineLoop>
       )}
 
-      {/* 4. Delicate Medical Reticle & Thin Hairline Leader Line (No huge sphere) */}
+      {/* 2. Delicate Planar Focal Reticle (Flat on the slice plane, no 3D vertical lines, no diamond dot, no box) */}
       <group position={[posX, posY, posZ]}>
-        {/* Axial ground target ring */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.008, 0.011, 32]} />
-          <meshBasicMaterial
-            color={highlightColor}
-            transparent
-            opacity={isSelected ? 0.95 : 0.6}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
-
-        {/* Micro center crosshair */}
-        <lineSegments>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              args={[
-                new Float32Array([
-                  -0.007, 0, 0, 0.007, 0, 0,
-                  0, -0.007, 0, 0, 0.007, 0,
-                ]),
-                3,
-              ]}
-            />
-          </bufferGeometry>
-          <lineBasicMaterial color={highlightColor} transparent opacity={0.8} />
-        </lineSegments>
-
-        {/* Thin hairline leader line extending to callout */}
-        <lineSegments>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              args={[new Float32Array([0, 0, 0, 0, 0.045, 0.015]), 3]}
-            />
-          </bufferGeometry>
-          <lineBasicMaterial color={highlightColor} transparent opacity={0.75} />
-        </lineSegments>
-
-        {/* Precision pin head (micro diamond marker, not an oversized ball) */}
+        {/* Subtle flat ring directly on the axial plane cut */}
         <mesh
-          position={[0, 0.045, 0.015]}
-          onPointerOver={(e: any) => {
-            e.stopPropagation();
-            setHovered(true);
-          }}
-          onPointerOut={(e: any) => {
-            e.stopPropagation();
-            setHovered(false);
-          }}
-          onClick={(e: any) => {
-            e.stopPropagation();
-            onSelect();
-          }}
+          rotation={[-Math.PI / 2, 0, 0]}
+          onPointerOver={handlePointerOver}
+          onPointerOut={handlePointerOut}
+          onClick={handleClick}
         >
-          <octahedronGeometry args={[0.006, 0]} />
-          <meshStandardMaterial
-            color={highlightColor}
-            emissive={highlightColor}
-            emissiveIntensity={isSelected ? 0.8 : 0.4}
-            roughness={0.2}
-          />
-        </mesh>
-
-        {/* 5. Interactive 3D Clinical Card & "View in 2D" */}
-        {(hovered || isSelected) && (
-          <Html position={[0, 0.065, 0.02]} center distanceFactor={2.2} zIndexRange={[100, 0]}>
-            <div
-              className={cn(
-                "flex flex-col gap-1.5 rounded-lg border bg-[#0d121c]/95 p-2.5 shadow-2xl backdrop-blur-md whitespace-nowrap select-none transition-all",
-                isSelected
-                  ? "border-cyan-400 ring-2 ring-cyan-400/30 text-white"
-                  : "border-[#1e293b] text-slate-200"
-              )}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{ backgroundColor: highlightColor }}
-                  />
-                  <span className="text-[11.5px] font-bold text-white tracking-tight">
-                    {marker.label}
-                  </span>
-                  {marker.findingType && (
-                    <span className="rounded bg-sky-950/80 border border-sky-500/30 px-1 py-0.2 font-mono text-[8.5px] text-sky-300 font-semibold uppercase">
-                      {marker.findingType}
-                    </span>
-                  )}
-                </div>
-                <span className="rounded bg-sky-950/80 px-1.5 py-0.5 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
-                  Slice {marker.sliceIndex + 1}
-                </span>
-              </div>
-
-              {marker.measureValue && (
-                <div className="font-mono text-[9.5px] text-slate-300">
-                  Size: <strong className="text-white font-semibold">{marker.measureValue}</strong>
-                </div>
-              )}
-
-              {marker.note && (
-                <div className="max-w-[170px] truncate text-[9.5px] text-slate-400 italic">
-                  "{marker.note}"
-                </div>
-              )}
-
-              {/* Instant "View in 2D" navigation */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelect();
-                }}
-                className="mt-0.5 flex items-center justify-center gap-1.5 rounded bg-sky-600 hover:bg-sky-500 px-2 py-1 text-[10px] font-semibold text-white shadow-sm transition-colors cursor-pointer"
-                title="Open 2D view, center on ROI, and highlight slice"
-              >
-                <Target className="h-3 w-3" />
-                <span>View in 2D</span>
-              </button>
-            </div>
-          </Html>
-        )}
-      </group>
-
-      {/* 6. Subtle Axial Reference Frame at Slice Elevation (when selected) */}
-      {isSelected && (
-        <mesh position={[0, 0, posZ]}>
-          <planeGeometry args={[volumeScale[0] * 1.05, volumeScale[1] * 1.05]} />
+          <ringGeometry args={[0.007, 0.010, 32]} />
           <meshBasicMaterial
-            color="#00F0FF"
+            color={highlightColor}
             transparent
-            opacity={0.06}
+            opacity={isSelected ? 0.95 : hovered ? 0.85 : 0.6}
             side={THREE.DoubleSide}
             depthWrite={false}
           />
         </mesh>
-      )}
+
+        {/* Delicate inner focal dot when hovered or selected */}
+        {(isSelected || hovered) && (
+          <mesh
+            rotation={[-Math.PI / 2, 0, 0]}
+            onPointerOver={handlePointerOver}
+            onPointerOut={handlePointerOut}
+            onClick={handleClick}
+          >
+            <circleGeometry args={[0.0035, 16]} />
+            <meshBasicMaterial
+              color={highlightColor}
+              transparent
+              opacity={isSelected ? 0.9 : 0.7}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+            />
+          </mesh>
+        )}
+      </group>
     </group>
   );
 }
@@ -1696,6 +1571,7 @@ function InteractiveFindingMarkersLayer({
   volumeDims,
   volumeScale,
   onSelectFindingMarker,
+  onHoverMarker,
 }: {
   findings?: Finding[];
   annotations?: ViewerAnnotation[];
@@ -1709,6 +1585,7 @@ function InteractiveFindingMarkersLayer({
     normY: number,
     seriesId?: string
   ) => void;
+  onHoverMarker?: (marker: InteractiveMarkerData | null) => void;
 }) {
   const markerItems: InteractiveMarkerData[] = useMemo(() => {
     const list: InteractiveMarkerData[] = [];
@@ -1888,6 +1765,9 @@ function InteractiveFindingMarkersLayer({
           isSelected={activeFindingId === m.id}
           onSelect={() => {
             onSelectFindingMarker?.(m.id, m.sliceIndex, m.normX, m.normY, m.seriesId);
+          }}
+          onHover={(hovered, marker) => {
+            onHoverMarker?.(hovered ? marker : null);
           }}
         />
       ))}

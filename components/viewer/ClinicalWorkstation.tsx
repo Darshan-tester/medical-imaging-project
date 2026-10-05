@@ -326,7 +326,7 @@ export function ClinicalWorkstation({
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
-        if (data.segments && Array.isArray(data.segments) && organMeshes.length === 0) {
+        if (data.segments && Array.isArray(data.segments) && data.segments.length > 0 && organMeshes.length === 0) {
           const loaded: OrganMeshState[] = data.segments.map((seg: any) => ({
             id: seg.id,
             name: seg.name,
@@ -339,12 +339,48 @@ export function ClinicalWorkstation({
             maxDiameterMm: seg.maxDiameterMm,
           }));
           setOrganMeshes(loaded);
+        } else if (organMeshes.length === 0) {
+          // Initialize structures tailored to active study body region
+          const isHead = (study.bodyRegion || "").toUpperCase().includes("HEAD") ||
+            (study.bodyRegion || "").toUpperCase().includes("BRAIN") ||
+            (activeSeries.label || "").toLowerCase().includes("brain") ||
+            (activeSeries.label || "").toLowerCase().includes("head");
+          if (isHead) {
+            setOrganMeshes([
+              { id: "skull", name: "Skull & Calvarium", group: "bone", color: "#F1F5F9", opacity: 0.85, visible: true, isolated: false, volumeMl: 650.0 },
+              { id: "brain", name: "Brain Parenchyma", group: "organ", color: "#F472B6", opacity: 0.75, visible: true, isolated: false, volumeMl: 1350.0 },
+              { id: "ventricles", name: "Ventricular System (CSF)", group: "organ", color: "#38BDF8", opacity: 0.8, visible: true, isolated: false, volumeMl: 32.5 },
+              { id: "vessels", name: "Intracranial Vasculature", group: "vessel", color: "#EF4444", opacity: 0.9, visible: false, isolated: false, volumeMl: 18.2 },
+            ]);
+          } else if ((study.bodyRegion || "").toUpperCase().includes("CHEST")) {
+            setOrganMeshes([
+              { id: "lungs", name: "Lungs Bilateral", group: "organ", color: "#06B6D4", opacity: 0.75, visible: true, isolated: false, volumeMl: 4200.0 },
+              { id: "heart", name: "Heart & Pericardium", group: "cardiac", color: "#F43F5E", opacity: 0.8, visible: true, isolated: false, volumeMl: 780.0 },
+              { id: "spine_ribs", name: "Thoracic Ribs & Spine", group: "bone", color: "#E2E8F0", opacity: 0.85, visible: true, isolated: false, volumeMl: 1100.0 },
+              { id: "aorta", name: "Thoracic Aorta", group: "vessel", color: "#DC2626", opacity: 0.9, visible: false, isolated: false, volumeMl: 185.0 },
+            ]);
+          }
         }
         if (data.metrics?.cardiac) {
           setCardiacMetrics(data.metrics.cardiac);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled && organMeshes.length === 0) {
+          const isHead = (study.bodyRegion || "").toUpperCase().includes("HEAD") ||
+            (study.bodyRegion || "").toUpperCase().includes("BRAIN") ||
+            (activeSeries.label || "").toLowerCase().includes("brain") ||
+            (activeSeries.label || "").toLowerCase().includes("head");
+          if (isHead) {
+            setOrganMeshes([
+              { id: "skull", name: "Skull & Calvarium", group: "bone", color: "#F1F5F9", opacity: 0.85, visible: true, isolated: false, volumeMl: 650.0 },
+              { id: "brain", name: "Brain Parenchyma", group: "organ", color: "#F472B6", opacity: 0.75, visible: true, isolated: false, volumeMl: 1350.0 },
+              { id: "ventricles", name: "Ventricular System (CSF)", group: "organ", color: "#38BDF8", opacity: 0.8, visible: true, isolated: false, volumeMl: 32.5 },
+              { id: "vessels", name: "Intracranial Vasculature", group: "vessel", color: "#EF4444", opacity: 0.9, visible: false, isolated: false, volumeMl: 18.2 },
+            ]);
+          }
+        }
+      });
 
     // Fetch 4D motion metadata if applicable
     if (hasGenuine4D) {
@@ -1410,9 +1446,11 @@ export function ClinicalWorkstation({
                     studyId={study.id}
                     seriesId={activeSeries.id}
                     modality={study.modality}
+                    bodyRegion={study.bodyRegion}
                     volumeUrl={imageUrlAt(0)}
                     sliceCount={activeSeries.sliceCount}
                     sliceUrlAt={imageUrlAt}
+                    showLayerPanel={false}
                     initialAnnotations={annotations3D}
                     onAnnotationsChange={setAnnotations3D}
                     findings={study.findings}
@@ -1470,9 +1508,11 @@ export function ClinicalWorkstation({
                       studyId={study.id}
                       seriesId={activeSeries.id}
                       modality={study.modality}
+                      bodyRegion={study.bodyRegion}
                       volumeUrl={imageUrlAt(0)}
                       sliceCount={activeSeries.sliceCount}
                       sliceUrlAt={imageUrlAt}
+                      showLayerPanel={false}
                       findings={study.findings}
                       annotations={annotations}
                       activeFindingId={selectedFindingId}

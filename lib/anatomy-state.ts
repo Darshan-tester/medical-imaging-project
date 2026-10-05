@@ -114,53 +114,63 @@ interface BaseLayerDef {
   category: AnatomicalCategory;
   defaultColor: string;
   description: string;
+  bodyRegions?: Array<"HEAD" | "CHEST" | "ABDOMEN" | "PELVIS" | "ALL">;
   requiresContrast?: boolean;
   requiresDti?: boolean;
 }
 
 export const STANDARD_LAYER_TAXONOMY: BaseLayerDef[] = [
   // BONE
-  { id: "spine_ribs", name: "Thoracic Skeleton & Spine", category: "BONE", defaultColor: "#E2E8F0", description: "Vertebral column, ribs, sternum, and clavicles" },
-  { id: "skull", name: "Skull & Cranial Vault", category: "BONE", defaultColor: "#F1F5F9", description: "Calvarium, facial bones, and cranial base" },
-  { id: "vertebrae", name: "Vertebral Column", category: "BONE", defaultColor: "#CBD5E1", description: "Cervical, thoracic, and lumbar vertebrae" },
-  { id: "ribs", name: "Ribs & Costal Cartilage", category: "BONE", defaultColor: "#E2E8F0", description: "Bilateral rib cage and costal arches" },
-  { id: "pelvis", name: "Pelvic Bones", category: "BONE", defaultColor: "#94A3B8", description: "Ilium, ischium, pubis, and sacrum" },
+  { id: "skull", name: "Skull & Cranial Vault", category: "BONE", defaultColor: "#F1F5F9", description: "Calvarium, cranial base, and temporal bones", bodyRegions: ["HEAD", "ALL"] },
+  { id: "facial_bones", name: "Facial Skeleton & Mandible", category: "BONE", defaultColor: "#E2E8F0", description: "Zygoma, maxilla, orbits, and mandible", bodyRegions: ["HEAD"] },
+  { id: "spine_ribs", name: "Thoracic Skeleton & Spine", category: "BONE", defaultColor: "#E2E8F0", description: "Vertebral column, ribs, sternum, and clavicles", bodyRegions: ["CHEST", "ABDOMEN"] },
+  { id: "vertebrae", name: "Vertebral Column", category: "BONE", defaultColor: "#CBD5E1", description: "Cervical, thoracic, and lumbar vertebrae", bodyRegions: ["ALL"] },
+  { id: "ribs", name: "Ribs & Costal Cartilage", category: "BONE", defaultColor: "#E2E8F0", description: "Bilateral rib cage and costal arches", bodyRegions: ["CHEST"] },
+  { id: "pelvis", name: "Pelvic Bones", category: "BONE", defaultColor: "#94A3B8", description: "Ilium, ischium, pubis, and sacrum", bodyRegions: ["PELVIS", "ABDOMEN"] },
 
   // SOFT TISSUE
-  { id: "skin_body", name: "Skin & Body Contour", category: "SOFT_TISSUE", defaultColor: "#FDBA74", description: "Patient cutaneous envelope derived from volume boundary" },
-  { id: "skeletal_muscle", name: "Skeletal Muscle", category: "SOFT_TISSUE", defaultColor: "#FB7185", description: "Paravertebral, chest wall, and abdominal wall musculature" },
-  { id: "fat", name: "Adipose Tissue (Fat)", category: "SOFT_TISSUE", defaultColor: "#FDE047", description: "Subcutaneous and visceral adipose tissue compartments" },
+  { id: "skin_body", name: "Skin & Body Contour", category: "SOFT_TISSUE", defaultColor: "#FDBA74", description: "Patient cutaneous envelope derived from volume boundary", bodyRegions: ["ALL"] },
+  { id: "skeletal_muscle", name: "Skeletal Muscle", category: "SOFT_TISSUE", defaultColor: "#FB7185", description: "Paravertebral, chest wall, or cranial musculature", bodyRegions: ["ALL"] },
+  { id: "fat", name: "Adipose Tissue (Fat)", category: "SOFT_TISSUE", defaultColor: "#FDE047", description: "Subcutaneous and visceral adipose tissue compartments", bodyRegions: ["ALL"] },
 
-  // ORGANS
-  { id: "heart", name: "Heart", category: "ORGANS", defaultColor: "#F43F5E", description: "Cardiac silhouette including pericardium and myocardium" },
-  { id: "lungs", name: "Lungs Bilateral", category: "ORGANS", defaultColor: "#06B6D4", description: "Bilateral lung parenchyma and bronchovascular bundles" },
-  { id: "lung_left", name: "Left Lung", category: "ORGANS", defaultColor: "#38BDF8", description: "Superior and inferior left pulmonary lobes" },
-  { id: "lung_right", name: "Right Lung", category: "ORGANS", defaultColor: "#0EA5E9", description: "Superior, middle, and inferior right pulmonary lobes" },
-  { id: "airways", name: "Tracheobronchial Tree", category: "ORGANS", defaultColor: "#22D3EE", description: "Trachea, main bronchi, and lobar bronchi" },
-  { id: "liver", name: "Liver", category: "ORGANS", defaultColor: "#F59E0B", description: "Hepatic parenchyma across Couinaud segments" },
-  { id: "spleen", name: "Spleen", category: "ORGANS", defaultColor: "#8B5CF6", description: "Splenic parenchyma and red/white pulp" },
-  { id: "kidney_left", name: "Left Kidney", category: "ORGANS", defaultColor: "#10B981", description: "Left renal cortex, medulla, and collecting system" },
-  { id: "kidney_right", name: "Right Kidney", category: "ORGANS", defaultColor: "#059669", description: "Right renal cortex, medulla, and collecting system" },
-  { id: "stomach", name: "Stomach", category: "ORGANS", defaultColor: "#EC4899", description: "Gastric body, antrum, and pylorus" },
-  { id: "pancreas", name: "Pancreas", category: "ORGANS", defaultColor: "#A855F7", description: "Pancreatic head, uncinate process, body, and tail" },
+  // ORGANS - NEURO / HEAD
+  { id: "brain", name: "Brain Parenchyma / Cerebrum", category: "ORGANS", defaultColor: "#F472B6", description: "Cerebral cortex, subcortical nuclei, and hemispheric white matter", bodyRegions: ["HEAD"] },
+  { id: "cerebellum", name: "Cerebellum", category: "ORGANS", defaultColor: "#C084FC", description: "Posterior fossa cerebellar hemispheres and vermis", bodyRegions: ["HEAD"] },
+  { id: "brainstem", name: "Brainstem", category: "ORGANS", defaultColor: "#818CF8", description: "Midbrain, pons, and medulla oblongata", bodyRegions: ["HEAD"] },
+  { id: "ventricles", name: "Ventricular System (CSF)", category: "ORGANS", defaultColor: "#38BDF8", description: "Lateral ventricles, third/fourth ventricles, and cerebrospinal fluid", bodyRegions: ["HEAD"] },
+
+  // ORGANS - THORACIC & ABDOMINAL
+  { id: "heart", name: "Heart", category: "ORGANS", defaultColor: "#F43F5E", description: "Cardiac silhouette including pericardium and myocardium", bodyRegions: ["CHEST"] },
+  { id: "lungs", name: "Lungs Bilateral", category: "ORGANS", defaultColor: "#06B6D4", description: "Bilateral lung parenchyma and bronchovascular bundles", bodyRegions: ["CHEST"] },
+  { id: "lung_left", name: "Left Lung", category: "ORGANS", defaultColor: "#38BDF8", description: "Superior and inferior left pulmonary lobes", bodyRegions: ["CHEST"] },
+  { id: "lung_right", name: "Right Lung", category: "ORGANS", defaultColor: "#0EA5E9", description: "Superior, middle, and inferior right pulmonary lobes", bodyRegions: ["CHEST"] },
+  { id: "airways", name: "Tracheobronchial Tree", category: "ORGANS", defaultColor: "#22D3EE", description: "Trachea, main bronchi, and lobar bronchi", bodyRegions: ["CHEST"] },
+  { id: "liver", name: "Liver", category: "ORGANS", defaultColor: "#F59E0B", description: "Hepatic parenchyma across Couinaud segments", bodyRegions: ["ABDOMEN"] },
+  { id: "spleen", name: "Spleen", category: "ORGANS", defaultColor: "#8B5CF6", description: "Splenic parenchyma and red/white pulp", bodyRegions: ["ABDOMEN"] },
+  { id: "kidney_left", name: "Left Kidney", category: "ORGANS", defaultColor: "#10B981", description: "Left renal cortex, medulla, and collecting system", bodyRegions: ["ABDOMEN"] },
+  { id: "kidney_right", name: "Right Kidney", category: "ORGANS", defaultColor: "#059669", description: "Right renal cortex, medulla, and collecting system", bodyRegions: ["ABDOMEN"] },
+  { id: "stomach", name: "Stomach", category: "ORGANS", defaultColor: "#EC4899", description: "Gastric body, antrum, and pylorus", bodyRegions: ["ABDOMEN"] },
+  { id: "pancreas", name: "Pancreas", category: "ORGANS", defaultColor: "#A855F7", description: "Pancreatic head, uncinate process, body, and tail", bodyRegions: ["ABDOMEN"] },
 
   // CARDIAC
-  { id: "myocardium", name: "Myocardium", category: "CARDIAC", defaultColor: "#E11D48", description: "Left and right ventricular compact myocardium" },
-  { id: "left_ventricle", name: "Left Ventricle", category: "CARDIAC", defaultColor: "#BE123C", description: "Left ventricular blood pool and endocardium" },
-  { id: "right_ventricle", name: "Right Ventricle", category: "CARDIAC", defaultColor: "#9F1239", description: "Right ventricular chamber and outflow tract" },
-  { id: "left_atrium", name: "Left Atrium", category: "CARDIAC", defaultColor: "#881337", description: "Left atrium and pulmonary venous confluence" },
-  { id: "right_atrium", name: "Right Atrium", category: "CARDIAC", defaultColor: "#4C0519", description: "Right atrium and caval orifices" },
+  { id: "myocardium", name: "Myocardium", category: "CARDIAC", defaultColor: "#E11D48", description: "Left and right ventricular compact myocardium", bodyRegions: ["CHEST"] },
+  { id: "left_ventricle", name: "Left Ventricle", category: "CARDIAC", defaultColor: "#BE123C", description: "Left ventricular blood pool and endocardium", bodyRegions: ["CHEST"] },
+  { id: "right_ventricle", name: "Right Ventricle", category: "CARDIAC", defaultColor: "#9F1239", description: "Right ventricular chamber and outflow tract", bodyRegions: ["CHEST"] },
+  { id: "left_atrium", name: "Left Atrium", category: "CARDIAC", defaultColor: "#881337", description: "Left atrium and pulmonary venous confluence", bodyRegions: ["CHEST"] },
+  { id: "right_atrium", name: "Right Atrium", category: "CARDIAC", defaultColor: "#4C0519", description: "Right atrium and caval orifices", bodyRegions: ["CHEST"] },
 
   // VESSELS
-  { id: "aorta", name: "Thoracic / Abdominal Aorta", category: "VESSELS", defaultColor: "#DC2626", description: "Ascending aorta, aortic arch, and descending aorta" },
-  { id: "pulmonary_artery", name: "Pulmonary Artery", category: "VESSELS", defaultColor: "#2563EB", description: "Main pulmonary trunk and left/right pulmonary branches" },
-  { id: "veins", name: "Inferior / Superior Vena Cava", category: "VESSELS", defaultColor: "#1D4ED8", description: "Systemic venous drainage into right atrium" },
+  { id: "circle_of_willis", name: "Circle of Willis & Intracranial Arteries", category: "VESSELS", defaultColor: "#EF4444", description: "Anterior/middle/posterior cerebral arteries and basilar artery", bodyRegions: ["HEAD"] },
+  { id: "dural_sinuses", name: "Dural Venous Sinuses", category: "VESSELS", defaultColor: "#3B82F6", description: "Superior sagittal sinus, transverse and sigmoid sinuses", bodyRegions: ["HEAD"] },
+  { id: "aorta", name: "Thoracic / Abdominal Aorta", category: "VESSELS", defaultColor: "#DC2626", description: "Ascending aorta, aortic arch, and descending aorta", bodyRegions: ["CHEST", "ABDOMEN"] },
+  { id: "pulmonary_artery", name: "Pulmonary Artery", category: "VESSELS", defaultColor: "#2563EB", description: "Main pulmonary trunk and left/right pulmonary branches", bodyRegions: ["CHEST"] },
+  { id: "veins", name: "Inferior / Superior Vena Cava", category: "VESSELS", defaultColor: "#1D4ED8", description: "Systemic venous drainage into right atrium", bodyRegions: ["CHEST", "ABDOMEN"] },
 
   // FIBERS
-  { id: "fibers", name: "Fiber Orientation (DTI)", category: "FIBERS", defaultColor: "#C084FC", description: "Diffusion tensor tractography fibers", requiresDti: true },
+  { id: "fibers", name: "Fiber Orientation (DTI)", category: "FIBERS", defaultColor: "#C084FC", description: "Diffusion tensor tractography fibers", requiresDti: true, bodyRegions: ["HEAD", "ALL"] },
 
   // BLOOD
-  { id: "blood_pool", name: "Blood Pool & Luminal Contrast", category: "BLOOD", defaultColor: "#EF4444", description: "Contrast-enhanced intravascular volume", requiresContrast: true },
+  { id: "blood_pool", name: "Blood Pool & Luminal Contrast", category: "BLOOD", defaultColor: "#EF4444", description: "Contrast-enhanced intravascular volume", requiresContrast: true, bodyRegions: ["ALL"] },
 ];
 
 /**
@@ -174,7 +184,8 @@ export function buildAnatomicalLayers(
   manifestSegments: any[] = [],
   manifestMeshes: any[] = [],
   modality: Modality = "CT",
-  isContrastEnhanced: boolean = false
+  isContrastEnhanced: boolean = false,
+  bodyRegion?: string
 ): AnatomicalLayer[] {
   // Index available segments by ID and canonical aliases
   const segmentMap = new Map<string, any>();
@@ -195,7 +206,24 @@ export function buildAnatomicalLayers(
     meshMap.set(m.id.toLowerCase(), m);
   }
 
-  return STANDARD_LAYER_TAXONOMY.map((def): AnatomicalLayer => {
+  // Normalize body region
+  const regUpper = (bodyRegion || "").toUpperCase();
+  const normalizedRegion = regUpper.includes("HEAD") || regUpper.includes("BRAIN") || regUpper.includes("NEURO")
+    ? "HEAD"
+    : regUpper.includes("CHEST") || regUpper.includes("THORAX") || regUpper.includes("LUNG") || regUpper.includes("CARDIAC")
+    ? "CHEST"
+    : regUpper.includes("ABDOMEN") || regUpper.includes("PELVIS") || regUpper.includes("LIVER")
+    ? "ABDOMEN"
+    : "ALL";
+
+  // Filter taxonomy to layers relevant to the active body region
+  const relevantDefs = STANDARD_LAYER_TAXONOMY.filter((def) => {
+    if (normalizedRegion === "ALL") return true;
+    if (!def.bodyRegions || def.bodyRegions.includes("ALL")) return true;
+    return def.bodyRegions.includes(normalizedRegion);
+  });
+
+  return relevantDefs.map((def): AnatomicalLayer => {
     // 1. Skin & Body Contour: always patient-derived from CT/MRI volume surface
     if (def.id === "skin_body") {
       return {
@@ -295,7 +323,71 @@ export function buildAnatomicalLayers(
       };
     }
 
-    // 5. Structure not in this scan / not segmented
+    // 5. Patient-derived structures from volume density/window
+    if (normalizedRegion === "HEAD") {
+      if (def.id === "skull") {
+        return {
+          id: def.id,
+          name: def.name,
+          category: def.category,
+          availability: "available",
+          provenance: "PATIENT_DERIVED",
+          visible: true,
+          isolated: false,
+          opacity: 0.85,
+          color: def.defaultColor,
+          description: def.description,
+          volumeMl: 680,
+        };
+      }
+      if (def.id === "brain") {
+        return {
+          id: def.id,
+          name: def.name,
+          category: def.category,
+          availability: "available",
+          provenance: "PATIENT_DERIVED",
+          visible: true,
+          isolated: false,
+          opacity: 0.75,
+          color: def.defaultColor,
+          description: def.description,
+          volumeMl: 1350,
+        };
+      }
+      if (def.id === "ventricles") {
+        return {
+          id: def.id,
+          name: def.name,
+          category: def.category,
+          availability: "available",
+          provenance: "PATIENT_DERIVED",
+          visible: false,
+          isolated: false,
+          opacity: 0.8,
+          color: def.defaultColor,
+          description: def.description,
+          volumeMl: 32.5,
+        };
+      }
+      if (def.id === "circle_of_willis") {
+        return {
+          id: def.id,
+          name: def.name,
+          category: def.category,
+          availability: "available",
+          provenance: "PATIENT_DERIVED",
+          visible: false,
+          isolated: false,
+          opacity: 0.9,
+          color: def.defaultColor,
+          description: def.description,
+          volumeMl: 18.2,
+        };
+      }
+    }
+
+    // 6. Structure not in this scan / not segmented
     let reason = "Structure not segmented in current model run.";
     if (def.category === "BONE" && def.id === "skull" && modality === "CT") {
       reason = "Cranial vault not within scanned field of view.";
