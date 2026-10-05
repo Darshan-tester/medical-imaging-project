@@ -144,6 +144,17 @@ export interface ViewerMeasurement {
   distanceMm?: number;
 }
 
+export type FindingType =
+  | "Lesion"
+  | "Nodule"
+  | "Mass"
+  | "Fracture"
+  | "Hemorrhage"
+  | "Calcification"
+  | "Fluid"
+  | "Abnormality"
+  | "Other";
+
 export type AnnotationShape =
   | "freehand"
   | "arrow"
@@ -152,7 +163,10 @@ export type AnnotationShape =
   | "line"
   | "angle"
   | "text"
-  | "marker";
+  | "marker"
+  | "point"
+  | "polygon"
+  | "measurement";
 
 /**
  * A radiologist-drawn pen/pencil stroke or geometric annotation. Coordinates are normalized (0-1)
@@ -175,14 +189,45 @@ export interface ViewerAnnotation {
   opacity: number; // 0-1
   createdAt: string;
   updatedAt: string;
+  visible?: boolean;
+
+  /** Clinical finding category / classification */
+  findingType?: FindingType | string;
+  /** Primary label/finding name */
+  finding?: string;
+  /** Optional custom text label */
+  label?: string;
   /** A short free-text note directly on the stroke — distinct from a full `RadiologistFinding`. */
   radiologistNote?: string;
   /** Set once the radiologist writes a full finding for this stroke via "Add Finding". */
   findingId?: string;
-  /** Optional custom text label */
-  text?: string;
-  /** Calculated measurement string (e.g. "12.4 mm", "45.0°", "180 mm²") */
+
+  /** Primary image coordinates (normalized 0-1) */
+  imageCoordinates?: {
+    x: number;
+    y: number;
+  };
+
+  /** Real 3D patient coordinates (mm or normalized volume space) */
+  worldCoordinates?: {
+    x: number;
+    y: number;
+    z: number;
+  };
+
+  /** Detailed clinical measurement */
+  measurement?: {
+    distance?: number;
+    area?: number;
+    volume?: number;
+    unit?: string;
+  };
+
+  /** Formatted measurement string (e.g. "12.4 mm", "45.0°", "180.5 mm²") */
   measureValue?: string;
+
+  /** Text label content if type === "text" */
+  text?: string;
 }
 
 /** 3D spatial annotation attached to anatomical volume coordinates. */
@@ -190,13 +235,27 @@ export interface Annotation3D {
   id: string;
   studyId: string;
   seriesId: string;
-  type: "marker" | "label" | "arrow" | "distance" | "roi";
+  sliceIndex?: number;
+  annotation2DId?: string;
+  type: "marker" | "label" | "arrow" | "distance" | "roi" | "contour";
   position: [number, number, number]; // normalized -0.5..0.5 in volume object space
   endPosition?: [number, number, number];
+  bounds?: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    normZ: number;
+    depth?: number;
+  };
+  contourPoints?: Array<{ x: number; y: number }>;
   label?: string;
+  findingType?: FindingType | string;
   note?: string;
   color: string;
   createdAt: string;
+  visible?: boolean;
+  measureValue?: string;
 }
 
 export type ViewportLayout = "1x1" | "1x2" | "2x1" | "1+2" | "2x2" | "mpr-3d";

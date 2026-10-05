@@ -1,8 +1,20 @@
 "use client";
 
-import { useRef, useState, useEffect } from "react";
-import { FileText, MessageSquare, Trash2, X, Check, Type, Move, Box } from "lucide-react";
-import { ViewerAnnotation, AnnotationShape } from "@/lib/types";
+import { useRef, useState, useEffect, useCallback } from "react";
+import {
+  FileText,
+  Trash2,
+  X,
+  Check,
+  Box,
+  CornerDownLeft,
+  Crosshair,
+  Layers,
+  Sparkles,
+  ChevronRight,
+  Info,
+} from "lucide-react";
+import { ViewerAnnotation, AnnotationShape, FindingType } from "@/lib/types";
 import { ViewerTool } from "./ViewerToolbar";
 import { cn } from "@/lib/utils";
 
@@ -39,7 +51,11 @@ function centroid(points: Point[]): Point {
   return { x: sum.x / n, y: sum.y / n };
 }
 
-function calculateDistance(a: Point, b: Point, pixelSpacing?: [number, number]): { px: number; text: string } {
+function calculateDistance(
+  a: Point,
+  b: Point,
+  pixelSpacing?: [number, number]
+): { px: number; mm?: number; text: string } {
   const dx = (a.x - b.x) * 512;
   const dy = (a.y - b.y) * 512;
   const px = Math.round(Math.hypot(dx, dy));
@@ -47,9 +63,9 @@ function calculateDistance(a: Point, b: Point, pixelSpacing?: [number, number]):
     const mmX = (a.x - b.x) * 512 * pixelSpacing[1];
     const mmY = (a.y - b.y) * 512 * pixelSpacing[0];
     const mm = Math.hypot(mmX, mmY);
-    return { px, text: `${mm.toFixed(1)} mm` };
+    return { px, mm, text: `${mm.toFixed(1)} mm` };
   }
-  return { px, text: `${px} px` };
+  return { px, text: `${px} px (relative)` };
 }
 
 function calculateAngle(a: Point, b: Point, c: Point): number {
@@ -61,29 +77,71 @@ function calculateAngle(a: Point, b: Point, c: Point): number {
   if (magAB === 0 || magCB === 0) return 0;
   let cosTheta = dot / (magAB * magCB);
   cosTheta = Math.max(-1, Math.min(1, cosTheta));
-  return Math.round((Math.acos(cosTheta) * 180) / Math.PI * 10) / 10;
+  return Math.round(((Math.acos(cosTheta) * 180) / Math.PI) * 10) / 10;
 }
 
-function calculateRectArea(p0: Point, p1: Point, pixelSpacing?: [number, number]): string {
-  const wPx = Math.abs(p1.x - p0.x) * 512;
-  const hPx = Math.abs(p1.y - p0.y) * 512;
+function calculateRectArea(
+  p0: Point,
+  p1: Point,
+  pixelSpacing?: [number, number]
+): { area: number; text: string; unit: string } {
+  const wNorm = Math.abs(p1.x - p0.x);
+  const hNorm = Math.abs(p1.y - p0.y);
+  const wPx = wNorm * 512;
+  const hPx = hNorm * 512;
+  const pxArea = wPx * hPx;
   if (pixelSpacing) {
     const wMm = wPx * pixelSpacing[1];
     const hMm = hPx * pixelSpacing[0];
-    const area = wMm * hMm;
-    return `${area.toFixed(1)} mm²`;
+    const mmArea = wMm * hMm;
+    if (mmArea >= 100) {
+      return { area: mmArea / 100, text: `${(mmArea / 100).toFixed(2)} cm²`, unit: "cm²" };
+    }
+    return { area: mmArea, text: `${mmArea.toFixed(1)} mm²`, unit: "mm²" };
   }
-  return `${Math.round(wPx * hPx)} px²`;
+  return { area: Math.round(pxArea), text: `${Math.round(pxArea)} px² (relative)`, unit: "px²" };
 }
 
-function calculateCircleArea(p0: Point, p1: Point, pixelSpacing?: [number, number]): string {
-  const rPx = Math.hypot((p1.x - p0.x) * 512, (p1.y - p0.y) * 512);
+function calculateCircleArea(
+  p0: Point,
+  p1: Point,
+  pixelSpacing?: [number, number]
+): { area: number; text: string; unit: string } {
+  const rNorm = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+  const rPx = rNorm * 512;
+  const pxArea = Math.PI * rPx * rPx;
   if (pixelSpacing) {
     const rMm = rPx * ((pixelSpacing[0] + pixelSpacing[1]) / 2);
-    const area = Math.PI * rMm * rMm;
-    return `${area.toFixed(1)} mm²`;
+    const mmArea = Math.PI * rMm * rMm;
+    if (mmArea >= 100) {
+      return { area: mmArea / 100, text: `${(mmArea / 100).toFixed(2)} cm²`, unit: "cm²" };
+    }
+    return { area: mmArea, text: `${mmArea.toFixed(1)} mm²`, unit: "mm²" };
   }
-  return `${Math.round(Math.PI * rPx * rPx)} px²`;
+  return { area: Math.round(pxArea), text: `${Math.round(pxArea)} px² (relative)`, unit: "px²" };
+}
+
+function calculatePolygonArea(
+  points: Point[],
+  pixelSpacing?: [number, number]
+): { area: number; text: string; unit: string } {
+  if (points.length < 3) return { area: 0, text: "0 px²", unit: "px²" };
+  let shoelace = 0;
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    shoelace += points[i].x * points[j].y - points[j].x * points[i].y;
+  }
+  const normArea = Math.abs(shoelace) / 2;
+  const pxArea = normArea * 512 * 512;
+  if (pixelSpacing) {
+    const mmArea = normArea * (512 * pixelSpacing[1]) * (512 * pixelSpacing[0]);
+    if (mmArea >= 100) {
+      return { area: mmArea / 100, text: `${(mmArea / 100).toFixed(2)} cm²`, unit: "cm²" };
+    }
+    return { area: mmArea, text: `${mmArea.toFixed(1)} mm²`, unit: "mm²" };
+  }
+  return { area: Math.round(pxArea), text: `${Math.round(pxArea)} px² (relative)`, unit: "px²" };
 }
 
 export function AnnotationCanvas({
@@ -94,7 +152,13 @@ export function AnnotationCanvas({
   brushSize,
   brushOpacity,
   selectedId,
+  emphasizedId,
   pixelSpacing,
+  studyId = "",
+  seriesId = "",
+  sliceIndex = 0,
+  activeFindingType = "Lesion",
+  activeCustomLabel = "",
   onSelect,
   onCommitStroke,
   onCommitAnnotation,
@@ -111,7 +175,13 @@ export function AnnotationCanvas({
   brushSize: number;
   brushOpacity: number;
   selectedId: string | null;
+  emphasizedId?: string | null;
   pixelSpacing?: [number, number];
+  studyId?: string;
+  seriesId?: string;
+  sliceIndex?: number;
+  activeFindingType?: FindingType | string;
+  activeCustomLabel?: string;
   onSelect: (id: string | null) => void;
   onCommitStroke: (points: Point[]) => void;
   onCommitAnnotation?: (ann: ViewerAnnotation) => void;
@@ -125,12 +195,16 @@ export function AnnotationCanvas({
   const livePathRef = useRef<SVGPathElement | null>(null);
   const drawingPoints = useRef<Point[]>([]);
   const pointerActive = useRef(false);
+
   const [isDrawing, setIsDrawing] = useState(false);
   const [livePoints, setLivePoints] = useState<Point[]>([]);
   const [anglePoints, setAnglePoints] = useState<Point[]>([]);
+  const [polygonPoints, setPolygonPoints] = useState<Point[]>([]);
+  const [mousePos, setMousePos] = useState<Point | null>(null);
   const [textInputPos, setTextInputPos] = useState<Point | null>(null);
   const [textInputValue, setTextInputValue] = useState("");
-  const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
+  const [noteInputValue, setNoteInputValue] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
 
   const selected = annotations.find((a) => a.id === selectedId) ?? null;
 
@@ -144,40 +218,134 @@ export function AnnotationCanvas({
     "circle",
     "text",
     "annotate",
+    "point",
+    "polygon",
   ].includes(activeTool);
 
-  const getRelative = (e: React.PointerEvent): Point => {
-    const rect = wrapperRef.current!.getBoundingClientRect();
+  const getRelative = useCallback((e: React.PointerEvent | MouseEvent): Point => {
+    if (!wrapperRef.current) return { x: 0, y: 0 };
+    const rect = wrapperRef.current.getBoundingClientRect();
     return {
       x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
       y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
     };
+  }, []);
+
+  // Keyboard shortcut listener for Polygon tool (Enter = close, Esc = cancel)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (polygonPoints.length > 0) {
+        if (e.key === "Enter" && polygonPoints.length >= 3) {
+          e.preventDefault();
+          commitPolygon(polygonPoints);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          setPolygonPoints([]);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [polygonPoints]);
+
+  const commitPolygon = (pts: Point[]) => {
+    if (pts.length < 3) {
+      setPolygonPoints([]);
+      return;
+    }
+    const c = centroid(pts);
+    const areaResult = calculatePolygonArea(pts, pixelSpacing);
+    const ann: ViewerAnnotation = {
+      id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      studyId,
+      seriesId,
+      sliceIndex,
+      type: "polygon",
+      points: pts,
+      color: brushColor,
+      strokeWidth: brushSize,
+      opacity: brushOpacity,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      visible: true,
+      findingType: activeFindingType,
+      finding: activeCustomLabel || `${activeFindingType} ROI`,
+      label: activeCustomLabel || `${activeFindingType} ROI`,
+      measureValue: areaResult.text,
+      measurement: {
+        area: areaResult.area,
+        unit: areaResult.unit,
+      },
+      imageCoordinates: { x: c.x, y: c.y },
+    };
+    onCommitAnnotation?.(ann);
+    onSelect(ann.id);
+    setPolygonPoints([]);
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!active || !isAnnotationTool) return;
     e.stopPropagation();
     (e.target as Element).setPointerCapture?.(e.pointerId);
-    pointerActive.current = true;
+
     const p = getRelative(e);
 
+    // Text tool: click to show text input
     if (activeTool === "text") {
       setTextInputPos(p);
       setTextInputValue("");
-      pointerActive.current = false;
       return;
     }
 
+    // Point/Marker tool: click to drop point marker immediately
+    if (activeTool === "annotate" || activeTool === "point") {
+      const ann: ViewerAnnotation = {
+        id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        studyId,
+        seriesId,
+        sliceIndex,
+        type: "marker",
+        points: [p],
+        color: brushColor,
+        strokeWidth: brushSize,
+        opacity: brushOpacity,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        visible: true,
+        findingType: activeFindingType,
+        finding: activeCustomLabel || `${activeFindingType} Marker`,
+        label: activeCustomLabel || `${activeFindingType} Marker`,
+        imageCoordinates: { x: p.x, y: p.y },
+      };
+      onCommitAnnotation?.(ann);
+      onSelect(ann.id);
+      return;
+    }
+
+    // Polygon tool: click to add vertex, or click near start to close
+    if (activeTool === "polygon") {
+      if (polygonPoints.length >= 2) {
+        const start = polygonPoints[0];
+        const distToStart = Math.hypot(p.x - start.x, p.y - start.y);
+        if (distToStart < 0.028) {
+          commitPolygon(polygonPoints);
+          return;
+        }
+      }
+      setPolygonPoints((prev) => [...prev, p]);
+      return;
+    }
+
+    // Angle tool: 3-point click
     if (activeTool === "angle") {
       const next = [...anglePoints, p];
       if (next.length === 3) {
-        // Complete angle annotation
         const angleDeg = calculateAngle(next[0], next[1], next[2]);
         const ann: ViewerAnnotation = {
           id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          studyId: "",
-          seriesId: "",
-          sliceIndex: 0,
+          studyId,
+          seriesId,
+          sliceIndex,
           type: "angle",
           points: next,
           color: brushColor,
@@ -185,26 +353,36 @@ export function AnnotationCanvas({
           opacity: brushOpacity,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          visible: true,
+          findingType: activeFindingType,
+          finding: activeCustomLabel || `${activeFindingType} Angle`,
+          label: activeCustomLabel || `${activeFindingType} Angle`,
           measureValue: `${angleDeg}°`,
+          imageCoordinates: { x: next[1].x, y: next[1].y },
         };
         onCommitAnnotation?.(ann);
+        onSelect(ann.id);
         setAnglePoints([]);
       } else {
         setAnglePoints(next);
       }
-      pointerActive.current = false;
       return;
     }
 
+    // Drag-based tools: pen, line, rect, circle, arrow, measure
+    pointerActive.current = true;
     drawingPoints.current = [p];
     setLivePoints([p]);
     setIsDrawing(true);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!active || !pointerActive.current) return;
-    e.stopPropagation();
+    if (!active) return;
     const p = getRelative(e);
+    setMousePos(p);
+
+    if (!pointerActive.current) return;
+    e.stopPropagation();
 
     if (activeTool === "pen") {
       const last = drawingPoints.current[drawingPoints.current.length - 1];
@@ -215,7 +393,6 @@ export function AnnotationCanvas({
         }
       }
     } else {
-      // Shape tools: line, arrow, rect, circle, measure
       const start = drawingPoints.current[0];
       if (start) {
         setLivePoints([start, p]);
@@ -234,7 +411,34 @@ export function AnnotationCanvas({
 
     if (activeTool === "pen") {
       if (pts.length >= 2) {
-        onCommitStroke(pts);
+        const c = centroid(pts);
+        const areaResult = calculatePolygonArea(pts, pixelSpacing);
+        const ann: ViewerAnnotation = {
+          id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          studyId,
+          seriesId,
+          sliceIndex,
+          type: "freehand",
+          points: pts,
+          color: brushColor,
+          strokeWidth: brushSize,
+          opacity: brushOpacity,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          visible: true,
+          findingType: activeFindingType,
+          finding: activeCustomLabel || `${activeFindingType} Contour`,
+          label: activeCustomLabel || `${activeFindingType} Contour`,
+          measureValue: pts.length > 5 ? areaResult.text : undefined,
+          measurement: pts.length > 5 ? { area: areaResult.area, unit: areaResult.unit } : undefined,
+          imageCoordinates: { x: c.x, y: c.y },
+        };
+        if (onCommitAnnotation) {
+          onCommitAnnotation(ann);
+        } else {
+          onCommitStroke(pts);
+        }
+        onSelect(ann.id);
       }
       drawingPoints.current = [];
       setLivePoints([]);
@@ -246,11 +450,12 @@ export function AnnotationCanvas({
       const start = pts[0];
       const dist = Math.hypot(endPoint.x - start.x, endPoint.y - start.y);
 
-      // If clicked without dragging, hit test existing annotations
-      if (dist < 0.01) {
+      // Click without drag: hit-test existing annotations
+      if (dist < 0.015) {
         let bestId: string | null = null;
         let bestDist = SELECT_HIT_DISTANCE;
         for (const ann of annotations) {
+          if (ann.visible === false) continue;
           const c = centroid(ann.points);
           const d = Math.hypot(endPoint.x - c.x, endPoint.y - c.y);
           if (d < bestDist) {
@@ -264,30 +469,37 @@ export function AnnotationCanvas({
         return;
       }
 
-      // Commit shape annotation
+      // Shape tools commit
       let shapeType: AnnotationShape = "line";
       let measureVal: string | undefined = undefined;
+      let measureObj: { distance?: number; area?: number; unit?: string } | undefined = undefined;
 
       if (activeTool === "measure" || activeTool === "line") {
-        shapeType = activeTool === "measure" ? "line" : "line";
-        measureVal = calculateDistance(start, endPoint, pixelSpacing).text;
+        shapeType = "line";
+        const res = calculateDistance(start, endPoint, pixelSpacing);
+        measureVal = res.text;
+        measureObj = { distance: res.mm || res.px, unit: pixelSpacing ? "mm" : "px" };
       } else if (activeTool === "arrow") {
         shapeType = "arrow";
       } else if (activeTool === "rect") {
         shapeType = "rectangle";
-        measureVal = calculateRectArea(start, endPoint, pixelSpacing);
+        const res = calculateRectArea(start, endPoint, pixelSpacing);
+        measureVal = res.text;
+        measureObj = { area: res.area, unit: res.unit };
       } else if (activeTool === "circle") {
         shapeType = "circle";
-        measureVal = calculateCircleArea(start, endPoint, pixelSpacing);
-      } else if (activeTool === "annotate") {
-        shapeType = "marker";
+        const res = calculateCircleArea(start, endPoint, pixelSpacing);
+        measureVal = res.text;
+        measureObj = { area: res.area, unit: res.unit };
       }
+
+      const c = { x: (start.x + endPoint.x) / 2, y: (start.y + endPoint.y) / 2 };
 
       const ann: ViewerAnnotation = {
         id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        studyId: "",
-        seriesId: "",
-        sliceIndex: 0,
+        studyId,
+        seriesId,
+        sliceIndex,
         type: shapeType,
         points: [start, endPoint],
         color: brushColor,
@@ -295,7 +507,13 @@ export function AnnotationCanvas({
         opacity: brushOpacity,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        visible: true,
+        findingType: activeFindingType,
+        finding: activeCustomLabel || `${activeFindingType} ROI`,
+        label: activeCustomLabel || `${activeFindingType} ROI`,
         measureValue: measureVal,
+        measurement: measureObj,
+        imageCoordinates: c,
       };
 
       if (onCommitAnnotation) {
@@ -315,19 +533,25 @@ export function AnnotationCanvas({
     if (textInputPos && textInputValue.trim()) {
       const ann: ViewerAnnotation = {
         id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        studyId: "",
-        seriesId: "",
-        sliceIndex: 0,
+        studyId,
+        seriesId,
+        sliceIndex,
         type: "text",
         points: [textInputPos],
         color: brushColor,
         strokeWidth: brushSize,
         opacity: brushOpacity,
         text: textInputValue.trim(),
+        findingType: activeFindingType,
+        finding: textInputValue.trim(),
+        label: textInputValue.trim(),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        visible: true,
+        imageCoordinates: { x: textInputPos.x, y: textInputPos.y },
       };
       onCommitAnnotation?.(ann);
+      onSelect(ann.id);
     }
     setTextInputPos(null);
     setTextInputValue("");
@@ -341,6 +565,11 @@ export function AnnotationCanvas({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onDoubleClick={() => {
+        if (activeTool === "polygon" && polygonPoints.length >= 3) {
+          commitPolygon(polygonPoints);
+        }
+      }}
       className={cn(
         "absolute inset-0 h-full w-full select-none",
         active && isAnnotationTool ? "pointer-events-auto cursor-crosshair" : "pointer-events-none"
@@ -359,30 +588,35 @@ export function AnnotationCanvas({
 
         {/* Committed annotations */}
         {annotations.map((ann) => {
+          if (ann.visible === false) return null;
           const isSelected = ann.id === selectedId;
+          const isEmphasized = ann.id === emphasizedId;
           const color = ann.color || brushColor;
           const width = ann.strokeWidth || brushSize;
           const opacity = ann.opacity ?? 1;
 
+          // Freehand Contour
           if (ann.type === "freehand") {
             const d = pointsToPathD(ann.points);
             return (
               <g key={ann.id}>
-                {isSelected && (
+                {(isSelected || isEmphasized) && (
                   <path
                     d={d}
                     fill="none"
-                    stroke="#38BDF8"
-                    strokeWidth={width + 3}
+                    stroke="#00F0FF"
+                    strokeWidth={width + 3.5}
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    opacity={0.4}
+                    opacity={0.5}
                     vectorEffect="non-scaling-stroke"
+                    className={isEmphasized ? "animate-pulse" : undefined}
                   />
                 )}
                 <path
                   d={d}
-                  fill="none"
+                  fill={color}
+                  fillOpacity={isSelected ? 0.22 : 0.12}
                   stroke={color}
                   strokeWidth={width}
                   strokeLinecap="round"
@@ -390,25 +624,98 @@ export function AnnotationCanvas({
                   strokeOpacity={opacity}
                   vectorEffect="non-scaling-stroke"
                 />
+                {ann.measureValue && (
+                  <text
+                    x={centroid(ann.points).x * 100}
+                    y={centroid(ann.points).y * 100 - 1.5}
+                    fill={color}
+                    fontSize="2.8"
+                    textAnchor="middle"
+                    className="font-mono font-bold"
+                    style={{ textShadow: "0 1px 2px #000" }}
+                  >
+                    {ann.measureValue}
+                  </text>
+                )}
               </g>
             );
           }
 
-          if (ann.type === "line") {
+          // Polygon ROI
+          if (ann.type === "polygon") {
+            const ptsStr = ann.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ");
+            const c = centroid(ann.points);
+            return (
+              <g key={ann.id}>
+                {(isSelected || isEmphasized) && (
+                  <polygon
+                    points={ptsStr}
+                    fill="none"
+                    stroke="#00F0FF"
+                    strokeWidth={width + 3.5}
+                    opacity={0.5}
+                    vectorEffect="non-scaling-stroke"
+                    className={isEmphasized ? "animate-pulse" : undefined}
+                  />
+                )}
+                <polygon
+                  points={ptsStr}
+                  fill={color}
+                  fillOpacity={isSelected ? 0.24 : 0.14}
+                  stroke={color}
+                  strokeWidth={width}
+                  strokeOpacity={opacity}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {/* Vertex handles */}
+                {isSelected &&
+                  ann.points.map((pt, i) => (
+                    <circle
+                      key={i}
+                      cx={pt.x * 100}
+                      cy={pt.y * 100}
+                      r={0.9}
+                      fill="#FFFFFF"
+                      stroke={color}
+                      strokeWidth={1}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
+                {ann.measureValue && (
+                  <text
+                    x={c.x * 100}
+                    y={c.y * 100 - 1.2}
+                    fill={color}
+                    fontSize="2.8"
+                    textAnchor="middle"
+                    className="font-mono font-bold"
+                    style={{ textShadow: "0 1px 2px #000" }}
+                  >
+                    {ann.label ? `${ann.label}: ` : "ROI: "}
+                    {ann.measureValue}
+                  </text>
+                )}
+              </g>
+            );
+          }
+
+          // Line / Distance Measurement
+          if (ann.type === "line" || ann.type === "measurement") {
             const [p0, p1] = ann.points;
             if (!p0 || !p1) return null;
             return (
               <g key={ann.id}>
-                {isSelected && (
+                {(isSelected || isEmphasized) && (
                   <line
                     x1={p0.x * 100}
                     y1={p0.y * 100}
                     x2={p1.x * 100}
                     y2={p1.y * 100}
-                    stroke="#38BDF8"
-                    strokeWidth={width + 3}
-                    opacity={0.4}
+                    stroke="#00F0FF"
+                    strokeWidth={width + 3.5}
+                    opacity={0.5}
                     vectorEffect="non-scaling-stroke"
+                    className={isEmphasized ? "animate-pulse" : undefined}
                   />
                 )}
                 <line
@@ -431,6 +738,7 @@ export function AnnotationCanvas({
                     fontSize="3"
                     textAnchor="middle"
                     className="font-mono font-bold"
+                    style={{ textShadow: "0 1px 2px #000" }}
                   >
                     {ann.measureValue}
                   </text>
@@ -439,6 +747,7 @@ export function AnnotationCanvas({
             );
           }
 
+          // Arrow Pointer
           if (ann.type === "arrow") {
             const [p0, p1] = ann.points;
             if (!p0 || !p1) return null;
@@ -460,6 +769,7 @@ export function AnnotationCanvas({
             );
           }
 
+          // Rectangle / Bounding Box ROI
           if (ann.type === "rectangle") {
             const [p0, p1] = ann.points;
             if (!p0 || !p1) return null;
@@ -469,26 +779,55 @@ export function AnnotationCanvas({
             const h = Math.abs(p1.y - p0.y) * 100;
             return (
               <g key={ann.id}>
+                {(isSelected || isEmphasized) && (
+                  <rect
+                    x={x}
+                    y={y}
+                    width={w}
+                    height={h}
+                    fill="none"
+                    stroke="#00F0FF"
+                    strokeWidth={width + 3.5}
+                    opacity={0.5}
+                    vectorEffect="non-scaling-stroke"
+                    className={isEmphasized ? "animate-pulse" : undefined}
+                  />
+                )}
                 <rect
                   x={x}
                   y={y}
                   width={w}
                   height={h}
                   fill={color}
-                  fillOpacity={opacity * 0.12}
+                  fillOpacity={isSelected ? 0.22 : 0.12}
                   stroke={color}
                   strokeWidth={width}
                   vectorEffect="non-scaling-stroke"
                 />
+                {/* Corner reticle marks */}
+                <line x1={x} y1={y} x2={x + Math.min(3, w * 0.3)} y2={y} stroke={color} strokeWidth={width + 0.5} vectorEffect="non-scaling-stroke" />
+                <line x1={x} y1={y} x2={x} y2={y + Math.min(3, h * 0.3)} stroke={color} strokeWidth={width + 0.5} vectorEffect="non-scaling-stroke" />
+                <line x1={x + w} y1={y + h} x2={x + w - Math.min(3, w * 0.3)} y2={y + h} stroke={color} strokeWidth={width + 0.5} vectorEffect="non-scaling-stroke" />
+                <line x1={x + w} y1={y + h} x2={x + w} y2={y + h - Math.min(3, h * 0.3)} stroke={color} strokeWidth={width + 0.5} vectorEffect="non-scaling-stroke" />
+
                 {ann.measureValue && (
-                  <text x={x} y={y - 1.2} fill={color} fontSize="2.8" className="font-mono font-bold">
-                    ROI: {ann.measureValue}
+                  <text
+                    x={x}
+                    y={y - 1.2}
+                    fill={color}
+                    fontSize="2.8"
+                    className="font-mono font-bold"
+                    style={{ textShadow: "0 1px 2px #000" }}
+                  >
+                    {ann.label ? `${ann.label}: ` : "ROI: "}
+                    {ann.measureValue}
                   </text>
                 )}
               </g>
             );
           }
 
+          // Circle / Ellipse ROI
           if (ann.type === "circle") {
             const [p0, p1] = ann.points;
             if (!p0 || !p1) return null;
@@ -497,52 +836,90 @@ export function AnnotationCanvas({
             const r = Math.hypot((p1.x - p0.x) * 100, (p1.y - p0.y) * 100);
             return (
               <g key={ann.id}>
+                {(isSelected || isEmphasized) && (
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={r}
+                    fill="none"
+                    stroke="#00F0FF"
+                    strokeWidth={width + 3.5}
+                    opacity={0.5}
+                    vectorEffect="non-scaling-stroke"
+                    className={isEmphasized ? "animate-pulse" : undefined}
+                  />
+                )}
                 <circle
                   cx={cx}
                   cy={cy}
                   r={r}
                   fill={color}
-                  fillOpacity={opacity * 0.12}
+                  fillOpacity={isSelected ? 0.22 : 0.12}
                   stroke={color}
                   strokeWidth={width}
                   vectorEffect="non-scaling-stroke"
                 />
+                {/* Center crosshair */}
+                <circle cx={cx} cy={cy} r={0.7} fill={color} />
                 {ann.measureValue && (
-                  <text x={cx - r} y={cy - r - 1.2} fill={color} fontSize="2.8" className="font-mono font-bold">
-                    ROI: {ann.measureValue}
+                  <text
+                    x={cx - r}
+                    y={cy - r - 1.2}
+                    fill={color}
+                    fontSize="2.8"
+                    className="font-mono font-bold"
+                    style={{ textShadow: "0 1px 2px #000" }}
+                  >
+                    {ann.label ? `${ann.label}: ` : "ROI: "}
+                    {ann.measureValue}
                   </text>
                 )}
               </g>
             );
           }
 
-          if (ann.type === "angle") {
-            const [p0, p1, p2] = ann.points;
-            if (!p0 || !p1 || !p2) return null;
+          // Point Marker / Calibrated Pin
+          if (ann.type === "marker" || ann.type === "point") {
+            const [p0] = ann.points;
+            if (!p0) return null;
+            const cx = p0.x * 100;
+            const cy = p0.y * 100;
             return (
               <g key={ann.id}>
-                <polyline
-                  points={`${p0.x * 100},${p0.y * 100} ${p1.x * 100},${p1.y * 100} ${p2.x * 100},${p2.y * 100}`}
-                  fill="none"
-                  stroke={color}
-                  strokeWidth={width}
-                  vectorEffect="non-scaling-stroke"
-                />
-                <circle cx={p1.x * 100} cy={p1.y * 100} r={1.5} fill={color} />
-                <text
-                  x={p1.x * 100}
-                  y={p1.y * 100 - 2}
-                  fill={color}
-                  fontSize="3"
-                  textAnchor="middle"
-                  className="font-mono font-bold"
-                >
-                  {ann.measureValue}
-                </text>
+                {(isSelected || isEmphasized) && (
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={2.8}
+                    fill="none"
+                    stroke="#00F0FF"
+                    strokeWidth={1.5}
+                    className={isEmphasized ? "animate-pulse" : undefined}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+                {/* Target reticle crosshairs */}
+                <circle cx={cx} cy={cy} r={1.6} fill="none" stroke={color} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                <circle cx={cx} cy={cy} r={0.6} fill={color} />
+                <line x1={cx - 2.5} y1={cy} x2={cx + 2.5} y2={cy} stroke={color} strokeWidth={0.8} vectorEffect="non-scaling-stroke" />
+                <line x1={cx} y1={cy - 2.5} x2={cx} y2={cy + 2.5} stroke={color} strokeWidth={0.8} vectorEffect="non-scaling-stroke" />
+                {ann.label && (
+                  <text
+                    x={cx + 3.2}
+                    y={cy + 1}
+                    fill={color}
+                    fontSize="2.7"
+                    className="font-mono font-bold"
+                    style={{ textShadow: "0 1px 2px #000" }}
+                  >
+                    {ann.label}
+                  </text>
+                )}
               </g>
             );
           }
 
+          // Text Label
           if (ann.type === "text") {
             const [p0] = ann.points;
             if (!p0) return null;
@@ -552,12 +929,12 @@ export function AnnotationCanvas({
                   x={p0.x * 100}
                   y={p0.y * 100}
                   fill={color}
-                  fontSize="3.5"
+                  fontSize="3.2"
                   fontWeight="bold"
                   className="font-sans select-none"
-                  style={{ textShadow: "0 1px 2px rgba(0,0,0,0.8)" }}
+                  style={{ textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}
                 >
-                  {ann.text}
+                  {ann.text || ann.label}
                 </text>
               </g>
             );
@@ -578,7 +955,7 @@ export function AnnotationCanvas({
           vectorEffect="non-scaling-stroke"
         />
 
-        {/* Live in-progress shape */}
+        {/* Live in-progress shape (rect, circle, line) */}
         {isDrawing && livePoints.length === 2 && (
           <>
             {(activeTool === "measure" || activeTool === "line") && (
@@ -623,7 +1000,10 @@ export function AnnotationCanvas({
               <circle
                 cx={livePoints[0].x * 100}
                 cy={livePoints[0].y * 100}
-                r={Math.hypot((livePoints[1].x - livePoints[0].x) * 100, (livePoints[1].y - livePoints[0].y) * 100)}
+                r={Math.hypot(
+                  (livePoints[1].x - livePoints[0].x) * 100,
+                  (livePoints[1].y - livePoints[0].y) * 100
+                )}
                 fill={brushColor}
                 fillOpacity={0.15}
                 stroke={brushColor}
@@ -639,12 +1019,55 @@ export function AnnotationCanvas({
         {anglePoints.map((pt, i) => (
           <circle key={i} cx={pt.x * 100} cy={pt.y * 100} r={1.5} fill="#F59E0B" />
         ))}
+
+        {/* Live in-progress polygon vertices and rubberband line */}
+        {polygonPoints.length > 0 && (
+          <g>
+            <polyline
+              points={polygonPoints.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
+              fill="none"
+              stroke={brushColor}
+              strokeWidth={brushSize}
+              vectorEffect="non-scaling-stroke"
+            />
+            {mousePos && (
+              <line
+                x1={polygonPoints[polygonPoints.length - 1].x * 100}
+                y1={polygonPoints[polygonPoints.length - 1].y * 100}
+                x2={mousePos.x * 100}
+                y2={mousePos.y * 100}
+                stroke={brushColor}
+                strokeWidth={brushSize}
+                strokeDasharray="2,2"
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+            {polygonPoints.map((pt, i) => (
+              <circle
+                key={i}
+                cx={pt.x * 100}
+                cy={pt.y * 100}
+                r={i === 0 ? 1.6 : 1.1}
+                fill={i === 0 ? "#00F0FF" : brushColor}
+              />
+            ))}
+          </g>
+        )}
       </svg>
+
+      {/* Polygon In-Progress Clinical Helper Badge */}
+      {polygonPoints.length > 0 && (
+        <div className="pointer-events-none absolute top-2 left-2 z-40 flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-[#0d121c]/90 px-2.5 py-1 text-[11px] font-mono text-cyan-300 shadow-xl backdrop-blur-md">
+          <Layers className="h-3.5 w-3.5 text-cyan-400" />
+          <span>Polygon ROI ({polygonPoints.length} vertices)</span>
+          <span className="text-slate-400">· Click start point or press Enter to close</span>
+        </div>
+      )}
 
       {/* Inline Text Input for Text Tool */}
       {textInputPos && (
         <div
-          className="absolute z-20 -translate-x-2 -translate-y-4 rounded-md border border-clinical bg-panel p-1.5 shadow-xl pointer-events-auto"
+          className="absolute z-40 -translate-x-2 -translate-y-4 rounded-lg border border-cyan-400 bg-[#0d121c]/95 p-1.5 shadow-2xl backdrop-blur-md pointer-events-auto"
           style={{ left: `${textInputPos.x * 100}%`, top: `${textInputPos.y * 100}%` }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -658,20 +1081,20 @@ export function AnnotationCanvas({
                 if (e.key === "Enter") handleCommitText();
                 if (e.key === "Escape") setTextInputPos(null);
               }}
-              placeholder="Label text…"
-              className="w-32 rounded bg-base px-1.5 py-0.5 text-xs text-ink-primary outline-none"
+              placeholder={`Annotation label… (${activeFindingType})`}
+              className="w-44 rounded border border-[#1e293b] bg-[#111827] px-2 py-1 text-[11.5px] text-white outline-none focus:border-cyan-400 font-sans"
             />
             <button
               onClick={handleCommitText}
-              className="rounded bg-clinical p-1 text-white hover:bg-clinical-strong"
+              className="rounded bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-sky-500 cursor-pointer"
             >
-              <Check className="h-3 w-3" />
+              Add
             </button>
             <button
               onClick={() => setTextInputPos(null)}
-              className="rounded p-1 text-ink-muted hover:text-ink-primary"
+              className="rounded p-1 text-slate-400 hover:text-white"
             >
-              <X className="h-3 w-3" />
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
@@ -680,24 +1103,77 @@ export function AnnotationCanvas({
       {/* Popover for selected annotation */}
       {selected && centerPos && (
         <div
-          className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-md border border-border-strong bg-panel/95 px-2 py-1 shadow-2xl backdrop-blur-md pointer-events-auto"
-          style={{ left: `${centerPos.x * 100}%`, top: `${Math.max(0.05, centerPos.y - 0.03) * 100}%` }}
+          className="absolute z-40 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 rounded-lg border border-cyan-400/80 bg-[#0d121c]/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md pointer-events-auto select-none"
+          style={{
+            left: `${centerPos.x * 100}%`,
+            top: `${Math.max(0.04, centerPos.y - 0.02) * 100}%`,
+          }}
           onClick={(e) => e.stopPropagation()}
         >
-          <span className="font-mono text-[10px] text-clinical font-semibold uppercase">
-            {selected.type}
-          </span>
-          {selected.measureValue && (
-            <span className="font-mono text-[10px] text-ink-secondary">({selected.measureValue})</span>
+          {/* Finding Badge */}
+          <div className="flex items-center gap-1.5">
+            <span
+              className="h-2.5 w-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: selected.color }}
+            />
+            <span className="font-mono text-[10.5px] text-cyan-300 font-bold uppercase">
+              {selected.finding || selected.findingType || selected.type}
+            </span>
+            {selected.measureValue && (
+              <span className="font-mono text-[10px] text-slate-300 font-medium">
+                ({selected.measureValue})
+              </span>
+            )}
+          </div>
+
+          <div className="mx-1 h-3.5 w-px bg-[#1e293b]" />
+
+          {/* Note Quick View / Edit */}
+          {editingNoteId === selected.id ? (
+            <div className="flex items-center gap-1">
+              <input
+                autoFocus
+                type="text"
+                value={noteInputValue}
+                onChange={(e) => setNoteInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    onQuickNote(selected.id, noteInputValue);
+                    setEditingNoteId(null);
+                  }
+                  if (e.key === "Escape") setEditingNoteId(null);
+                }}
+                className="w-28 rounded bg-[#111827] px-1.5 py-0.5 text-[10.5px] text-white outline-none border border-cyan-400"
+              />
+              <button
+                onClick={() => {
+                  onQuickNote(selected.id, noteInputValue);
+                  setEditingNoteId(null);
+                }}
+                className="rounded bg-sky-600 px-1 py-0.5 text-[9.5px] text-white"
+              >
+                Save
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setEditingNoteId(selected.id);
+                setNoteInputValue(selected.radiologistNote || "");
+              }}
+              className="rounded px-1.5 py-0.5 text-[10px] text-slate-300 hover:text-white hover:bg-[#1e293b]"
+              title="Add radiologist note"
+            >
+              {selected.radiologistNote ? `"${selected.radiologistNote}"` : "+ Note"}
+            </button>
           )}
 
-          <div className="mx-1 h-3.5 w-px bg-border-strong" />
-
+          {/* Finding Promotion */}
           {selected.findingId ? (
             <button
               onClick={() => onEditFinding(selected.id)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-clinical hover:bg-clinical/10"
-              title="Edit linked finding"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-sky-400 hover:bg-sky-950/60"
+              title="Edit formal finding"
             >
               <FileText className="h-3 w-3" />
               <span>Finding</span>
@@ -705,35 +1181,39 @@ export function AnnotationCanvas({
           ) : (
             <button
               onClick={() => onAddFinding(selected.id)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-secondary hover:text-ink-primary hover:bg-base"
-              title="Promote to Finding"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-slate-300 hover:text-white hover:bg-[#1e293b]"
+              title="Promote to formal diagnostic finding"
             >
               <FileText className="h-3 w-3" />
               <span>+ Finding</span>
             </button>
           )}
 
+          {/* View in 3D Action */}
           {onViewIn3D && (
             <button
               onClick={() => onViewIn3D(selected.id)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-cyan-300 hover:text-cyan-100 hover:bg-cyan-950/60 border border-cyan-500/30"
-              title="View this annotation in 3D Anatomy"
+              className="flex items-center gap-1 rounded border border-cyan-500/40 bg-cyan-950/60 hover:bg-cyan-800/80 px-2 py-0.5 text-[10px] font-semibold text-cyan-200 transition-colors"
+              title="Highlight this region in 3D Anatomy"
             >
-              <Box className="h-3 w-3" />
-              <span>3D</span>
+              <Box className="h-3 w-3 text-cyan-300" />
+              <span>View in 3D</span>
             </button>
           )}
 
+          {/* Delete */}
           <button
             onClick={() => onDeleteAnnotation(selected.id)}
-            className="flex items-center rounded p-1 text-ink-muted hover:text-red-400"
+            className="rounded p-1 text-slate-400 hover:text-rose-400 transition-colors"
             title="Delete annotation"
           >
             <Trash2 className="h-3 w-3" />
           </button>
+
+          {/* Deselect */}
           <button
             onClick={() => onSelect(null)}
-            className="flex items-center rounded p-1 text-ink-muted hover:text-ink-primary"
+            className="rounded p-1 text-slate-400 hover:text-white"
             title="Deselect"
           >
             <X className="h-3 w-3" />

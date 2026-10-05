@@ -53,6 +53,7 @@ import {
   ColorMap3D,
   ReportSection,
   ViewerImage,
+  FindingType,
 } from "@/lib/types";
 import { ClinicalTopBar, ClinicalWorkflowMode } from "./ClinicalTopBar";
 import { ClinicalSeriesSidebar } from "./ClinicalSeriesSidebar";
@@ -70,6 +71,7 @@ import { ViewerErrorBoundary } from "./ViewerErrorBoundary";
 import { OrganMeshState } from "./AIAnalysisPanel";
 import { DEFAULT_VIEWER_STATE, ViewerState } from "./ViewerToolbar";
 import { AnnotationToolbar, BRUSH_WIDTH_PX, DEFAULT_ANNOTATION_COLOR, AnnotationBrushSize } from "./AnnotationToolbar";
+import { AnnotationPanel } from "./AnnotationPanel";
 import { RadiologyReportPanel } from "@/components/report/RadiologyReportPanel";
 import { ReportEditor } from "@/components/report/ReportEditor";
 import { ApprovalPanel } from "@/components/report/ApprovalPanel";
@@ -194,6 +196,15 @@ export function ClinicalWorkstation({
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [annotateMenuOpen, setAnnotateMenuOpen] = useState(false);
 
+  // Dedicated 2D & 3D Annotation Mode State
+  const [annotationMode, setAnnotationMode] = useState<"2d" | "3d" | null>(null);
+  const [activeFindingType, setActiveFindingType] = useState<FindingType>("Lesion");
+  const [activeCustomLabel, setActiveCustomLabel] = useState<string>("");
+  const [emphasizedAnnotationId, setEmphasizedAnnotationId] = useState<string | null>(null);
+  const [undoStack, setUndoStack] = useState<ViewerAnnotation[][]>([]);
+  const [redoStack, setRedoStack] = useState<ViewerAnnotation[][]>([]);
+  const [right3DSubTab, setRight3DSubTab] = useState<"anatomy" | "annotations">("anatomy");
+
   // Dialogs
   const [patientInfoOpen, setPatientInfoOpen] = useState(false);
   const [studyInfoOpen, setStudyInfoOpen] = useState(false);
@@ -279,7 +290,15 @@ export function ClinicalWorkstation({
       if (saved.markers?.length) setMarkers(saved.markers);
       if (saved.measurements?.length) setMeasurements(saved.measurements);
       if (saved.annotations?.length) setAnnotations(saved.annotations);
+      if (saved.annotations3D?.length) setAnnotations3D(saved.annotations3D);
+    } else {
+      setMarkers([]);
+      setMeasurements([]);
+      setAnnotations([]);
+      setAnnotations3D([]);
     }
+    setUndoStack([]);
+    setRedoStack([]);
   }, [study.id]);
 
   // Debounced auto-save
@@ -291,11 +310,12 @@ export function ClinicalWorkstation({
         annotations,
         measurements,
         markers,
+        annotations3D,
         findings: study.findings,
       });
     }, 600);
     return () => clearTimeout(timer);
-  }, [study.id, annotations, measurements, markers, study.findings]);
+  }, [study.id, annotations, measurements, markers, annotations3D, study.findings]);
 
   // Load derived 3D segments / 4D motion if available
   useEffect(() => {
@@ -449,6 +469,8 @@ export function ClinicalWorkstation({
     "pen",
     "rect",
     "circle",
+    "polygon",
+    "point",
     "annotate",
     "line",
     "angle",
@@ -457,6 +479,89 @@ export function ClinicalWorkstation({
     "measure",
   ].includes(viewerState.tool);
 
+  // Dedicated Mode Switcher for 2D & 3D Annotation Workflows
+  const handleSelectAnnotationMode = useCallback(
+    (mode: "2d" | "3d") => {
+      setAnnotationMode(mode);
+      setRightPanelCollapsed(false);
+
+      if (mode === "2d") {
+        setActiveMode("images");
+        setRightSubTab("annotations");
+        setViewerState((s) => ({
+          ...s,
+          tool: isAnnotationToolActive ? s.tool : "rect",
+        }));
+        pushToast({
+          title: "2D Annotation Mode Active",
+          description: "Select an ROI tool (Box, Circle, Polygon, Contour, Caliper) to annotate abnormal regions.",
+          tone: "default",
+        });
+      } else {
+        setActiveMode("3d");
+        setRight3DSubTab("annotations");
+        pushToast({
+          title: "3D Annotation Mode Active",
+          description: "Visualizing 3D VOI spatial bounding highlights and anatomical regions linked to 2D ROIs.",
+          tone: "default",
+        });
+      }
+    },
+    [isAnnotationToolActive, pushToast]
+  );
+
+  // Clinical Jump to 2D Image Evidence (from 3D viewer, marker, or annotation panel)
+  const handleJumpTo2D = useCallback(
+    (ann: ViewerAnnotation) => {
+      setActiveMode("images");
+      if (ann.seriesId && ann.seriesId !== activeSeries.id) {
+        setActiveSeriesId(ann.seriesId);
+      }
+      if (ann.sliceIndex !== undefined) {
+        setCurrentSlice(ann.sliceIndex);
+      }
+
+      // Calculate centroid of annotation points
+      let cx = 0.5;
+      let cy = 0.5;
+      if (ann.points && ann.points.length > 0) {
+        const sum = ann.points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+        cx = sum.x / ann.points.length;
+        cy = sum.y / ann.points.length;
+      } else if (ann.imageCoordinates) {
+        cx = ann.imageCoordinates.x;
+        cy = ann.imageCoordinates.y;
+      }
+
+      const targetZoom = Math.max(viewerState.zoom, 1.5);
+      const targetPanX = (0.5 - cx) * 512 * targetZoom;
+      const targetPanY = (0.5 - cy) * 512 * targetZoom;
+
+      setViewerState((prev) => ({
+        ...prev,
+        zoom: targetZoom,
+        panX: targetPanX,
+        panY: targetPanY,
+      }));
+
+      setSelectedAnnotationId(ann.id);
+      setEmphasizedAnnotationId(ann.id);
+      setRightSubTab("annotations");
+
+      setTimeout(() => {
+        setEmphasizedAnnotationId((prev) => (prev === ann.id ? null : prev));
+      }, 2500);
+
+      pushToast({
+        title: "Jumped to 2D Image Evidence",
+        description: `Targeted Slice ${(ann.sliceIndex ?? 0) + 1} with centered zoom on ${ann.findingType || ann.finding || "finding"}.`,
+        tone: "default",
+      });
+    },
+    [activeSeries.id, viewerState.zoom, pushToast]
+  );
+
+  // 3D Region -> 2D Navigation
   const handleSelect3DMarker = useCallback(
     (findingId: string, sliceIdx: number, normX: number, normY: number, seriesId?: string) => {
       setActiveMode("images");
@@ -464,24 +569,60 @@ export function ClinicalWorkstation({
         setActiveSeriesId(seriesId);
       }
       setCurrentSlice(sliceIdx);
+
+      const targetZoom = Math.max(viewerState.zoom, 1.5);
+      const targetPanX = (0.5 - normX) * 512 * targetZoom;
+      const targetPanY = (0.5 - normY) * 512 * targetZoom;
+
       setViewerState((prev) => ({
         ...prev,
-        pan: { x: (0.5 - normX) * 180, y: (0.5 - normY) * 180 },
-        zoom: Math.max(prev.zoom, 1.4),
+        zoom: targetZoom,
+        panX: targetPanX,
+        panY: targetPanY,
       }));
+
       setSelectedFindingId(findingId);
-      const linked = annotations.find((a) => a.id === findingId || a.findingId === findingId);
+      const linked = annotations.find(
+        (a) =>
+          a.id === findingId ||
+          a.findingId === findingId ||
+          (a.sliceIndex === sliceIdx && Math.abs((a.imageCoordinates?.x ?? a.points?.[0]?.x ?? 0.5) - normX) < 0.1)
+      );
+
       if (linked) {
         setSelectedAnnotationId(linked.id);
+        setEmphasizedAnnotationId(linked.id);
+        setTimeout(() => {
+          setEmphasizedAnnotationId((prev) => (prev === linked.id ? null : prev));
+        }, 2500);
       }
+
+      setRightSubTab("annotations");
+
       pushToast({
         title: "Navigated from 3D Anatomy",
-        description: `Targeted finding on Slice ${sliceIdx + 1} with centered ROI.`,
+        description: `Targeted lesion on Slice ${sliceIdx + 1} with centered ROI.`,
         tone: "default",
       });
     },
-    [activeSeries.id, annotations]
+    [activeSeries.id, annotations, viewerState.zoom, pushToast]
   );
+
+  const handleUndoAnnotation = useCallback(() => {
+    if (undoStack.length === 0) return;
+    const previous = undoStack[undoStack.length - 1];
+    setUndoStack((u) => u.slice(0, -1));
+    setRedoStack((r) => [...r, annotations]);
+    setAnnotations(previous);
+  }, [undoStack, annotations]);
+
+  const handleRedoAnnotation = useCallback(() => {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack((r) => r.slice(0, -1));
+    setUndoStack((u) => [...u, annotations]);
+    setAnnotations(next);
+  }, [redoStack, annotations]);
 
   return (
     <div
@@ -500,6 +641,9 @@ export function ClinicalWorkstation({
           setPlaying(false);
           setCine4DPlaying(false);
         }}
+        annotationMode={annotationMode}
+        onSelectAnnotationMode={handleSelectAnnotationMode}
+        annotationCount={annotations.length}
         hasGenuine4D={hasGenuine4D}
         onOpenPatientInfo={() => setPatientInfoOpen(true)}
         onOpenStudyInfo={() => setStudyInfoOpen(true)}
@@ -841,30 +985,44 @@ export function ClinicalWorkstation({
               {isAnnotationToolActive && (
                 <div className="border-b border-white/10 bg-[#111722] px-3 py-1.5 z-10">
                   <AnnotationToolbar
+                    activeTool={viewerState.tool}
+                    onSelectTool={(tool) => setViewerState((s) => ({ ...s, tool }))}
+                    findingType={activeFindingType}
+                    setFindingType={(t) => setActiveFindingType(t as FindingType)}
+                    customLabel={activeCustomLabel}
+                    setCustomLabel={setActiveCustomLabel}
                     color={brushColor}
                     setColor={setBrushColor}
                     size={brushSize}
                     setSize={setBrushSize}
                     opacity={brushOpacity}
                     setOpacity={setBrushOpacity}
-                    canUndo={currentAnnotations.length > 0}
-                    canRedo={false}
+                    canUndo={undoStack.length > 0 || currentAnnotations.length > 0}
+                    canRedo={redoStack.length > 0}
                     onUndo={() => {
-                      setAnnotations((prev) => {
-                        const last = prev[prev.length - 1];
-                        return last ? prev.slice(0, -1) : prev;
-                      });
+                      if (undoStack.length > 0) {
+                        handleUndoAnnotation();
+                      } else {
+                        setAnnotations((prev) => {
+                          const last = prev[prev.length - 1];
+                          return last ? prev.slice(0, -1) : prev;
+                        });
+                      }
                     }}
-                    onRedo={() => {}}
+                    onRedo={handleRedoAnnotation}
                     onClear={() => {
-                      setAnnotations((prev) =>
-                        prev.filter(
+                      setAnnotations((prev) => {
+                        setUndoStack((u) => [...u, prev]);
+                        return prev.filter(
                           (a) =>
                             !(a.seriesId === activeSeries.id && a.sliceIndex === currentSlice)
-                        )
-                      );
+                        );
+                      });
                     }}
-                    onExit={() => setViewerState((s) => ({ ...s, tool: "window" }))}
+                    onExit={() => {
+                      setViewerState((s) => ({ ...s, tool: "window" }));
+                      setAnnotationMode(null);
+                    }}
                     strokeCount={currentAnnotations.length}
                   />
                 </div>
@@ -886,8 +1044,19 @@ export function ClinicalWorkstation({
                     measurements={measurements}
                     onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
                     annotations={annotations}
-                    onCommitAnnotation={(ann) => setAnnotations((prev) => [...prev, { ...ann, studyId: study.studyId }])}
-                    onDeleteAnnotation={(id) => setAnnotations((prev) => prev.filter((a) => a.id !== id))}
+                    onCommitAnnotation={(ann) => {
+                      setAnnotations((prev) => {
+                        setUndoStack((u) => [...u, prev]);
+                        setRedoStack([]);
+                        return [...prev, { ...ann, studyId: study.studyId }];
+                      });
+                    }}
+                    onDeleteAnnotation={(id) => {
+                      setAnnotations((prev) => {
+                        setUndoStack((u) => [...u, prev]);
+                        return prev.filter((a) => a.id !== id);
+                      });
+                    }}
                     onQuickAnnotationNote={(id, note) => {
                       setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, note } : a)));
                     }}
@@ -945,12 +1114,13 @@ export function ClinicalWorkstation({
                       ])
                     }
                     onClearAnnotations={() => {
-                      setAnnotations((prev) =>
-                        prev.filter(
+                      setAnnotations((prev) => {
+                        setUndoStack((u) => [...u, prev]);
+                        return prev.filter(
                           (a) =>
                             !(a.seriesId === activeSeries.id && a.sliceIndex === currentSlice)
-                        )
-                      );
+                        );
+                      });
                     }}
                     hasImageData={hasImageData}
                     onImageReady={() => {}}
@@ -964,6 +1134,12 @@ export function ClinicalWorkstation({
                     seriesLabel={activeSeries.label}
                     patientAlias={study.patientAlias}
                     pixelSpacing={activeSeries.pixelSpacing}
+                    studyId={study.id}
+                    seriesId={activeSeries.id}
+                    currentSlice={currentSlice}
+                    emphasizedAnnotationId={emphasizedAnnotationId}
+                    activeFindingType={activeFindingType}
+                    activeCustomLabel={activeCustomLabel}
                     annotations={currentAnnotations}
                     brushColor={brushColor}
                     brushSizePx={BRUSH_WIDTH_PX[brushSize]}
@@ -977,14 +1153,21 @@ export function ClinicalWorkstation({
                         seriesId: activeSeries.id,
                         sliceIndex: currentSlice,
                         type: "freehand",
+                        findingType: activeFindingType,
+                        label: activeCustomLabel || activeFindingType,
                         points,
                         color: brushColor,
                         strokeWidth: BRUSH_WIDTH_PX[brushSize],
                         opacity: brushOpacity,
                         createdAt: new Date().toISOString(),
                         updatedAt: new Date().toISOString(),
+                        visible: true,
                       };
-                      setAnnotations((prev) => [...prev, stroke]);
+                      setAnnotations((prev) => {
+                        setUndoStack((u) => [...u, prev]);
+                        setRedoStack([]);
+                        return [...prev, stroke];
+                      });
                       setSelectedAnnotationId(stroke.id);
                     }}
                     onCommitAnnotation={(ann) => {
@@ -993,28 +1176,44 @@ export function ClinicalWorkstation({
                         studyId: study.id,
                         seriesId: activeSeries.id,
                         sliceIndex: currentSlice,
+                        findingType: activeFindingType,
+                        label: activeCustomLabel || ann.text || activeFindingType,
+                        visible: true,
                       };
-                      setAnnotations((prev) => [...prev, completeAnn]);
+                      setAnnotations((prev) => {
+                        setUndoStack((u) => [...u, prev]);
+                        setRedoStack([]);
+                        return [...prev, completeAnn];
+                      });
                       setSelectedAnnotationId(completeAnn.id);
 
-                      // If rectangle or marker, promote to official Finding and link to 3D Anatomy
-                      if (completeAnn.type === "rectangle" && completeAnn.points.length >= 2) {
-                        const [p0, p1] = completeAnn.points;
-                        const minX = Math.min(p0.x, p1.x);
-                        const minY = Math.min(p0.y, p1.y);
-                        const w = Math.abs(p1.x - p0.x);
-                        const h = Math.abs(p1.y - p0.y);
+                      // Promote ROI to finding so it appears in report & findings table
+                      if (
+                        (completeAnn.type === "rectangle" ||
+                          completeAnn.type === "circle" ||
+                          completeAnn.type === "polygon" ||
+                          completeAnn.type === "freehand") &&
+                        completeAnn.points.length >= 2
+                      ) {
+                        const xs = completeAnn.points.map((p) => p.x);
+                        const ys = completeAnn.points.map((p) => p.y);
+                        const minX = Math.min(...xs);
+                        const maxX = Math.max(...xs);
+                        const minY = Math.min(...ys);
+                        const maxY = Math.max(...ys);
+                        const w = Math.max(0.01, maxX - minX);
+                        const h = Math.max(0.01, maxY - minY);
                         const newFinding: Finding = {
                           id: `f-${completeAnn.id}`,
-                          label: completeAnn.text || "Lesion ROI",
+                          label: completeAnn.label || completeAnn.findingType || "Lesion ROI",
                           confidence: 100,
                           band: "high",
                           region: { x: minX, y: minY, w, h },
                           sliceIndex: currentSlice,
                           seriesId: activeSeries.id,
                           description: completeAnn.measureValue
-                            ? `Region of Interest · Area: ${completeAnn.measureValue}`
-                            : "Radiologist-marked lesion region",
+                            ? `${completeAnn.findingType || "Finding"} · ${completeAnn.measureValue}`
+                            : `Radiologist-annotated ${completeAnn.findingType || "finding"}`,
                           status: "accepted",
                           radiologistNote: completeAnn.radiologistNote,
                         };
@@ -1022,21 +1221,21 @@ export function ClinicalWorkstation({
                         completeAnn.findingId = newFinding.id;
                         setSelectedFindingId(newFinding.id);
                         pushToast({
-                          title: "Lesion ROI Created",
-                          description: `Box attached to Slice ${currentSlice + 1} and linked to 3D anatomical volume.`,
+                          title: `${completeAnn.findingType || "Lesion"} ROI Annotated`,
+                          description: `Attached to Slice ${currentSlice + 1} and linked to 3D anatomical volume.`,
                           tone: "default",
                         });
                       } else if (completeAnn.type === "marker" && completeAnn.points.length >= 1) {
                         const p0 = completeAnn.points[0];
                         const newFinding: Finding = {
                           id: `f-${completeAnn.id}`,
-                          label: completeAnn.text || "Anatomical Point",
+                          label: completeAnn.label || "Anatomical Marker",
                           confidence: 100,
                           band: "high",
                           region: { x: Math.max(0, p0.x - 0.02), y: Math.max(0, p0.y - 0.02), w: 0.04, h: 0.04 },
                           sliceIndex: currentSlice,
                           seriesId: activeSeries.id,
-                          description: "Radiologist marked point of interest",
+                          description: "Radiologist marked anatomical focal point",
                           status: "accepted",
                           radiologistNote: completeAnn.radiologistNote,
                         };
@@ -1485,259 +1684,311 @@ export function ClinicalWorkstation({
                   <button
                     onClick={() => setRightSubTab("annotations")}
                     className={cn(
-                      "flex-1 py-2.5 text-center font-medium border-b-2 transition-colors",
+                      "flex-1 py-2.5 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5",
                       rightSubTab === "annotations"
                         ? "border-clinical text-clinical"
                         : "border-transparent text-ink-secondary hover:text-ink-primary"
                     )}
                   >
-                    Markups ({measurements.length + annotations.length})
+                    <Crosshair className="h-3.5 w-3.5" />
+                    <span>Annotations ({annotations.length})</span>
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px]">
-                  {rightSubTab === "tools" && (
-                    <>
-                      {/* Window / Level Controls */}
-                      <div className="rounded-lg border border-border bg-panel-alt p-3.5 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-ink-primary">Window / Level</span>
-                          <span className="font-mono text-[11px] text-ink-secondary">
-                            W: {Math.round(viewerState.windowWidth)} · L: {Math.round(viewerState.windowCenter)}
-                          </span>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between text-[11px] text-ink-secondary">
-                            <span>Window Width</span>
-                            <span>{Math.round(viewerState.windowWidth)}</span>
-                          </div>
-                          <input
-                            type="range"
-                            min="1"
-                            max="2500"
-                            value={viewerState.windowWidth}
-                            onChange={(e) =>
-                              setViewerState((s) => ({ ...s, windowWidth: Number(e.target.value) }))
-                            }
-                            className="w-full accent-clinical"
-                          />
-
-                          <div className="flex items-center justify-between text-[11px] text-ink-secondary pt-1">
-                            <span>Window Level (Center)</span>
-                            <span>{Math.round(viewerState.windowCenter)}</span>
-                          </div>
-                          <input
-                            type="range"
-                            min="-1000"
-                            max="1000"
-                            value={viewerState.windowCenter}
-                            onChange={(e) =>
-                              setViewerState((s) => ({ ...s, windowCenter: Number(e.target.value) }))
-                            }
-                            className="w-full accent-clinical"
-                          />
-                        </div>
-
-                        {/* Quick Preset Buttons */}
-                        <div className="grid grid-cols-2 gap-1.5 pt-2">
-                          {WINDOW_PRESETS.map((p) => (
-                            <button
-                              key={p.id}
-                              onClick={() =>
-                                setViewerState((s) => ({
-                                  ...s,
-                                  windowWidth: p.window,
-                                  windowCenter: p.level,
-                                }))
-                              }
-                              className="rounded border border-border bg-base px-2 py-1 text-[11px] font-medium text-ink-primary hover:border-clinical/50 transition-colors"
-                            >
-                              {p.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Active Slice Information */}
-                      <div className="rounded-lg border border-border bg-panel-alt p-3.5 space-y-2">
-                        <span className="font-semibold text-ink-primary block">Active Acquisition</span>
-                        <div className="space-y-1 font-mono text-[11.5px] text-ink-secondary">
-                          <div className="flex justify-between">
-                            <span>Series:</span>
-                            <span className="text-ink-primary">{activeSeries.label}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span>Slice:</span>
-                            <span className="text-ink-primary">
-                              {currentSlice + 1} / {activeSeries.sliceCount}
-                            </span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span>Orientation:</span>
-                            <span className="text-ink-primary">{activeSeries.orientation}</span>
-                          </div>
-                          {activeSeries.pixelSpacing && (
-                            <div className="flex justify-between">
-                              <span>Pixel Spacing:</span>
-                              <span className="text-ink-primary">
-                                {activeSeries.pixelSpacing[0].toFixed(2)} × {activeSeries.pixelSpacing[1].toFixed(2)} mm
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Quick Jump to 3D / AI */}
-                      <div className="rounded-lg border border-clinical/30 bg-clinical/5 p-3.5 space-y-2">
-                        <span className="font-semibold text-clinical block">Advanced Analysis</span>
-                        <p className="text-[11.5px] text-ink-secondary">
-                          Review volumetric 3D organ structures or initiate automated MONAI segmentation.
-                        </p>
-                        <div className="flex gap-2 pt-1">
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={() => setActiveMode("3d")}
-                            className="flex-1 text-[11.5px]"
-                          >
-                            <Box className="h-3.5 w-3.5 mr-1" /> Open 3D
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => setActiveMode("ai")}
-                            className="flex-1 text-[11.5px]"
-                          >
-                            <Sparkles className="h-3.5 w-3.5 mr-1" /> AI Tools
-                          </Button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {rightSubTab === "findings" && (
-                    <FindingsPanel
-                      findings={study.findings}
-                      activeFindingId={selectedFindingId}
-                      onHover={setHoveredFindingId}
-                      onSelect={(id: string) => {
-                        setSelectedFindingId(id);
-                        const f = study.findings.find((item) => item.id === id);
-                        if (f && f.sliceIndex !== undefined) {
-                          setCurrentSlice(f.sliceIndex);
+                {rightSubTab === "annotations" ? (
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    <AnnotationPanel
+                      studyId={study.id}
+                      annotations={annotations}
+                      annotations3D={annotations3D}
+                      series={study.series}
+                      activeSeriesId={activeSeries.id}
+                      currentSlice={currentSlice}
+                      selectedId={selectedAnnotationId}
+                      onSelectAnnotation={(id) => {
+                        setSelectedAnnotationId(id);
+                        if (id) {
+                          const ann = annotations.find((a) => a.id === id);
+                          if (ann) handleJumpTo2D(ann);
                         }
                       }}
-                      onUpdate={onUpdateFinding}
-                      isProcessing={study.status === "processing"}
-                      series={study.series}
+                      onDeleteAnnotation={(id) => {
+                        setAnnotations((prev) => {
+                          setUndoStack((u) => [...u, prev]);
+                          return prev.filter((a) => a.id !== id);
+                        });
+                        study.findings = study.findings.filter((f) => f.id !== `f-${id}`);
+                        if (selectedAnnotationId === id) setSelectedAnnotationId(null);
+                      }}
+                      onToggleVisibility={(id) => {
+                        setAnnotations((prev) =>
+                          prev.map((a) => (a.id === id ? { ...a, visible: a.visible === false ? true : false } : a))
+                        );
+                      }}
+                      onJumpTo2D={handleJumpTo2D}
+                      onJumpTo3D={(ann) => {
+                        setActiveMode("3d");
+                        setRight3DSubTab("annotations");
+                        const targetId = "findingId" in ann && ann.findingId ? ann.findingId : ann.id;
+                        setSelectedFindingId(targetId);
+                      }}
+                      onStartNewAnnotation={() => {
+                        setActiveMode("images");
+                        setViewerState((s) => ({ ...s, tool: "rect" }));
+                        setAnnotationMode("2d");
+                      }}
+                      activeMode={activeMode}
+                      onSelectMode={(mode) => setActiveMode(mode)}
                     />
-                  )}
+                  </div>
+                ) : (
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px]">
+                    {rightSubTab === "tools" && (
+                      <>
+                        {/* Window / Level Controls */}
+                        <div className="rounded-lg border border-border bg-panel-alt p-3.5 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-ink-primary">Window / Level</span>
+                            <span className="font-mono text-[11px] text-ink-secondary">
+                              W: {Math.round(viewerState.windowWidth)} · L: {Math.round(viewerState.windowCenter)}
+                            </span>
+                          </div>
 
-                  {rightSubTab === "annotations" && (
-                    <div className="space-y-4">
-                      {measurements.length === 0 && annotations.length === 0 ? (
-                        <p className="text-center py-8 text-[12px] text-ink-muted">
-                          No measurements or annotations on this study yet. Use the Measure or Annotate tool in the toolbar.
-                        </p>
-                      ) : (
-                        <>
-                          {measurements.length > 0 && (
-                            <div className="space-y-2">
-                              <span className="font-semibold text-ink-primary block">Linear Calipers</span>
-                              {measurements.map((m, idx) => (
-                                <div
-                                  key={m.id}
-                                  className="flex items-center justify-between rounded-lg border border-border bg-panel-alt p-2.5 text-[11.5px]"
-                                >
-                                  <div>
-                                    <span className="font-medium text-ink-primary">Measurement #{idx + 1}</span>
-                                    <span className="block text-[10.5px] text-ink-muted">
-                                      Slice {m.sliceIndex + 1}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-mono font-semibold text-clinical">
-                                      {m.distanceMm ? `${m.distanceMm.toFixed(1)} mm` : `${Math.round(m.distancePx)} px`}
-                                    </span>
-                                    <button
-                                      onClick={() => setMeasurements((prev) => prev.filter((item) => item.id !== m.id))}
-                                      className="text-ink-muted hover:text-critical"
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between text-[11px] text-ink-secondary">
+                              <span>Window Width</span>
+                              <span>{Math.round(viewerState.windowWidth)}</span>
                             </div>
-                          )}
+                            <input
+                              type="range"
+                              min="1"
+                              max="2500"
+                              value={viewerState.windowWidth}
+                              onChange={(e) =>
+                                setViewerState((s) => ({ ...s, windowWidth: Number(e.target.value) }))
+                              }
+                              className="w-full accent-clinical"
+                            />
 
-                          {annotations.length > 0 && (
-                            <div className="space-y-2">
-                              <span className="font-semibold text-ink-primary block">Pen Markups</span>
-                              {annotations.map((ann, idx) => (
-                                <div
-                                  key={ann.id}
-                                  className="flex items-center justify-between rounded-lg border border-border bg-panel-alt p-2.5 text-[11.5px]"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <div
-                                      className="h-3 w-3 rounded-full shrink-0"
-                                      style={{ backgroundColor: ann.color }}
-                                    />
-                                    <div>
-                                      <span className="medium text-ink-primary">Markup #{idx + 1}</span>
-                                      <span className="block text-[10.5px] text-ink-muted">
-                                        Slice {ann.sliceIndex + 1} · {ann.points?.length || 1} points
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={() => setAnnotations((prev) => prev.filter((a) => a.id !== ann.id))}
-                                    className="text-ink-muted hover:text-critical"
-                                  >
-                                    ×
-                                  </button>
-                                </div>
-                              ))}
+                            <div className="flex items-center justify-between text-[11px] text-ink-secondary pt-1">
+                              <span>Window Level (Center)</span>
+                              <span>{Math.round(viewerState.windowCenter)}</span>
                             </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
+                            <input
+                              type="range"
+                              min="-1000"
+                              max="1000"
+                              value={viewerState.windowCenter}
+                              onChange={(e) =>
+                                setViewerState((s) => ({ ...s, windowCenter: Number(e.target.value) }))
+                              }
+                              className="w-full accent-clinical"
+                            />
+                          </div>
+
+                          {/* Quick Preset Buttons */}
+                          <div className="grid grid-cols-2 gap-1.5 pt-2">
+                            {WINDOW_PRESETS.map((p) => (
+                              <button
+                                key={p.id}
+                                onClick={() =>
+                                  setViewerState((s) => ({
+                                    ...s,
+                                    windowWidth: p.window,
+                                    windowCenter: p.level,
+                                  }))
+                                }
+                                className="rounded border border-border bg-base px-2 py-1 text-[11px] font-medium text-ink-primary hover:border-clinical/50 transition-colors"
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Active Slice Information */}
+                        <div className="rounded-lg border border-border bg-panel-alt p-3.5 space-y-2">
+                          <span className="font-semibold text-ink-primary block">Active Acquisition</span>
+                          <div className="space-y-1 font-mono text-[11.5px] text-ink-secondary">
+                            <div className="flex justify-between">
+                              <span>Series:</span>
+                              <span className="text-ink-primary">{activeSeries.label}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Slice:</span>
+                              <span className="text-ink-primary">
+                                {currentSlice + 1} / {activeSeries.sliceCount}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Orientation:</span>
+                              <span className="text-ink-primary">{activeSeries.orientation}</span>
+                            </div>
+                            {activeSeries.pixelSpacing && (
+                              <div className="flex justify-between">
+                                <span>Pixel Spacing:</span>
+                                <span className="text-ink-primary">
+                                  {activeSeries.pixelSpacing[0].toFixed(2)} × {activeSeries.pixelSpacing[1].toFixed(2)} mm
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Quick Jump to 3D / AI */}
+                        <div className="rounded-lg border border-clinical/30 bg-clinical/5 p-3.5 space-y-2">
+                          <span className="font-semibold text-clinical block">Advanced Analysis</span>
+                          <p className="text-[11.5px] text-ink-secondary">
+                            Review volumetric 3D organ structures or initiate automated MONAI segmentation.
+                          </p>
+                          <div className="flex gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              onClick={() => setActiveMode("3d")}
+                              className="flex-1 text-[11.5px]"
+                            >
+                              <Box className="h-3.5 w-3.5 mr-1" /> Open 3D
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => setActiveMode("ai")}
+                              className="flex-1 text-[11.5px]"
+                            >
+                              <Sparkles className="h-3.5 w-3.5 mr-1" /> AI Tools
+                            </Button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {rightSubTab === "findings" && (
+                      <FindingsPanel
+                        findings={study.findings}
+                        activeFindingId={selectedFindingId}
+                        onHover={setHoveredFindingId}
+                        onSelect={(id: string) => {
+                          setSelectedFindingId(id);
+                          const f = study.findings.find((item) => item.id === id);
+                          if (f && f.sliceIndex !== undefined) {
+                            setCurrentSlice(f.sliceIndex);
+                          }
+                        }}
+                        onUpdate={onUpdateFinding}
+                        isProcessing={study.status === "processing"}
+                        series={study.series}
+                      />
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Mode: 3D Anatomy -> Organ Panel */}
+            {/* Mode: 3D Anatomy -> Organ Panel OR 3D Annotation Panel */}
             {activeMode === "3d" && (
-              <ClinicalOrganPanel
-                organMeshes={organMeshes}
-                onOrganMeshesChange={setOrganMeshes}
-                onSelectOrgan={setActiveOrganId}
-                activeOrganId={activeOrganId}
-                showOriginalVolume={showOriginalVolume}
-                onToggleOriginalVolume={setShowOriginalVolume}
-                threshold={threshold3D}
-                onThresholdChange={setThreshold3D}
-                density={density3D}
-                onDensityChange={setDensity3D}
-                colormap={colormap3D}
-                onColormapChange={setColormap3D}
-                enableClipping={enableClipping}
-                onToggleClipping={setEnableClipping}
-                clipDistance={clipDistance}
-                onClipDistanceChange={setClipDistance}
-                clipAxis={clipAxis}
-                onClipAxisChange={setClipAxis}
-                onReset3DView={() => {
-                  setThreshold3D(0.2);
-                  setDensity3D(1.2);
-                  setEnableClipping(false);
-                  setClipDistance(0.5);
-                }}
-              />
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="flex border-b border-border bg-base text-[12px] shrink-0">
+                  <button
+                    onClick={() => setRight3DSubTab("anatomy")}
+                    className={cn(
+                      "flex-1 py-2.5 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5",
+                      right3DSubTab === "anatomy"
+                        ? "border-clinical text-clinical"
+                        : "border-transparent text-ink-secondary hover:text-ink-primary"
+                    )}
+                  >
+                    <Layers className="h-3.5 w-3.5" />
+                    <span>Anatomy Layers</span>
+                  </button>
+                  <button
+                    onClick={() => setRight3DSubTab("annotations")}
+                    className={cn(
+                      "flex-1 py-2.5 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5",
+                      right3DSubTab === "annotations"
+                        ? "border-clinical text-clinical"
+                        : "border-transparent text-ink-secondary hover:text-ink-primary"
+                    )}
+                  >
+                    <Box className="h-3.5 w-3.5" />
+                    <span>3D Annotations ({annotations.length})</span>
+                  </button>
+                </div>
+
+                {right3DSubTab === "anatomy" ? (
+                  <ClinicalOrganPanel
+                    organMeshes={organMeshes}
+                    onOrganMeshesChange={setOrganMeshes}
+                    onSelectOrgan={setActiveOrganId}
+                    activeOrganId={activeOrganId}
+                    showOriginalVolume={showOriginalVolume}
+                    onToggleOriginalVolume={setShowOriginalVolume}
+                    threshold={threshold3D}
+                    onThresholdChange={setThreshold3D}
+                    density={density3D}
+                    onDensityChange={setDensity3D}
+                    colormap={colormap3D}
+                    onColormapChange={setColormap3D}
+                    enableClipping={enableClipping}
+                    onToggleClipping={setEnableClipping}
+                    clipDistance={clipDistance}
+                    onClipDistanceChange={setClipDistance}
+                    clipAxis={clipAxis}
+                    onClipAxisChange={setClipAxis}
+                    onReset3DView={() => {
+                      setThreshold3D(0.2);
+                      setDensity3D(1.2);
+                      setEnableClipping(false);
+                      setClipDistance(0.5);
+                    }}
+                  />
+                ) : (
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    <AnnotationPanel
+                      studyId={study.id}
+                      annotations={annotations}
+                      annotations3D={annotations3D}
+                      series={study.series}
+                      activeSeriesId={activeSeries.id}
+                      currentSlice={currentSlice}
+                      selectedId={selectedAnnotationId}
+                      onSelectAnnotation={(id) => {
+                        setSelectedAnnotationId(id);
+                        if (id) {
+                          const ann = annotations.find((a) => a.id === id);
+                          if (ann) handleJumpTo2D(ann);
+                        }
+                      }}
+                      onDeleteAnnotation={(id) => {
+                        setAnnotations((prev) => {
+                          setUndoStack((u) => [...u, prev]);
+                          return prev.filter((a) => a.id !== id);
+                        });
+                        study.findings = study.findings.filter((f) => f.id !== `f-${id}`);
+                        if (selectedAnnotationId === id) setSelectedAnnotationId(null);
+                      }}
+                      onToggleVisibility={(id) => {
+                        setAnnotations((prev) =>
+                          prev.map((a) => (a.id === id ? { ...a, visible: a.visible === false ? true : false } : a))
+                        );
+                      }}
+                      onJumpTo2D={handleJumpTo2D}
+                      onJumpTo3D={(ann) => {
+                        setActiveMode("3d");
+                        const targetId = "findingId" in ann && ann.findingId ? ann.findingId : ann.id;
+                        setSelectedFindingId(targetId);
+                      }}
+                      onStartNewAnnotation={() => {
+                        setActiveMode("images");
+                        setViewerState((s) => ({ ...s, tool: "rect" }));
+                        setAnnotationMode("2d");
+                      }}
+                      activeMode={activeMode}
+                      onSelectMode={(mode) => setActiveMode(mode)}
+                    />
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Mode: 4D Cine -> 4D Dynamics Panel */}

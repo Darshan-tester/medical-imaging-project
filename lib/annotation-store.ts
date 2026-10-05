@@ -1,6 +1,6 @@
 "use client";
 
-import { ViewerAnnotation, ViewerMeasurement, Marker, Finding, ReportSection } from "./types";
+import { ViewerAnnotation, ViewerMeasurement, Marker, Finding, ReportSection, Annotation3D } from "./types";
 
 export interface StoredStudySession {
   studyId: string;
@@ -9,6 +9,7 @@ export interface StoredStudySession {
   measurements: ViewerMeasurement[];
   markers: Marker[];
   findings: Finding[];
+  annotations3D?: Annotation3D[];
   reportSections?: ReportSection;
   acknowledgedCriticalFindings?: string[];
 }

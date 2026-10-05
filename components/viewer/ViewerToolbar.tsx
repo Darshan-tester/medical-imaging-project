@@ -24,6 +24,7 @@ import {
   Square,
   Circle,
   Compass,
+  Layers,
   type LucideIcon,
 } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -40,10 +41,12 @@ export type ViewerTool =
   | "measure"
   | "angle"
   | "annotate"
+  | "point"
   | "arrow"
   | "line"
   | "rect"
   | "circle"
+  | "polygon"
   | "text"
   | "pen";
 
@@ -220,15 +223,16 @@ export function ViewerToolbar({
 
   // Annotation options
   const annotationOptions: { tool: ViewerTool; label: string; icon: LucideIcon }[] = [
-    { tool: "annotate", label: "Point Marker (Pin)", icon: MessageSquarePlus },
-    { tool: "measure", label: "Distance Measurement", icon: Ruler },
+    { tool: "rect", label: "Rectangle / Bounding Box ROI", icon: Square },
+    { tool: "circle", label: "Circle / Ellipse ROI", icon: Circle },
+    { tool: "polygon", label: "Polygon ROI (Region of Interest)", icon: Layers },
+    { tool: "pen", label: "Freehand Contour", icon: Pencil },
+    { tool: "measure", label: "Distance Caliper (mm)", icon: Ruler },
     { tool: "angle", label: "Angle Measurement", icon: Compass },
+    { tool: "annotate", label: "Point / Marker", icon: MessageSquarePlus },
     { tool: "text", label: "Text Label", icon: Type },
     { tool: "arrow", label: "Arrow Pointer", icon: ArrowUpRight },
     { tool: "line", label: "Line", icon: Minus },
-    { tool: "rect", label: "Rectangle ROI", icon: Square },
-    { tool: "circle", label: "Circle / Ellipse ROI", icon: Circle },
-    { tool: "pen", label: "Freehand Pen", icon: Pencil },
   ];
 
   const activeAnnotationItem = annotationOptions.find((opt) => opt.tool === state.tool);

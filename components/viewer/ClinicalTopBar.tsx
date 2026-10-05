@@ -19,6 +19,7 @@ import {
   Clock,
   ScanLine,
   Sliders,
+  Crosshair,
 } from "lucide-react";
 import { Study, Modality, StudyPriority, StudyStatus } from "@/lib/types";
 import { ModalityBadge } from "@/components/ui/Badge";
@@ -31,6 +32,9 @@ interface ClinicalTopBarProps {
   study: Study;
   activeMode: ClinicalWorkflowMode;
   onSelectMode: (mode: ClinicalWorkflowMode) => void;
+  annotationMode?: "2d" | "3d" | null;
+  onSelectAnnotationMode?: (mode: "2d" | "3d") => void;
+  annotationCount?: number;
   hasGenuine4D?: boolean;
   onOpenPatientInfo?: () => void;
   onOpenStudyInfo?: () => void;
@@ -45,6 +49,9 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
   study,
   activeMode,
   onSelectMode,
+  annotationMode = null,
+  onSelectAnnotationMode,
+  annotationCount = 0,
   hasGenuine4D = false,
   onOpenPatientInfo,
   onOpenStudyInfo,
@@ -204,6 +211,47 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
             ) : null}
           </button>
         </div>
+
+        {/* Dedicated 2D & 3D Annotation Modes */}
+        {onSelectAnnotationMode && (
+          <div className="flex items-center gap-1 rounded-lg border border-sky-500/30 bg-sky-950/20 p-1 shadow-inner">
+            <span className="hidden xl:inline px-1.5 font-mono text-[9px] font-bold uppercase tracking-wider text-sky-400/80">
+              Annotate:
+            </span>
+            <button
+              onClick={() => onSelectAnnotationMode("2d")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] font-medium transition-all",
+                annotationMode === "2d" && activeMode === "images"
+                  ? "bg-sky-500 text-white shadow-sm font-semibold ring-1 ring-sky-300"
+                  : "text-sky-300 hover:bg-sky-900/40 hover:text-white"
+              )}
+              title="2D Annotation Mode: draw precise ROIs, contours, calipers, and lesions on the current slice"
+            >
+              <Crosshair className="h-3.5 w-3.5 text-sky-400" />
+              <span>2D Annotation</span>
+              {annotationCount > 0 && (
+                <span className="ml-0.5 rounded-full bg-sky-500/30 px-1.5 py-0.2 font-mono text-[9px] font-bold text-sky-200 border border-sky-400/40">
+                  {annotationCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => onSelectAnnotationMode("3d")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] font-medium transition-all",
+                annotationMode === "3d" && activeMode === "3d"
+                  ? "bg-amber-500 text-white shadow-sm font-semibold ring-1 ring-amber-300"
+                  : "text-amber-300 hover:bg-amber-900/40 hover:text-white"
+              )}
+              title="3D Annotation Mode: view 3D VOI spatial bounding highlights and anatomical regions"
+            >
+              <Box className="h-3.5 w-3.5 text-amber-400" />
+              <span>3D Annotation</span>
+            </button>
+          </div>
+        )}
       </nav>
 
       {/* Right: Modality, Status, and Workstation Actions */}

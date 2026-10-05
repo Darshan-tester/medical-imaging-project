@@ -33,13 +33,26 @@ function Marker({ position, delay, reduced }: { position: [number, number, numbe
 
   return (
     <group position={position}>
-      <mesh ref={core}>
-        <sphereGeometry args={[0.05, 16, 16]} />
-        <meshBasicMaterial color="#93C5FD" transparent opacity={0.95} />
-      </mesh>
+      {/* Precision Micro Reticle */}
+      <lineSegments>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[
+              new Float32Array([
+                -0.03, 0, 0, 0.03, 0, 0,
+                0, -0.03, 0, 0, 0.03, 0,
+                0, 0, -0.03, 0, 0, 0.03,
+              ]),
+              3,
+            ]}
+          />
+        </bufferGeometry>
+        <lineBasicMaterial color="#38BDF8" transparent opacity={0.8} />
+      </lineSegments>
       <mesh ref={ring} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.09, 0.11, 32]} />
-        <meshBasicMaterial color="#3B82F6" transparent opacity={0.4} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <ringGeometry args={[0.02, 0.025, 32]} />
+        <meshBasicMaterial color="#38BDF8" transparent opacity={0.5} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
     </group>
   );

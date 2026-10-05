@@ -74,7 +74,13 @@ export function ImageViewer({
   patientAlias,
   onImageReady,
   annotations = [],
-  brushColor = "#EF4444",
+  studyId = "",
+  seriesId = "",
+  currentSlice = 0,
+  emphasizedAnnotationId = null,
+  activeFindingType = "Lesion",
+  activeCustomLabel = "",
+  brushColor = "#00F0FF",
   brushSizePx = 2,
   brushOpacity = 1,
   selectedAnnotationId,
@@ -119,6 +125,12 @@ export function ImageViewer({
   patientAlias?: string;
   onImageReady?: () => void;
   annotations?: ViewerAnnotation[];
+  studyId?: string;
+  seriesId?: string;
+  currentSlice?: number;
+  emphasizedAnnotationId?: string | null;
+  activeFindingType?: string;
+  activeCustomLabel?: string;
   brushColor?: string;
   brushSizePx?: number;
   brushOpacity?: number;
@@ -487,6 +499,8 @@ export function ImageViewer({
               "circle",
               "text",
               "annotate",
+              "point",
+              "polygon",
             ].includes(viewerState.tool)
           }
           activeTool={viewerState.tool}
@@ -494,7 +508,13 @@ export function ImageViewer({
           brushSize={brushSizePx}
           brushOpacity={brushOpacity}
           selectedId={selectedAnnotationId ?? null}
+          emphasizedId={emphasizedAnnotationId}
           pixelSpacing={pixelSpacing}
+          studyId={studyId}
+          seriesId={seriesId}
+          sliceIndex={currentSlice}
+          activeFindingType={activeFindingType}
+          activeCustomLabel={activeCustomLabel}
           onSelect={onSelectAnnotation ?? (() => {})}
           onCommitStroke={onCommitStroke ?? (() => {})}
           onCommitAnnotation={onCommitAnnotation}

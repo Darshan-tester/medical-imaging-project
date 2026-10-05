@@ -1383,10 +1383,10 @@ function CrosshairOrthogonalLayer({
 
   return (
     <group position={[posX, posY, posZ]}>
-      {/* Central Target Sphere */}
-      <mesh>
-        <sphereGeometry args={[0.012, 12, 12]} />
-        <meshBasicMaterial color="#00F0FF" />
+      {/* Central Precision Target Reticle (Micro ring + crosshairs, no oversized spheres) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.007, 0.009, 32]} />
+        <meshBasicMaterial color="#00F0FF" side={THREE.DoubleSide} />
       </mesh>
       {/* Orthogonal Guide Lines */}
       <lineSegments>
@@ -1395,35 +1395,45 @@ function CrosshairOrthogonalLayer({
             attach="attributes-position"
             args={[
               new Float32Array([
-                -0.1, 0, 0, 0.1, 0, 0,
-                0, -0.1, 0, 0, 0.1, 0,
-                0, 0, -0.1, 0, 0, 0.1,
+                -0.08, 0, 0, 0.08, 0, 0,
+                0, -0.08, 0, 0, 0.08, 0,
+                0, 0, -0.08, 0, 0, 0.08,
               ]),
               3,
             ]}
           />
         </bufferGeometry>
-        <lineBasicMaterial color="#00F0FF" transparent opacity={0.85} />
+        <lineBasicMaterial color="#00F0FF" transparent opacity={0.8} />
       </lineSegments>
     </group>
   );
 }
 
-/** 3D Interactive Finding & Annotation Marker Pin */
+/** 3D Interactive Finding & Annotation Spatial Model */
 interface InteractiveMarkerData {
   id: string;
   label: string;
+  findingType?: string;
   sliceIndex: number;
   seriesId?: string;
   normX: number;
   normY: number;
   normZ: number;
+  bounds?: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  };
+  contourPoints?: Array<{ x: number; y: number }>;
   isAi?: boolean;
   measureValue?: string;
+  color?: string;
   note?: string;
 }
 
-function InteractiveFindingPin({
+/** Professional 3D Anatomical Region Highlight & Contour */
+function AnatomicalRegionHighlight({
   marker,
   volumeScale,
   isSelected,
@@ -1435,29 +1445,58 @@ function InteractiveFindingPin({
   onSelect: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+
   const posX = (marker.normX - 0.5) * volumeScale[0];
   const posY = -(marker.normY - 0.5) * volumeScale[1];
   const posZ = (marker.normZ - 0.5) * volumeScale[2];
 
-  const pinColor = isSelected ? "#00F0FF" : marker.isAi ? "#F59E0B" : "#EF4444";
+  const highlightColor = isSelected
+    ? "#00F0FF"
+    : marker.color || (marker.isAi ? "#F59E0B" : "#EF4444");
+
+  // Calculate 3D bounding box for the anatomical region
+  const boxW = Math.max(
+    0.025,
+    marker.bounds ? (marker.bounds.maxX - marker.bounds.minX) * volumeScale[0] : 0.035
+  );
+  const boxH = Math.max(
+    0.025,
+    marker.bounds ? (marker.bounds.maxY - marker.bounds.minY) * volumeScale[1] : 0.035
+  );
+  const boxD = Math.max(0.016, volumeScale[2] * 0.04);
+
+  const boxCenterX = marker.bounds
+    ? ((marker.bounds.minX + marker.bounds.maxX) / 2 - 0.5) * volumeScale[0]
+    : posX;
+  const boxCenterY = marker.bounds
+    ? -(((marker.bounds.minY + marker.bounds.maxY) / 2) - 0.5) * volumeScale[1]
+    : posY;
+
+  // Box edges geometry
+  const edgesGeometry = useMemo(() => {
+    const box = new THREE.BoxGeometry(boxW, boxH, boxD);
+    return new THREE.EdgesGeometry(box);
+  }, [boxW, boxH, boxD]);
+
+  // Projected 2D contour points in 3D volume coordinates on the slice cut
+  const contourArray = useMemo(() => {
+    if (!marker.contourPoints || marker.contourPoints.length < 2) return null;
+    const coords: number[] = [];
+    for (const cp of marker.contourPoints) {
+      coords.push(
+        (cp.x - 0.5) * volumeScale[0],
+        -(cp.y - 0.5) * volumeScale[1],
+        posZ
+      );
+    }
+    return new Float32Array(coords);
+  }, [marker.contourPoints, volumeScale, posZ]);
 
   return (
-    <group position={[posX, posY, posZ]}>
-      {/* Ground Pulse Ring on Axial Plane */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[isSelected ? 0.025 : 0.015, isSelected ? 0.035 : 0.02, 32]} />
-        <meshBasicMaterial color={pinColor} transparent opacity={isSelected ? 0.9 : 0.5} side={THREE.DoubleSide} />
-      </mesh>
-
-      {/* Vertical Pin Needle */}
-      <mesh position={[0, 0.025, 0]}>
-        <cylinderGeometry args={[0.002, 0.002, 0.05, 8]} />
-        <meshBasicMaterial color={pinColor} />
-      </mesh>
-
-      {/* Target Head Sphere */}
+    <group>
+      {/* 1. Subtle semi-transparent VOI volume box */}
       <mesh
-        position={[0, 0.055, 0]}
+        position={[boxCenterX, boxCenterY, posZ]}
         onPointerOver={(e: any) => {
           e.stopPropagation();
           setHovered(true);
@@ -1471,59 +1510,180 @@ function InteractiveFindingPin({
           onSelect();
         }}
       >
-        <sphereGeometry args={[isSelected ? 0.02 : 0.014, 16, 16]} />
+        <boxGeometry args={[boxW, boxH, boxD]} />
         <meshStandardMaterial
-          color={pinColor}
-          emissive={pinColor}
-          emissiveIntensity={isSelected ? 0.8 : 0.4}
-          roughness={0.2}
+          color={highlightColor}
+          transparent
+          opacity={isSelected ? 0.3 : hovered ? 0.22 : 0.14}
+          roughness={0.4}
+          metalness={0.1}
+          depthWrite={false}
+          side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Interactive 3D Label & Navigation Card */}
-      {(hovered || isSelected) && (
-        <Html position={[0, 0.08, 0]} center distanceFactor={2.2} zIndexRange={[100, 0]}>
-          <div
-            className={cn(
-              "flex flex-col gap-1 rounded-lg border bg-[#0d121c]/95 p-2 shadow-2xl backdrop-blur-md whitespace-nowrap select-none transition-all",
-              isSelected ? "border-cyan-400 ring-2 ring-cyan-400/30 text-white" : "border-[#1e293b] text-slate-200"
-            )}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: pinColor }} />
-                <span className="text-[11px] font-bold text-white tracking-tight">{marker.label}</span>
-              </div>
-              <span className="rounded bg-sky-950/80 px-1.5 py-0.5 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
-                Slice {marker.sliceIndex + 1}
-              </span>
-            </div>
+      {/* 2. Thin, crisp medical boundary edges around the VOI */}
+      <lineSegments geometry={edgesGeometry} position={[boxCenterX, boxCenterY, posZ]}>
+        <lineBasicMaterial
+          color={highlightColor}
+          transparent
+          opacity={isSelected ? 0.95 : hovered ? 0.8 : 0.45}
+        />
+      </lineSegments>
 
-            {marker.measureValue && (
-              <div className="font-mono text-[9.5px] text-slate-300">
-                Size: <strong className="text-white">{marker.measureValue}</strong>
-              </div>
-            )}
+      {/* 3. Real 2D slice contour projected directly on the 3D axial plane */}
+      {contourArray && (
+        <lineLoop>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[contourArray, 3]} />
+          </bufferGeometry>
+          <lineBasicMaterial
+            color={highlightColor}
+            transparent
+            opacity={isSelected ? 0.95 : 0.75}
+          />
+        </lineLoop>
+      )}
 
-            {marker.note && (
-              <div className="max-w-[160px] truncate text-[9.5px] text-slate-400 italic">
-                "{marker.note}"
-              </div>
-            )}
+      {/* 4. Delicate Medical Reticle & Thin Hairline Leader Line (No huge sphere) */}
+      <group position={[posX, posY, posZ]}>
+        {/* Axial ground target ring */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[0.008, 0.011, 32]} />
+          <meshBasicMaterial
+            color={highlightColor}
+            transparent
+            opacity={isSelected ? 0.95 : 0.6}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
 
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect();
-              }}
-              className="mt-1 flex items-center justify-center gap-1 rounded bg-cyan-600 hover:bg-cyan-500 px-2 py-1 text-[10px] font-semibold text-white shadow transition-colors cursor-pointer"
+        {/* Micro center crosshair */}
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[
+                new Float32Array([
+                  -0.007, 0, 0, 0.007, 0, 0,
+                  0, -0.007, 0, 0, 0.007, 0,
+                ]),
+                3,
+              ]}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color={highlightColor} transparent opacity={0.8} />
+        </lineSegments>
+
+        {/* Thin hairline leader line extending to callout */}
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[new Float32Array([0, 0, 0, 0, 0.045, 0.015]), 3]}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color={highlightColor} transparent opacity={0.75} />
+        </lineSegments>
+
+        {/* Precision pin head (micro diamond marker, not an oversized ball) */}
+        <mesh
+          position={[0, 0.045, 0.015]}
+          onPointerOver={(e: any) => {
+            e.stopPropagation();
+            setHovered(true);
+          }}
+          onPointerOut={(e: any) => {
+            e.stopPropagation();
+            setHovered(false);
+          }}
+          onClick={(e: any) => {
+            e.stopPropagation();
+            onSelect();
+          }}
+        >
+          <octahedronGeometry args={[0.006, 0]} />
+          <meshStandardMaterial
+            color={highlightColor}
+            emissive={highlightColor}
+            emissiveIntensity={isSelected ? 0.8 : 0.4}
+            roughness={0.2}
+          />
+        </mesh>
+
+        {/* 5. Interactive 3D Clinical Card & "View in 2D" */}
+        {(hovered || isSelected) && (
+          <Html position={[0, 0.065, 0.02]} center distanceFactor={2.2} zIndexRange={[100, 0]}>
+            <div
+              className={cn(
+                "flex flex-col gap-1.5 rounded-lg border bg-[#0d121c]/95 p-2.5 shadow-2xl backdrop-blur-md whitespace-nowrap select-none transition-all",
+                isSelected
+                  ? "border-cyan-400 ring-2 ring-cyan-400/30 text-white"
+                  : "border-[#1e293b] text-slate-200"
+              )}
+              onClick={(e) => e.stopPropagation()}
             >
-              <Target className="h-3 w-3" />
-              <span>Jump to 2D Slice</span>
-            </button>
-          </div>
-        </Html>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="h-2 w-2 rounded-full shrink-0"
+                    style={{ backgroundColor: highlightColor }}
+                  />
+                  <span className="text-[11.5px] font-bold text-white tracking-tight">
+                    {marker.label}
+                  </span>
+                  {marker.findingType && (
+                    <span className="rounded bg-sky-950/80 border border-sky-500/30 px-1 py-0.2 font-mono text-[8.5px] text-sky-300 font-semibold uppercase">
+                      {marker.findingType}
+                    </span>
+                  )}
+                </div>
+                <span className="rounded bg-sky-950/80 px-1.5 py-0.5 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
+                  Slice {marker.sliceIndex + 1}
+                </span>
+              </div>
+
+              {marker.measureValue && (
+                <div className="font-mono text-[9.5px] text-slate-300">
+                  Size: <strong className="text-white font-semibold">{marker.measureValue}</strong>
+                </div>
+              )}
+
+              {marker.note && (
+                <div className="max-w-[170px] truncate text-[9.5px] text-slate-400 italic">
+                  "{marker.note}"
+                </div>
+              )}
+
+              {/* Instant "View in 2D" navigation */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect();
+                }}
+                className="mt-0.5 flex items-center justify-center gap-1.5 rounded bg-sky-600 hover:bg-sky-500 px-2 py-1 text-[10px] font-semibold text-white shadow-sm transition-colors cursor-pointer"
+                title="Open 2D view, center on ROI, and highlight slice"
+              >
+                <Target className="h-3 w-3" />
+                <span>View in 2D</span>
+              </button>
+            </div>
+          </Html>
+        )}
+      </group>
+
+      {/* 6. Subtle Axial Reference Frame at Slice Elevation (when selected) */}
+      {isSelected && (
+        <mesh position={[0, 0, posZ]}>
+          <planeGeometry args={[volumeScale[0] * 1.05, volumeScale[1] * 1.05]} />
+          <meshBasicMaterial
+            color="#00F0FF"
+            transparent
+            opacity={0.06}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
       )}
     </group>
   );
@@ -1554,56 +1714,162 @@ function InteractiveFindingMarkersLayer({
     const list: InteractiveMarkerData[] = [];
     const maxSlice = Math.max(1, volumeDims[2] - 1);
 
-    // 1. Registered Findings (AI and Promoted Radiologist Findings)
+    // 1. Registered Findings (AI and formal Radiologist Findings)
     for (const f of findings) {
       const normX = f.region.x + f.region.w / 2;
       const normY = f.region.y + f.region.h / 2;
       const normZ = f.sliceIndex / maxSlice;
+      const bounds = {
+        minX: f.region.x,
+        maxX: f.region.x + f.region.w,
+        minY: f.region.y,
+        maxY: f.region.y + f.region.h,
+      };
+      const contourPoints = [
+        { x: bounds.minX, y: bounds.minY },
+        { x: bounds.maxX, y: bounds.minY },
+        { x: bounds.maxX, y: bounds.maxY },
+        { x: bounds.minX, y: bounds.maxY },
+      ];
+
       list.push({
         id: f.id,
         label: f.label || "Diagnostic Finding",
+        findingType: "Lesion",
         sliceIndex: f.sliceIndex,
         seriesId: f.seriesId,
         normX,
         normY,
         normZ,
+        bounds,
+        contourPoints,
         isAi: f.confidence > 0,
         note: f.radiologistNote || f.description,
       });
     }
 
-    // 2. 2D Bounding Boxes & Marker Annotations
+    // 2. All 2D Annotations (Rectangles, Polygons, Circles, Freehand, Points, Calipers)
     for (const a of annotations) {
-      if (list.some((item) => item.id === a.id || item.id === a.findingId)) continue;
+      if (a.visible === false) continue;
+      if (list.some((item) => item.id === a.id || (a.findingId && item.id === a.findingId))) {
+        continue;
+      }
+
+      const normZ = a.sliceIndex / maxSlice;
+      const labelText = a.label || a.finding || a.findingType || "Diagnostic ROI";
+
       if (a.type === "rectangle" && a.points.length >= 2) {
         const [p0, p1] = a.points;
-        const normX = (p0.x + p1.x) / 2;
-        const normY = (p0.y + p1.y) / 2;
-        const normZ = a.sliceIndex / maxSlice;
+        const minX = Math.min(p0.x, p1.x);
+        const maxX = Math.max(p0.x, p1.x);
+        const minY = Math.min(p0.y, p1.y);
+        const maxY = Math.max(p0.y, p1.y);
         list.push({
           id: a.id,
-          label: a.text || "Lesion ROI",
+          label: labelText,
+          findingType: a.findingType,
           sliceIndex: a.sliceIndex,
           seriesId: a.seriesId,
-          normX,
-          normY,
+          normX: (minX + maxX) / 2,
+          normY: (minY + maxY) / 2,
           normZ,
+          bounds: { minX, maxX, minY, maxY },
+          contourPoints: [
+            { x: minX, y: minY },
+            { x: maxX, y: minY },
+            { x: maxX, y: maxY },
+            { x: minX, y: maxY },
+          ],
           isAi: false,
+          color: a.color,
           measureValue: a.measureValue,
           note: a.radiologistNote,
         });
-      } else if (a.type === "marker" && a.points.length >= 1) {
-        const p0 = a.points[0];
-        const normZ = a.sliceIndex / maxSlice;
+      } else if (a.type === "circle" && a.points.length >= 2) {
+        const [p0, p1] = a.points;
+        const r = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const contour: Array<{ x: number; y: number }> = [];
+        const steps = 24;
+        for (let i = 0; i < steps; i++) {
+          const theta = (i / steps) * Math.PI * 2;
+          contour.push({ x: p0.x + Math.cos(theta) * r, y: p0.y + Math.sin(theta) * r });
+        }
         list.push({
           id: a.id,
-          label: a.text || "Point of Interest",
+          label: labelText,
+          findingType: a.findingType,
           sliceIndex: a.sliceIndex,
           seriesId: a.seriesId,
           normX: p0.x,
           normY: p0.y,
           normZ,
+          bounds: { minX: p0.x - r, maxX: p0.x + r, minY: p0.y - r, maxY: p0.y + r },
+          contourPoints: contour,
           isAi: false,
+          color: a.color,
+          measureValue: a.measureValue,
+          note: a.radiologistNote,
+        });
+      } else if ((a.type === "polygon" || a.type === "freehand") && a.points.length >= 3) {
+        const minX = Math.min(...a.points.map((p) => p.x));
+        const maxX = Math.max(...a.points.map((p) => p.x));
+        const minY = Math.min(...a.points.map((p) => p.y));
+        const maxY = Math.max(...a.points.map((p) => p.y));
+        list.push({
+          id: a.id,
+          label: labelText,
+          findingType: a.findingType,
+          sliceIndex: a.sliceIndex,
+          seriesId: a.seriesId,
+          normX: (minX + maxX) / 2,
+          normY: (minY + maxY) / 2,
+          normZ,
+          bounds: { minX, maxX, minY, maxY },
+          contourPoints: a.points,
+          isAi: false,
+          color: a.color,
+          measureValue: a.measureValue,
+          note: a.radiologistNote,
+        });
+      } else if ((a.type === "marker" || a.type === "point") && a.points.length >= 1) {
+        const p0 = a.points[0];
+        list.push({
+          id: a.id,
+          label: labelText,
+          findingType: a.findingType,
+          sliceIndex: a.sliceIndex,
+          seriesId: a.seriesId,
+          normX: p0.x,
+          normY: p0.y,
+          normZ,
+          bounds: { minX: p0.x - 0.015, maxX: p0.x + 0.015, minY: p0.y - 0.015, maxY: p0.y + 0.015 },
+          isAi: false,
+          color: a.color,
+          note: a.radiologistNote,
+        });
+      } else if (
+        (a.type === "line" || a.type === "measurement" || a.type === "arrow") &&
+        a.points.length >= 2
+      ) {
+        const [p0, p1] = a.points;
+        const minX = Math.min(p0.x, p1.x);
+        const maxX = Math.max(p0.x, p1.x);
+        const minY = Math.min(p0.y, p1.y);
+        const maxY = Math.max(p0.y, p1.y);
+        list.push({
+          id: a.id,
+          label: labelText,
+          findingType: a.findingType,
+          sliceIndex: a.sliceIndex,
+          seriesId: a.seriesId,
+          normX: (p0.x + p1.x) / 2,
+          normY: (p0.y + p1.y) / 2,
+          normZ,
+          bounds: { minX, maxX, minY, maxY },
+          contourPoints: [p0, p1],
+          isAi: false,
+          color: a.color,
+          measureValue: a.measureValue,
           note: a.radiologistNote,
         });
       }
@@ -1615,7 +1881,7 @@ function InteractiveFindingMarkersLayer({
   return (
     <group>
       {markerItems.map((m) => (
-        <InteractiveFindingPin
+        <AnatomicalRegionHighlight
           key={m.id}
           marker={m}
           volumeScale={volumeScale}

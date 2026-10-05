@@ -1183,7 +1183,9 @@ function SingleViewportPanel({
             seriesLabel={activeSeries?.label}
             patientAlias={study.patientAlias}
             pixelSpacing={activeSeries?.pixelSpacing}
-            sliceLabel={`Slice ${panel.sliceIndex + 1} / ${activeSeries?.sliceCount ?? 1}`}
+            studyId={study.id}
+            seriesId={panel.seriesId}
+            currentSlice={panel.sliceIndex}
             markers={panelMarkers}
             onAddMarker={(m) => onAddMarker({ ...m, seriesId: panel.seriesId, sliceIndex: panel.sliceIndex })}
             measurements={panelMeasurements}
