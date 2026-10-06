@@ -187,7 +187,7 @@ export function CriticalFindingBanner({
           <div className="rounded-lg border border-border bg-panel-alt p-3 space-y-1.5">
             <div className="flex justify-between items-center text-[12px]">
               <span className="font-semibold text-ink-primary">Anatomical Location:</span>
-              <span className="font-mono text-cyan-400">{selectedFinding?.location || "Thoracic / Visual Field"}</span>
+              <span className="font-mono text-cyan-400">{selectedFinding?.location || "Metadata unavailable"}</span>
             </div>
             <div className="flex justify-between items-center text-[12px]">
               <span className="font-semibold text-ink-primary">Slice Index:</span>
@@ -195,7 +195,13 @@ export function CriticalFindingBanner({
             </div>
             <div className="flex justify-between items-center text-[12px]">
               <span className="font-semibold text-ink-primary">AI Confidence:</span>
-              <span className="font-mono text-amber-400">{Math.round((selectedFinding?.confidence ?? 0.85) * 100)}%</span>
+              <span className="font-mono text-amber-400">
+                {selectedFinding?.confidence !== undefined
+                  ? selectedFinding.confidence > 1
+                    ? `${Math.round(selectedFinding.confidence)}%`
+                    : `${Math.round(selectedFinding.confidence * 100)}%`
+                  : "N/A"}
+              </span>
             </div>
           </div>
 

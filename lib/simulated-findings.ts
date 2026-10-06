@@ -125,13 +125,17 @@ const CUES: { re: RegExp; label: string }[] = [
   { re: /kyphosis|kyphotic|scoliosis|scoliotic|kyphoscolio/i, label: "Spinal deformity" },
   { re: /osteopeni|osteoporo|demineralis|demineraliz/i, label: "Reduced bone density" },
   { re: /h[ae]morrhage|h[ae]matoma|bleed/i, label: "Haemorrhage" },
-  { re: /infarct|isch[ae]mi/i, label: "Infarct" },
+  { re: /acute (?:cerebral |cortical |territorial )?infarct|acute isch[ae]mi|diffusion restriction|restricted diffusion/i, label: "Acute infarct / diffusion restriction" },
+  { re: /chronic microangiopath|microangiopathic|small vessel disease|fazekas|deep white matter hyperintens|periventricular white matter/i, label: "Chronic microangiopathic ischemic change" },
+  { re: /chronic (?:lacunar |cerebral )?infarct|old infarct|lacunar infarct/i, label: "Chronic lacunar infarct" },
+  { re: /encephalomalac|gliosis|gliotic/i, label: "Gliosis" },
+  { re: /possible isch[ae]mi|suspected isch[ae]mi|ischemic change|isch[ae]mi/i, label: "Possible ischemic change" },
+  { re: /flair hyperintens|indeterminate flair/i, label: "Indeterminate FLAIR hyperintensity" },
   { re: /midline shift|mass effect|herniation of the/i, label: "Mass effect" },
   { re: /hydrocephalus|ventriculomegal/i, label: "Hydrocephalus" },
   // `multiple sclerosis` lives here rather than with the sclerotic-bone cue: an
   // MS plaque labelled "Sclerosis" would read as a bone finding.
   { re: /demyelinat|multiple sclerosis|periventricular plaque|plaques? perpendicular/i, label: "Demyelinating plaque" },
-  { re: /encephalomalac|gliosis|gliotic/i, label: "Gliosis" },
   // The commonest genuine finding in the cranial-MR set: "Mild widening is noted
   // in the sulci of the bilateral occipital lobe". Kept as a phrase so it cannot
   // fire on "assess mediastinal width".
@@ -387,6 +391,73 @@ export function simulateFindings(input: SimulatedFindingsInput): Finding[] {
   return findings;
 }
 
+function deriveAnatomicalLocation(sentence: string, side?: { cx: number }, zone?: { cy: number }): string | undefined {
+  if (/bilateral (?:frontoparietal|periventricular|deep white matter)/i.test(sentence)) {
+    return "Bilateral frontoparietal white matter";
+  }
+  if (/periventricular/i.test(sentence)) {
+    return "Periventricular white matter";
+  }
+  if (/deep white matter/i.test(sentence)) {
+    return "Deep cerebral white matter";
+  }
+  if (/centrum semiovale/i.test(sentence)) {
+    return "Centrum semiovale";
+  }
+  if (/frontal lobe/i.test(sentence)) {
+    return side && side.cx < 0.4 ? "Right frontal lobe" : side && side.cx > 0.6 ? "Left frontal lobe" : "Frontal lobe";
+  }
+  if (/temporal lobe/i.test(sentence)) {
+    return side && side.cx < 0.4 ? "Right temporal lobe" : side && side.cx > 0.6 ? "Left temporal lobe" : "Temporal lobe";
+  }
+  if (/parietal lobe/i.test(sentence)) {
+    return side && side.cx < 0.4 ? "Right parietal lobe" : side && side.cx > 0.6 ? "Left parietal lobe" : "Parietal lobe";
+  }
+  if (/occipital lobe|occipital/i.test(sentence)) {
+    return side && side.cx < 0.4 ? "Right occipital lobe" : side && side.cx > 0.6 ? "Left occipital lobe" : "Occipital lobe";
+  }
+  if (/cerebell/i.test(sentence)) {
+    return "Posterior fossa / Cerebellum";
+  }
+  if (/brain ?stem|pons|medulla/i.test(sentence)) {
+    return "Brainstem";
+  }
+  if (/basal ganglia|thalam/i.test(sentence)) {
+    return "Deep gray nuclei / Basal ganglia";
+  }
+  if (/sphenoid sinus/i.test(sentence)) {
+    return "Sphenoid sinus";
+  }
+  if (/maxillary sinus/i.test(sentence)) {
+    return "Maxillary sinus";
+  }
+  if (/left lower lobe|lll\b/i.test(sentence)) {
+    return "Left lower lobe";
+  }
+  if (/right lower lobe|rll\b/i.test(sentence)) {
+    return "Right lower lobe";
+  }
+  if (/right upper lobe|rul\b/i.test(sentence)) {
+    return "Right upper lobe";
+  }
+  if (/left upper lobe|lul\b/i.test(sentence)) {
+    return "Left upper lobe";
+  }
+  if (/middle lobe|rml\b/i.test(sentence)) {
+    return "Right middle lobe";
+  }
+  if (/mediastin/i.test(sentence)) {
+    return "Mediastinum";
+  }
+  if (/paraaortic/i.test(sentence)) {
+    return "Para-aortic lymph node station";
+  }
+  if (/liver|hepatic/i.test(sentence)) {
+    return "Liver parenchyma";
+  }
+  return undefined;
+}
+
 function placeFinding(
   input: SimulatedFindingsInput,
   sentence: string,
@@ -416,6 +487,52 @@ function placeFinding(
   // against the pixels, and a 97% badge would imply it had been.
   const confidence = r.int(58, 84);
 
+  const location = deriveAnatomicalLocation(sentence, side, zone);
+
+  let chronicity: Finding["chronicity"] = undefined;
+  if (/acute/i.test(label) || /acute/i.test(sentence)) chronicity = "acute";
+  else if (/chronic/i.test(label) || /chronic|old|gliotic/i.test(sentence)) chronicity = "chronic";
+  else if (/subacute/i.test(sentence)) chronicity = "subacute";
+
+  let severityLevel: Finding["severityLevel"] = undefined;
+  if (/severe|extensive|gross|massive/i.test(sentence)) severityLevel = "severe";
+  else if (/moderate/i.test(sentence)) severityLevel = "moderate";
+  else if (/mild|minimal|trace|subtle|small/i.test(sentence)) severityLevel = "mild";
+
+  const hasDwi = input.series.some((s) => /dwi|diff/i.test(s.label));
+  const hasAdc = input.series.some((s) => /adc/i.test(s.label));
+  const hasFlair = input.series.some((s) => /flair/i.test(s.label));
+  const hasT2 = input.series.some((s) => /t2/i.test(s.label));
+  const hasT1 = input.series.some((s) => /t1/i.test(s.label));
+
+  const supporting: string[] = [];
+  if (hasFlair) supporting.push("FLAIR");
+  if (hasT2) supporting.push("T2");
+  if (hasT1 && !hasFlair && !hasT2) supporting.push("T1");
+  if (supporting.length === 0) supporting.push(series.label.split("·")[0].trim());
+
+  const unavailable: string[] = [];
+  if (input.modality === "MRI") {
+    if (!hasDwi) unavailable.push("DWI");
+    if (!hasAdc) unavailable.push("ADC");
+  }
+
+  const isIschemicOrInfarct = /ischemic|infarct|flair hyperintens|white matter/i.test(label);
+
+  const evidenceDetails = {
+    keyObservations: [
+      isIschemicOrInfarct
+        ? "FLAIR hyperintensity in periventricular/deep white-matter distribution"
+        : `${label} morphologic presentation observed on reference plane`,
+      "Non-mass-like signal distribution without significant vasogenic edema or mass effect",
+    ],
+    supportingSequences: supporting,
+    unavailableSequences: unavailable,
+    explainabilityNote: isIschemicOrInfarct && (!hasDwi || !hasAdc)
+      ? "DWI/ADC correlation unavailable in this study."
+      : undefined,
+  };
+
   return {
     id: `${input.studyId}-sim-${ordinal}`,
     label,
@@ -424,7 +541,16 @@ function placeFinding(
     band: bandFor(confidence),
     region: { x: round4(cx - w / 2), y: round4(cy - h / 2), w: round4(w), h: round4(h) },
     sliceIndex,
+    totalSlices: series.sliceCount,
     seriesId: series.id,
+    seriesLabel: series.label,
+    plane: series.orientation,
+    modality: input.modality,
+    location,
+    chronicity,
+    severityLevel,
+    evidenceDetails,
+    dwiCorrelationAvailable: hasDwi && hasAdc,
     status: "pending",
   };
 }

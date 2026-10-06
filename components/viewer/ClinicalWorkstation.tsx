@@ -77,6 +77,7 @@ import { ReportEditor } from "@/components/report/ReportEditor";
 import { ApprovalPanel } from "@/components/report/ApprovalPanel";
 import { ExportButton } from "@/components/report/ExportButton";
 import { Modal } from "@/components/ui/Modal";
+import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
 import { Button } from "@/components/ui/Button";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { SessionAnnotationStore } from "@/lib/annotation-store";
@@ -208,6 +209,7 @@ export function ClinicalWorkstation({
   // Dialogs
   const [patientInfoOpen, setPatientInfoOpen] = useState(false);
   const [studyInfoOpen, setStudyInfoOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [rightSubTab, setRightSubTab] = useState<"tools" | "findings" | "annotations">("tools");
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
@@ -494,6 +496,38 @@ export function ClinicalWorkstation({
           e.preventDefault();
           setViewerState(DEFAULT_VIEWER_STATE);
         }
+      } else if (e.key === "w" || e.key === "W") {
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          setViewerState((s) => ({ ...s, tool: "window" }));
+        }
+      } else if (e.key === "p" || e.key === "P") {
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          setViewerState((s) => ({ ...s, tool: "pan" }));
+        }
+      } else if (e.key === "z" || e.key === "Z") {
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          setViewerState((s) => ({ ...s, tool: "zoom" }));
+        }
+      } else if (e.key === "m" || e.key === "M") {
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          setViewerState((s) => ({ ...s, tool: "measure" }));
+        }
+      } else if (e.key === "a" || e.key === "A") {
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          setViewerState((s) => ({ ...s, tool: "rect" }));
+          setAnnotationMode("2d");
+        }
+      } else if (e.key === "?") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      } else if (e.key === "Escape") {
+        setViewerState((s) => ({ ...s, tool: "pan" }));
+        setAnnotationMode(null);
       }
     };
 
@@ -683,6 +717,7 @@ export function ClinicalWorkstation({
         hasGenuine4D={hasGenuine4D}
         onOpenPatientInfo={() => setPatientInfoOpen(true)}
         onOpenStudyInfo={() => setStudyInfoOpen(true)}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
         onExport={() => {
           pushToast({
             title: "Exporting Diagnostic Package",
@@ -1549,6 +1584,11 @@ export function ClinicalWorkstation({
                     findings={study.findings}
                     onUpdateFinding={onUpdateFinding}
                     activeFindingId={selectedFindingId}
+                    onSelectFinding={setSelectedFindingId}
+                    onSelectSeries={(sId) => {
+                      setActiveSeriesId(sId);
+                      setActiveMode("images");
+                    }}
                   />
                 </div>
               </div>
@@ -2126,6 +2166,12 @@ export function ClinicalWorkstation({
           </div>
         </Modal>
       )}
+
+      {/* Keyboard Shortcuts Reference Modal (Section 31) */}
+      <KeyboardShortcutsModal
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
     </div>
   );
 }

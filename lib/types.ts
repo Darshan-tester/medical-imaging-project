@@ -39,6 +39,13 @@ export interface FindingEvidence {
   keyObservation: string;
 }
 
+export interface FindingEvidenceDetails {
+  keyObservations: string[];
+  supportingSequences: string[];
+  unavailableSequences: string[];
+  explainabilityNote?: string;
+}
+
 export interface Finding {
   id: string;
   label: string;
@@ -46,20 +53,31 @@ export interface Finding {
   band: AIConfidenceBand;
   region: { x: number; y: number; w: number; h: number }; // normalized 0-1 bbox on the reference slice
   sliceIndex: number;
+  totalSlices?: number;
   /** Which series this finding lives on. Undefined = applies regardless of series (e.g. single-series studies). */
   seriesId?: string;
+  seriesLabel?: string;
+  plane?: string;
+  modality?: Modality;
   description: string;
   status: "pending" | "accepted" | "modified" | "rejected" | FindingReviewStatus;
   radiologistNote?: string;
   location?: string;
+  anatomicalLocation?: string;
+  confidenceLevel?: "high" | "moderate" | "low";
   isCritical?: boolean;
   priority?: string;
   severity?: string;
+  chronicity?: "acute" | "subacute" | "chronic" | "indeterminate";
+  severityLevel?: "mild" | "moderate" | "severe" | "indeterminate";
+  rejectionReason?: string;
   modelName?: string;
   modelVersion?: string;
   processingTimeMs?: number;
   measurements?: FindingMeasurement;
   evidence?: FindingEvidence;
+  evidenceDetails?: FindingEvidenceDetails;
+  dwiCorrelationAvailable?: boolean;
 }
 
 export interface SeriesInfo {
@@ -420,6 +438,7 @@ export interface Study {
    * upload store (`lib/uploads/db.ts`), and nothing merges them.
    */
   uploaded?: UploadOrigin;
+  priorStudies?: Study[];
 }
 
 /**
@@ -519,7 +538,7 @@ export interface VitalsReading {
 
 export interface ReportQCWarning {
   id: string;
-  category: "laterality" | "measurement" | "contradiction" | "missing_critical" | "unsupported_claim";
+  category: "laterality" | "measurement" | "contradiction" | "missing_critical" | "unsupported_claim" | "consistency";
   severity: "critical" | "warning" | "advisory";
   title: string;
   description: string;

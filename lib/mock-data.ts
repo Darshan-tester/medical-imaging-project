@@ -140,8 +140,29 @@ function makeFindings(modality: Modality, count: number, series: SeriesInfo[]): 
         h: 0.1 + rand() * 0.14,
       },
       sliceIndex: int(0, Math.max(0, targetSeries.sliceCount - 1)),
+      totalSlices: targetSeries.sliceCount,
       seriesId: targetSeries.id,
+      seriesLabel: targetSeries.label,
+      plane: targetSeries.orientation,
+      modality,
+      location: f.label.includes("matter")
+        ? "Bilateral frontoparietal white matter"
+        : f.label.includes("Pulmonary")
+        ? "Right lower lobe"
+        : f.label.includes("Gallbladder")
+        ? "Gallbladder wall"
+        : f.label.includes("Thyroid")
+        ? "Thyroid left lobe"
+        : undefined,
       status: "pending",
+      evidenceDetails: {
+        keyObservations: [
+          `${f.label} identified on reference ${targetSeries.orientation} plane`,
+          f.description,
+        ],
+        supportingSequences: [targetSeries.label.split(" ")[0]],
+        unavailableSequences: modality === "MRI" ? ["DWI", "ADC"] : [],
+      },
     });
   }
   return findings;

@@ -504,7 +504,8 @@ export function toAppStudy(
       ds.modality,
 
     bodyRegion:
-      ds.bodyRegion,
+      ds.bodyRegion ||
+      (ds.series.some((s) => /brain|flair|t1w|t2w/i.test(s.label)) ? "BRAIN" : undefined),
 
     date:
       ds.date,
@@ -666,7 +667,9 @@ export function toAppStudySummary(
     age: ds.age,
     sex: ds.sex,
     modality: ds.modality,
-    bodyRegion: ds.bodyRegion,
+    bodyRegion:
+      ds.bodyRegion ||
+      (ds.series.some((s) => /brain|flair|t1w|t2w/i.test(s.label)) ? "BRAIN" : undefined),
     date: ds.date,
     priority: "routine",
     status,

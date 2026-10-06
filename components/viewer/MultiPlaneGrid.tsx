@@ -6,10 +6,13 @@ import {
   Maximize2,
   Minimize2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Layers,
   Box,
   Square,
   Crosshair,
+  Sliders,
 } from "lucide-react";
 import { Study, SeriesInfo, ViewportLayout, Finding, Marker, ViewerMeasurement, ViewerAnnotation, Annotation3D } from "@/lib/types";
 import { ImageViewer } from "./ImageViewer";
@@ -191,6 +194,12 @@ export function MultiPlaneGrid({
     globalViewerState.crosshairSync,
   ]);
 
+  // Independent synchronization controls (Section 7.C)
+  const [syncPosition, setSyncPosition] = useState(true);
+  const [syncCrosshair, setSyncCrosshair] = useState(true);
+  const [syncZoom, setSyncZoom] = useState(false);
+  const [syncWl, setSyncWl] = useState(true);
+
   // Single panel maximization
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
 
@@ -224,6 +233,8 @@ export function MultiPlaneGrid({
     }
 
     setCrosshairNorm({ x: nextX, y: nextY, z: nextZ });
+
+    if (!syncPosition) return;
 
     // Synchronize slices across other planes, returning currPanels if unchanged to prevent re-render storms
     setPanels((currPanels) => {
@@ -305,9 +316,34 @@ export function MultiPlaneGrid({
   }, [layout, panels, maximizedPanelId]);
 
   const updatePanelState = (panelId: string, updater: (prev: ViewerState) => ViewerState) => {
-    setPanels((prev) =>
-      prev.map((p) => (p.id === panelId ? { ...p, viewerState: updater(p.viewerState) } : p))
-    );
+    setPanels((prev) => {
+      const target = prev.find((p) => p.id === panelId);
+      if (!target) return prev;
+      const nextTargetState = updater(target.viewerState);
+
+      return prev.map((p) => {
+        if (p.id === panelId) {
+          return { ...p, viewerState: nextTargetState };
+        }
+        let updatedState = { ...p.viewerState };
+        if (syncZoom && nextTargetState.zoom !== target.viewerState.zoom) {
+          updatedState.zoom = nextTargetState.zoom;
+        }
+        if (
+          syncWl &&
+          (nextTargetState.windowWidth !== target.viewerState.windowWidth ||
+            nextTargetState.windowCenter !== target.viewerState.windowCenter ||
+            nextTargetState.brightness !== target.viewerState.brightness ||
+            nextTargetState.contrast !== target.viewerState.contrast)
+        ) {
+          updatedState.windowWidth = nextTargetState.windowWidth;
+          updatedState.windowCenter = nextTargetState.windowCenter;
+          updatedState.brightness = nextTargetState.brightness;
+          updatedState.contrast = nextTargetState.contrast;
+        }
+        return { ...p, viewerState: updatedState };
+      });
+    });
   };
 
   const updatePanelSlice = (panelId: string, sliceDelta: number) => {
@@ -395,28 +431,93 @@ export function MultiPlaneGrid({
     );
   };
 
+  const getPanelCrosshair = (planeType: PanelPlaneType) => {
+    if (!syncCrosshair) return null;
+    if (planeType === "Axial") return { x: crosshairNorm.x, y: crosshairNorm.y };
+    if (planeType === "Coronal") return { x: crosshairNorm.x, y: crosshairNorm.z };
+    if (planeType === "Sagittal") return { x: crosshairNorm.y, y: crosshairNorm.z };
+    return crosshairNorm;
+  };
+
   return (
-    <div ref={containerRef} className="relative h-full w-full select-none overflow-hidden rounded-lg bg-black">
-      {/* 1x1 Single View */}
-      {(layout === "1x1" || maximizedPanelId) && visiblePanels[0] && (
-        <div className="h-full w-full">
-          <SingleViewportPanel
-            panel={visiblePanels[0]}
-            study={study}
-            isMaximized={Boolean(maximizedPanelId)}
-            onToggleMaximize={() => setMaximizedPanelId(maximizedPanelId ? null : visiblePanels[0].id)}
-            onUpdateState={(u) => updatePanelState(visiblePanels[0].id, u)}
-            onSliceScroll={(d) => updatePanelSlice(visiblePanels[0].id, d)}
-            onSwitchSeries={(sId, pType) => switchPanelSeries(visiblePanels[0].id, sId, pType)}
-            crosshairPos={
-              visiblePanels[0].planeType === "Axial"
-                ? { x: crosshairNorm.x, y: crosshairNorm.y }
-                : visiblePanels[0].planeType === "Coronal"
-                ? { x: crosshairNorm.x, y: crosshairNorm.z }
-                : { x: crosshairNorm.y, y: crosshairNorm.z }
-            }
-            onCrosshairMove={(pt) => handleCrosshairMoveFromPlane(visiblePanels[0].planeType, pt)}
-            getImageUrl={getImageUrl}
+    <div ref={containerRef} className="relative flex flex-col h-full w-full select-none overflow-hidden rounded-lg bg-black">
+      {/* MPR Synchronization Bar */}
+      <div className="flex h-7 shrink-0 items-center justify-between border-b border-border-strong/70 bg-panel/90 px-2.5 text-[11px] select-none z-30">
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          <span className="font-semibold uppercase tracking-wider text-ink-muted text-[9.5px]">MPR Sync:</span>
+          <button
+            type="button"
+            onClick={() => setSyncPosition((v) => !v)}
+            className={cn(
+              "px-2 py-0.5 rounded text-[10.5px] font-mono transition-colors border",
+              syncPosition
+                ? "bg-clinical/20 text-clinical-strong border-clinical/40 font-medium"
+                : "bg-base/60 text-ink-muted border-border-strong hover:text-ink-secondary"
+            )}
+            title="Synchronize orthogonal slice navigation"
+          >
+            Position {syncPosition ? "ON" : "OFF"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSyncCrosshair((v) => !v)}
+            className={cn(
+              "px-2 py-0.5 rounded text-[10.5px] font-mono transition-colors border",
+              syncCrosshair
+                ? "bg-clinical/20 text-clinical-strong border-clinical/40 font-medium"
+                : "bg-base/60 text-ink-muted border-border-strong hover:text-ink-secondary"
+            )}
+            title="Synchronize crosshairs and reference lines"
+          >
+            Crosshairs {syncCrosshair ? "ON" : "OFF"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSyncZoom((v) => !v)}
+            className={cn(
+              "px-2 py-0.5 rounded text-[10.5px] font-mono transition-colors border",
+              syncZoom
+                ? "bg-clinical/20 text-clinical-strong border-clinical/40 font-medium"
+                : "bg-base/60 text-ink-muted border-border-strong hover:text-ink-secondary"
+            )}
+            title="Synchronize zoom factor across viewports"
+          >
+            Zoom {syncZoom ? "ON" : "OFF"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSyncWl((v) => !v)}
+            className={cn(
+              "px-2 py-0.5 rounded text-[10.5px] font-mono transition-colors border",
+              syncWl
+                ? "bg-clinical/20 text-clinical-strong border-clinical/40 font-medium"
+                : "bg-base/60 text-ink-muted border-border-strong hover:text-ink-secondary"
+            )}
+            title="Synchronize Window Width & Level adjustments"
+          >
+            W/L {syncWl ? "ON" : "OFF"}
+          </button>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-ink-muted font-mono">
+          <span>{study.bodyRegion ?? study.modality} · Multi-Planar Reconstruction</span>
+        </div>
+      </div>
+
+      <div className="relative min-h-0 flex-1">
+        {/* 1x1 Single View */}
+        {(layout === "1x1" || maximizedPanelId) && visiblePanels[0] && (
+          <div className="h-full w-full">
+            <SingleViewportPanel
+              panel={visiblePanels[0]}
+              study={study}
+              isMaximized={Boolean(maximizedPanelId)}
+              onToggleMaximize={() => setMaximizedPanelId(maximizedPanelId ? null : visiblePanels[0].id)}
+              onUpdateState={(u) => updatePanelState(visiblePanels[0].id, u)}
+              onSliceScroll={(d) => updatePanelSlice(visiblePanels[0].id, d)}
+              onSwitchSeries={(sId, pType) => switchPanelSeries(visiblePanels[0].id, sId, pType)}
+              crosshairPos={getPanelCrosshair(visiblePanels[0].planeType)}
+              onCrosshairMove={(pt) => handleCrosshairMoveFromPlane(visiblePanels[0].planeType, pt)}
+              getImageUrl={getImageUrl}
             findings={findings}
             activeFindingId={activeFindingId}
             onHoverFinding={onHoverFinding}
@@ -989,6 +1090,7 @@ export function MultiPlaneGrid({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -1126,9 +1228,29 @@ function SingleViewportPanel({
 
         <div className="flex items-center gap-1.5">
           {!is3D && activeSeries && activeSeries.sliceCount > 1 && (
-            <span className="font-mono text-[10px] text-ink-muted">
-              {panel.sliceIndex + 1}/{activeSeries.sliceCount}
-            </span>
+            <div className="flex items-center gap-0.5 mr-1">
+              <button
+                type="button"
+                disabled={panel.sliceIndex <= 0}
+                onClick={() => onSliceScroll(-1)}
+                className="rounded p-0.5 text-ink-muted hover:text-ink-primary hover:bg-base disabled:opacity-20 disabled:pointer-events-none"
+                title="Previous Slice (↑ / Scroll)"
+              >
+                <ChevronLeft className="h-3 w-3" />
+              </button>
+              <span className="font-mono text-[10px] text-ink-muted px-1">
+                {panel.sliceIndex + 1} / {activeSeries.sliceCount}
+              </span>
+              <button
+                type="button"
+                disabled={panel.sliceIndex >= activeSeries.sliceCount - 1}
+                onClick={() => onSliceScroll(1)}
+                className="rounded p-0.5 text-ink-muted hover:text-ink-primary hover:bg-base disabled:opacity-20 disabled:pointer-events-none"
+                title="Next Slice (↓ / Scroll)"
+              >
+                <ChevronRight className="h-3 w-3" />
+              </button>
+            </div>
           )}
           <button
             onClick={onToggleMaximize}

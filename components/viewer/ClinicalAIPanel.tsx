@@ -5,6 +5,7 @@ import {
   Sparkles,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Loader2,
   Play,
   RotateCcw,
@@ -29,6 +30,7 @@ import { Button } from "@/components/ui/Button";
 import { ConfidenceIndicator } from "@/components/ui/ConfidenceIndicator";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
+import { ClinicalAIFindingCard } from "./ClinicalAIFindingCard";
 
 export interface ClinicalAITask {
   id: string;
@@ -59,6 +61,7 @@ interface ClinicalAIPanelProps {
   onUpdateFinding: (id: string, patch: Partial<Finding>) => void;
   activeFindingId?: string | null;
   onSelectFinding?: (id: string) => void;
+  onSelectSeries?: (seriesId: string) => void;
 }
 
 export const ClinicalAIPanel = memo(function ClinicalAIPanel({
@@ -75,6 +78,7 @@ export const ClinicalAIPanel = memo(function ClinicalAIPanel({
   onUpdateFinding,
   activeFindingId,
   onSelectFinding,
+  onSelectSeries,
 }: ClinicalAIPanelProps) {
   const modality = study.modality;
   const region = (study.bodyRegion || "").toUpperCase();
@@ -174,6 +178,14 @@ export const ClinicalAIPanel = memo(function ClinicalAIPanel({
   const [tasks, setTasks] = useState<ClinicalAITask[]>(initialTasks);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  const [findingFilter, setFindingFilter] = useState<"all" | "critical" | "pending" | "reviewed">("all");
+
+  const filteredFindings = findings.filter((f) => {
+    if (findingFilter === "critical") return f.isCritical;
+    if (findingFilter === "pending") return f.status === "pending" || f.status === "unreviewed";
+    if (findingFilter === "reviewed") return f.status === "accepted" || f.status === "modified" || f.status === "rejected";
+    return true;
+  });
 
   // Sync tasks completion state with organMeshes
   useEffect(() => {
@@ -323,12 +335,25 @@ export const ClinicalAIPanel = memo(function ClinicalAIPanel({
 
   return (
     <div className="flex flex-col h-full overflow-y-auto divide-y divide-border bg-panel text-ink-primary select-none text-[12px]">
+      {/* 0. Global Clinical AI Safety Banner (Section 4) */}
+      <div className="border-b border-amber-800/40 bg-amber-950/20 px-3.5 py-2.5 text-[11px] text-amber-200/90 flex items-start gap-2">
+        <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+        <div className="leading-snug">
+          <span className="font-semibold text-amber-300 block">
+            AI decision support — radiologist review required.
+          </span>
+          <span className="text-[10px] text-amber-300/80">
+            Automated model outputs are decision support detections. Diagnostic interpretation requires qualified radiologist review.
+          </span>
+        </div>
+      </div>
+
       {/* 1. Header */}
       <div className="p-3.5 bg-base/40">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 font-semibold text-ink-primary text-[12.5px]">
             <Sparkles className="h-4 w-4 text-clinical" />
-            <span>AI Clinical Analysis</span>
+            <span>AI Clinical Analysis &amp; Volumetrics</span>
           </div>
           <span className="flex items-center gap-1 rounded bg-clinical-dim px-2 py-0.5 text-[10.5px] font-medium text-clinical-strong">
             <ShieldCheck className="h-3 w-3" />
@@ -336,8 +361,8 @@ export const ClinicalAIPanel = memo(function ClinicalAIPanel({
           </span>
         </div>
         <p className="mt-1 text-[11px] text-ink-secondary leading-normal">
-          Automated volumetric segmentation and feature extraction for {study.modality}{" "}
-          {study.bodyRegion ? `(${study.bodyRegion})` : ""}. Does not disrupt 2D diagnostic review.
+          Automated multi-planar detections and organ volumetrics for {study.modality}{" "}
+          {study.bodyRegion ? `(${study.bodyRegion})` : ""}. Radiologist verification is required for all candidate findings.
         </p>
       </div>
 
@@ -475,86 +500,115 @@ export const ClinicalAIPanel = memo(function ClinicalAIPanel({
         </div>
       </div>
 
-      {/* 3. Clinical Findings & Evidence */}
-      <div className="p-3.5 space-y-2.5">
+      {/* 3. Clinical Findings & Evidence (Sections 10-17) */}
+      <div className="p-3.5 space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
-            Detected Findings ({findings.length})
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
+              AI Decision Support Findings
+            </span>
+            <span className="rounded bg-clinical/20 text-clinical-strong font-mono px-1.5 py-0.2 text-[10px] font-semibold">
+              {findings.length}
+            </span>
+          </div>
+          <span className="text-[10px] text-ink-muted font-mono">
+            Reviewed: {findings.filter((f) => f.status === "accepted" || f.status === "modified" || f.status === "rejected").length} / {findings.length}
           </span>
-          <span className="text-[10.5px] text-ink-muted">Click to localize</span>
         </div>
 
-        {findings.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border p-3 text-center text-ink-muted text-[11px]">
-            No acute AI findings detected on reference series.
+        {/* Filter Pills */}
+        <div className="flex items-center gap-1 border-b border-border/50 pb-2 text-[10.5px]">
+          <button
+            type="button"
+            onClick={() => setFindingFilter("all")}
+            className={cn(
+              "px-2 py-0.5 rounded font-medium transition-colors",
+              findingFilter === "all"
+                ? "bg-clinical text-white font-semibold"
+                : "text-ink-muted hover:text-ink-secondary hover:bg-base"
+            )}
+          >
+            All ({findings.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setFindingFilter("critical")}
+            className={cn(
+              "px-2 py-0.5 rounded font-medium transition-colors",
+              findingFilter === "critical"
+                ? "bg-critical text-white font-semibold"
+                : "text-ink-muted hover:text-ink-secondary hover:bg-base"
+            )}
+          >
+            Critical ({findings.filter((f) => f.isCritical).length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setFindingFilter("pending")}
+            className={cn(
+              "px-2 py-0.5 rounded font-medium transition-colors",
+              findingFilter === "pending"
+                ? "bg-amber-600 text-white font-semibold"
+                : "text-ink-muted hover:text-ink-secondary hover:bg-base"
+            )}
+          >
+            Pending ({findings.filter((f) => f.status === "pending" || f.status === "unreviewed").length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setFindingFilter("reviewed")}
+            className={cn(
+              "px-2 py-0.5 rounded font-medium transition-colors",
+              findingFilter === "reviewed"
+                ? "bg-emerald-600 text-white font-semibold"
+                : "text-ink-muted hover:text-ink-secondary hover:bg-base"
+            )}
+          >
+            Reviewed ({findings.filter((f) => f.status === "accepted" || f.status === "modified" || f.status === "rejected").length})
+          </button>
+        </div>
+
+        {filteredFindings.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-4 text-center text-ink-muted text-[11px] space-y-1">
+            <p className="font-medium text-ink-secondary">No findings in this category</p>
+            <p className="text-[10px]">
+              {findings.length === 0
+                ? "No automated AI findings detected on reference study."
+                : "Change filter tab to view other candidate findings."}
+            </p>
           </div>
         ) : (
-          <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-            {findings.map((f) => {
-              const isSelected = activeFindingId === f.id;
-
-              return (
-                <div
-                  key={f.id}
-                  onClick={() => {
-                    if (onSelectFinding) onSelectFinding(f.id);
-                    if (onJumpToSlice && f.sliceIndex !== undefined) onJumpToSlice(f.sliceIndex);
-                  }}
-                  className={cn(
-                    "flex flex-col gap-1.5 rounded-lg border p-2.5 cursor-pointer transition-all",
-                    isSelected
-                      ? "border-clinical bg-clinical-dim ring-1 ring-clinical"
-                      : "border-border-strong/70 bg-base hover:border-clinical/50",
-                    f.isCritical && "border-critical/60 bg-critical-dim/20"
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-semibold text-[11.5px] text-ink-primary">
-                          {f.label}
-                        </span>
-                        {f.isCritical && (
-                          <span className="rounded bg-critical-dim px-1 py-0.2 text-[9px] font-bold uppercase text-critical">
-                            STAT
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[10.5px] text-ink-secondary line-clamp-2 mt-0.5">
-                        {f.description}
-                      </p>
-                    </div>
-
-                    <ConfidenceIndicator value={f.confidence} band={f.band} />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40 text-[10px] text-ink-muted">
-                    <span>
-                      {f.location || "Thoracic"} · Slice {f.sliceIndex + 1}
-                    </span>
-
-                    <div className="flex items-center gap-1.5">
-                      {onAppendFindingToReport && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onAppendFindingToReport(`${f.label}: ${f.description} (Slice ${f.sliceIndex + 1})`);
-                            onUpdateFinding(f.id, { status: "accepted" });
-                          }}
-                          className="flex items-center gap-1 text-clinical hover:underline font-medium"
-                          title="Append this finding directly to the working report"
-                        >
-                          <Plus className="h-3 w-3" />
-                          <span>To Report</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+          <div className="space-y-3">
+            {filteredFindings.map((f) => (
+              <ClinicalAIFindingCard
+                key={f.id}
+                finding={f}
+                study={study}
+                isActive={activeFindingId === f.id}
+                onSelectFinding={(id) => onSelectFinding?.(id)}
+                onShowOnScan={(finding) => {
+                  if (finding.seriesId && onSelectSeries) onSelectSeries(finding.seriesId);
+                  if (finding.sliceIndex !== undefined && onJumpToSlice) onJumpToSlice(finding.sliceIndex);
+                  onSelectFinding?.(finding.id);
+                }}
+                onAddToReport={(finding) => {
+                  if (onAppendFindingToReport) {
+                    const locStr = finding.anatomicalLocation || finding.location ? ` in ${finding.anatomicalLocation || finding.location}` : "";
+                    const slStr = finding.sliceIndex !== undefined ? ` (Slice ${finding.sliceIndex + 1})` : "";
+                    onAppendFindingToReport(`${finding.label}${locStr}${slStr}: ${finding.description || "Identified on AI decision support"}`);
+                  }
+                }}
+                onUpdateFinding={onUpdateFinding}
+                onSelectSeries={onSelectSeries}
+                onJumpToSlice={onJumpToSlice}
+              />
+            ))}
           </div>
         )}
+
+        <div className="pt-2 border-t border-border/50 text-[10px] text-ink-muted leading-relaxed">
+          AI candidate detections assist radiologist localization. Final diagnostic responsibility remains with the interpreting physician.
+        </div>
       </div>
     </div>
   );

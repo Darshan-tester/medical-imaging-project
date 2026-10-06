@@ -10,22 +10,49 @@ export function AIOverlay({
   activeFindingId,
   onHover,
   onSelect,
+  opacity = 1,
+  visible = true,
 }: {
   findings: Finding[];
   activeFindingId: string | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
+  opacity?: number;
+  visible?: boolean;
 }) {
   const reduced = usePrefersReducedMotion();
 
+  if (!visible) return null;
+
   return (
-    <div className="pointer-events-none absolute inset-0">
+    <div className="pointer-events-none absolute inset-0" style={{ opacity }}>
       <AnimatePresence>
         {findings.map((f, i) => {
           const isActive = f.id === activeFindingId;
           const isNegative = f.label.toLowerCase().startsWith("no ");
-          if (isNegative) return null;
-          const color = f.band === "high" ? "#22C55E" : f.band === "moderate" ? "#F59E0B" : "#EF4444";
+          if (isNegative || f.status === "rejected") return null;
+
+          // Clinical Semantic Colors (Section 3)
+          let color = "#EAB308"; // Default Yellow: AI suggestion requiring review
+          if (f.status === "accepted" || f.status === "confirmed") {
+            color = "#22C55E"; // Green: Accepted / Verified
+          } else if (f.isCritical) {
+            color = "#EF4444"; // Red: Potentially urgent / high-priority finding
+          } else if (f.band === "moderate" || f.confidenceLevel === "moderate") {
+            color = "#F97316"; // Orange: Moderate confidence / needs attention
+          }
+
+          const confidenceText =
+            f.status === "accepted"
+              ? "✓ Accepted"
+              : f.status === "modified"
+              ? "✓ Modified"
+              : f.confidenceLevel
+              ? `${f.confidenceLevel} conf.`
+              : f.band === "high"
+              ? "high conf."
+              : "moderate conf.";
+
           return (
             <motion.button
               key={f.id}
@@ -43,15 +70,15 @@ export function AIOverlay({
                 width: `${f.region.w * 100}%`,
                 height: `${f.region.h * 100}%`,
                 border: `1.5px solid ${color}`,
-                boxShadow: isActive ? `0 0 0 3px ${color}2E, 0 0 14px ${color}66` : "none",
-                background: isActive ? `${color}14` : "transparent",
+                boxShadow: isActive ? `0 0 0 2px ${color}33, 0 0 10px ${color}44` : "none",
+                background: isActive ? `${color}18` : "transparent",
                 transition: "box-shadow 150ms ease-out, background-color 150ms ease-out",
               }}
             >
               {isActive && (
                 <span
-                  className="pointer-events-none absolute -inset-1 rounded-[5px] animate-glow-pulse"
-                  style={{ boxShadow: `0 0 0 1.5px ${color}55`, background: "transparent" }}
+                  className="pointer-events-none absolute -inset-1 rounded-[5px]"
+                  style={{ boxShadow: `0 0 0 1.5px ${color}44`, background: "transparent" }}
                   aria-hidden
                 />
               )}
@@ -60,17 +87,17 @@ export function AIOverlay({
                 <span
                   key={pos}
                   className={cn("pointer-events-none absolute h-1.5 w-1.5 border-current", pos)}
-                  style={{ color, borderWidth: pos.includes("top") ? "1.5px 0 0 1.5px" : "0 1.5px 1.5px 0", opacity: isActive ? 1 : 0.55 }}
+                  style={{ color, borderWidth: pos.includes("top") ? "1.5px 0 0 1.5px" : "0 1.5px 1.5px 0", opacity: isActive ? 1 : 0.6 }}
                 />
               ))}
               <span
                 className={cn(
-                  "absolute -top-6 left-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium text-canvas transition-opacity",
-                  isActive ? "opacity-100" : "opacity-70"
+                  "absolute -top-6 left-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium text-white transition-opacity shadow-sm",
+                  isActive ? "opacity-100" : "opacity-80"
                 )}
                 style={{ background: color }}
               >
-                {f.label} · {f.confidence}%
+                {f.label} · {confidenceText}
               </span>
             </motion.button>
           );

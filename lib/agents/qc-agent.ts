@@ -157,6 +157,46 @@ export function runQCAgent(sections: ReportSection, findings: Finding[]): QCAgen
     }
   }
 
+  // 5. Unreviewed AI Findings Check (Section 24)
+  const unreviewedFindings = findings.filter(
+    (f) => (f.status === "unreviewed" || f.status === "pending") && !f.label.toLowerCase().startsWith("no ")
+  );
+  if (unreviewedFindings.length > 0) {
+    warnings.push({
+      id: "qc-unreviewed-findings",
+      category: "consistency",
+      severity: "warning",
+      title: `${unreviewedFindings.length} AI Candidate Finding(s) Not Reviewed`,
+      description: `Candidate detections (${unreviewedFindings.map((f) => f.label).join(", ")}) remain unreviewed. Explicit radiologist action (Accept, Modify, or Reject) ensures full clinical traceability.`,
+      suggestedAction: "Review pending findings in the Clinical AI panel before final report sign-off.",
+      resolved: false,
+    });
+  }
+
+  // 6. Missing Required Report Sections Check (Section 24)
+  if (!sections.findings || sections.findings.trim().length === 0) {
+    warnings.push({
+      id: "qc-missing-findings-sec",
+      category: "consistency",
+      severity: "critical",
+      title: "Missing Required Section: Findings",
+      description: "The Findings section is empty. A diagnostic radiology report must document regional or organ-level findings.",
+      suggestedAction: "Complete the Findings section before attestation.",
+      resolved: false,
+    });
+  }
+  if (!sections.impression || sections.impression.trim().length === 0) {
+    warnings.push({
+      id: "qc-missing-impression-sec",
+      category: "consistency",
+      severity: "critical",
+      title: "Missing Required Section: Impression",
+      description: "The Impression section is empty. A definitive clinical impression and recommendations are required.",
+      suggestedAction: "Document a synthesized diagnostic Impression before signing.",
+      resolved: false,
+    });
+  }
+
   const criticalIssuesCount = warnings.filter((w) => w.severity === "critical").length;
   const passed = criticalIssuesCount === 0;
   const summary = passed

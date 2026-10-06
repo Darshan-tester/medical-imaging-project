@@ -847,7 +847,8 @@ export function AnalysisTab({
             if (action === "confirmed") {
               const finding = study.findings.find((f) => f.id === findingId);
               if (finding) {
-                onAppendFindingToReport(`CRITICAL FINDING: ${finding.label} (${finding.location || "Thoracic"}). Clinical handover documented.`);
+                const loc = finding.location || (study.bodyRegion ? `${study.bodyRegion}` : "Metadata unavailable");
+                onAppendFindingToReport(`CRITICAL FINDING: ${finding.label} (${loc}). Clinical handover documented.`);
               }
             }
           }}

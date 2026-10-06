@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -20,6 +20,7 @@ import {
   ScanLine,
   Sliders,
   Crosshair,
+  Keyboard,
 } from "lucide-react";
 import { Study, Modality, StudyPriority, StudyStatus } from "@/lib/types";
 import { ModalityBadge } from "@/components/ui/Badge";
@@ -38,6 +39,7 @@ interface ClinicalTopBarProps {
   hasGenuine4D?: boolean;
   onOpenPatientInfo?: () => void;
   onOpenStudyInfo?: () => void;
+  onOpenShortcuts?: () => void;
   onExport?: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
@@ -55,6 +57,7 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
   hasGenuine4D = false,
   onOpenPatientInfo,
   onOpenStudyInfo,
+  onOpenShortcuts,
   onExport,
   isFullscreen = false,
   onToggleFullscreen,
@@ -62,6 +65,12 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
   hasUnsavedReport = false,
 }: ClinicalTopBarProps) {
   const router = useRouter();
+  const [showWorkflowStatus, setShowWorkflowStatus] = useState(false);
+
+  const reviewedAiCount = study.findings.filter(
+    (f) => f.status === "accepted" || f.status === "modified" || f.status === "rejected"
+  ).length;
+  const isReportSigned = study.report.status === "approved";
 
   const formattedDate = study.date
     ? new Date(study.date).toLocaleDateString("en-US", {
@@ -256,11 +265,65 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
 
       {/* Right: Modality, Status, and Workstation Actions */}
       <div className="flex items-center gap-2">
-        <div className="hidden lg:flex items-center gap-2 mr-1">
+        <div className="relative hidden lg:flex items-center gap-2 mr-1">
           <ModalityBadge modality={study.modality} />
-          <span className="rounded bg-[#1e293b]/80 border border-[#334155]/60 px-2 py-0.5 font-mono text-[10.5px] uppercase tracking-wider text-slate-300">
-            {study.status.replace("-", " ")}
-          </span>
+          <button
+            type="button"
+            onClick={() => setShowWorkflowStatus((v) => !v)}
+            className="flex items-center gap-1.5 rounded bg-[#1e293b]/90 border border-[#334155]/80 px-2 py-0.5 font-mono text-[10.5px] uppercase tracking-wider text-slate-300 hover:border-sky-500 transition-colors"
+            title="View comprehensive study review status (Section 30)"
+          >
+            <span className={cn("h-1.5 w-1.5 rounded-full", isReportSigned ? "bg-emerald-400" : "bg-amber-400 animate-pulse")} />
+            <span>{isReportSigned ? "FINALIZED" : study.status.replace("-", " ").toUpperCase()}</span>
+          </button>
+
+          {showWorkflowStatus && (
+            <div className="absolute top-9 right-0 z-50 w-72 rounded-lg border border-border-strong bg-[#0f172a] p-3 shadow-2xl text-[11px] space-y-2.5">
+              <div className="flex items-center justify-between border-b border-border pb-1.5">
+                <span className="font-semibold text-slate-200 uppercase tracking-wider text-[10px]">
+                  Study Review Status
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {study.modality} · {study.studyId}
+                </span>
+              </div>
+              <div className="space-y-1.5 font-mono text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">IMAGES:</span>
+                  <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                    ✓ Reviewed
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">AI FINDINGS:</span>
+                  <span className={cn("font-semibold", reviewedAiCount === study.findings.length ? "text-emerald-400" : "text-amber-400")}>
+                    {reviewedAiCount} / {study.findings.length} Reviewed
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">REPORT:</span>
+                  <span className={isReportSigned ? "text-emerald-400 font-semibold" : "text-slate-300"}>
+                    {isReportSigned ? "Final Attested" : "Draft (In Progress)"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">QC AUDIT:</span>
+                  <span className={isReportSigned ? "text-emerald-400 font-semibold" : "text-amber-400"}>
+                    {isReportSigned ? "✓ Passed" : "Pending Verification"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">SIGNATURE:</span>
+                  <span className={isReportSigned ? "text-emerald-400 font-semibold" : "text-amber-400"}>
+                    {isReportSigned ? "✓ Electronically Signed" : "Pending Radiologist Sign"}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[9.5px] text-slate-500 italic pt-1 border-t border-slate-800">
+                AI decision support requires complete radiologist verification before signing.
+              </p>
+            </div>
+          )}
         </div>
 
         {onOpenPatientInfo && (
@@ -270,6 +333,17 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
               className="flex h-7.5 w-7.5 items-center justify-center rounded border border-[#1e293b] bg-[#111827] text-slate-300 hover:border-slate-500 hover:text-white transition-colors"
             >
               <Info className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        )}
+
+        {onOpenShortcuts && (
+          <Tooltip label="Workstation Keyboard Shortcuts (?)">
+            <button
+              onClick={onOpenShortcuts}
+              className="flex h-7.5 w-7.5 items-center justify-center rounded border border-[#1e293b] bg-[#111827] text-slate-300 hover:border-slate-500 hover:text-white transition-colors"
+            >
+              <Keyboard className="h-3.5 w-3.5" />
             </button>
           </Tooltip>
         )}
