@@ -1,9 +1,10 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, Play, Pause, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Play, Pause, ChevronsLeft, ChevronsRight, Loader2, AlertTriangle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
+import type { PlaybackState } from "@/lib/viewer/playback-buffer";
 
 /**
  * Cine rate multipliers, applied to `FRAME_MS`.
@@ -26,6 +27,13 @@ export function SliceNavigator({
   playing,
   onTogglePlay,
   ready = true,
+  playbackState = "READY",
+  bufferedCount,
+  totalTarget,
+  progressPercent,
+  isBufferReady = true,
+  failedFrames = [],
+  onRetryBuffer,
 }: {
   current: number;
   total: number;
@@ -37,24 +45,26 @@ export function SliceNavigator({
   onTogglePlay: () => void;
   /**
    * False while the current frame's pixels are still in flight. Cine waits for
-   * it instead of advancing on a fixed 90 ms timer: a reconstructed CT plane is
-   * resliced on demand, and a timer that outruns the server just queues frames
-   * that arrive after the UI has moved past them, which presents as a stall.
-   * Defaults true so callers that render pre-loaded rasters behave as before.
+   * it instead of advancing on a fixed 90 ms timer.
    */
   ready?: boolean | (() => boolean);
+  /** Explicit playback pipeline state: INITIALIZING, LOADING, DECODING, READY, PLAYING, PAUSED, ERROR */
+  playbackState?: PlaybackState;
+  bufferedCount?: number;
+  totalTarget?: number;
+  progressPercent?: number;
+  isBufferReady?: boolean;
+  failedFrames?: number[];
+  onRetryBuffer?: () => void;
 }) {
   const raf = useRef<number | null>(null);
   const currentRef = useRef(current);
   currentRef.current = current;
   const readyRef = useRef(ready);
   readyRef.current = ready;
+  const bufferReadyRef = useRef(isBufferReady);
+  bufferReadyRef.current = isBufferReady;
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
-  /*
-   * Read through a ref inside the loop, the same way `current` and `ready` are:
-   * changing speed mid-playback then takes effect on the next frame instead of
-   * tearing down and restarting the requestAnimationFrame loop.
-   */
   const speedRef = useRef(speed);
   speedRef.current = speed;
 
@@ -62,13 +72,9 @@ export function SliceNavigator({
     if (!playing || total <= 1) return;
     let last = performance.now();
     const tick = (t: number) => {
-      // Advance on whichever is later: the frame interval, or the moment the
-      // current frame actually finished decoding. Speed scales the interval only
-      // — the readiness gate still applies, so 2× on a series whose planes are
-      // resliced on demand runs as fast as the pixels arrive and no faster.
       const isReady = typeof readyRef.current === "function" ? readyRef.current() : (readyRef.current ?? true);
-      if (t - last > FRAME_MS / speedRef.current && isReady) {
-        // Cine playback loops — this is the one place wraparound is intentional.
+      const isBuffered = bufferReadyRef.current;
+      if (t - last > FRAME_MS / speedRef.current && isReady && isBuffered) {
         onChange((currentRef.current + 1) % total);
         last = t;
       }
@@ -78,13 +84,25 @@ export function SliceNavigator({
     return () => {
       if (raf.current) cancelAnimationFrame(raf.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, total]);
+  }, [playing, total, onChange]);
 
   if (total <= 1) return null;
 
   const atStart = current <= 0;
   const atEnd = current >= total - 1;
+
+  const isPlayDisabled =
+    (!isBufferReady && playbackState !== "READY" && playbackState !== "PLAYING" && playbackState !== "PAUSED") ||
+    playbackState === "ERROR";
+
+  const playTooltip =
+    playbackState === "ERROR"
+      ? "Playback unavailable - buffering error"
+      : isPlayDisabled
+      ? `Buffering slices for smooth playback (${progressPercent ?? 0}%)`
+      : playing
+      ? "Pause cine (Space)"
+      : "Play cine (Space)";
 
   return (
     <div
@@ -92,21 +110,51 @@ export function SliceNavigator({
       role="group"
       aria-label="Slice navigation"
     >
-      <Tooltip label={playing ? "Pause cine (Space)" : "Play cine (Space)"}>
+      <Tooltip label={playTooltip}>
         <button
           onClick={onTogglePlay}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-secondary hover:bg-[rgb(var(--overlay-hover)/0.07)] hover:text-ink-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-clinical"
+          disabled={isPlayDisabled}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-secondary hover:bg-[rgb(var(--overlay-hover)/0.07)] hover:text-ink-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-clinical disabled:opacity-40 disabled:pointer-events-none"
           aria-label={playing ? "Pause cine playback" : "Play cine playback"}
         >
-          {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+          {playing ? (
+            <Pause className="h-3.5 w-3.5 text-clinical" />
+          ) : playbackState === "LOADING" || playbackState === "DECODING" ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-clinical" />
+          ) : (
+            <Play className="h-3.5 w-3.5" />
+          )}
         </button>
       </Tooltip>
 
+      {/* Buffer status badge */}
+      {(playbackState === "LOADING" || playbackState === "DECODING") && (
+        <div className="hidden items-center gap-1.5 rounded bg-clinical/10 border border-clinical/20 px-2 py-0.5 text-[10.5px] font-mono text-clinical sm:flex">
+          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+          <span>
+            Buffering {bufferedCount ?? 0}/{totalTarget ?? total} ({progressPercent ?? 0}%)
+          </span>
+        </div>
+      )}
+      {playbackState === "READY" && progressPercent !== undefined && progressPercent >= 100 && total > 1 && (
+        <div className="hidden items-center gap-1 rounded bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 text-[10px] font-mono font-medium text-emerald-400 md:flex">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+          <span>READY</span>
+        </div>
+      )}
+      {playbackState === "ERROR" && onRetryBuffer && (
+        <button
+          onClick={onRetryBuffer}
+          className="flex items-center gap-1 rounded bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 text-[10px] font-mono text-rose-400 hover:bg-rose-500/20"
+        >
+          <AlertTriangle className="h-3 w-3" />
+          <span>Retry Buffer</span>
+        </button>
+      )}
+
       {/*
        * Playback speed, next to the transport control it modifies rather than off
-       * in the toolbar. Hidden below `sm` for the same reason the first/last-slice
-       * jumps are: on a phone the slider needs the width more than the multipliers
-       * do, and cine is still fully usable at 1×.
+       * in the toolbar.
        */}
       <Tooltip label="Cine playback speed">
         <div

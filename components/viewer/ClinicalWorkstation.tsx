@@ -86,6 +86,7 @@ import { useAuthStore, useUIStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 import { detectGenuine4D } from "@/lib/anatomy-state";
+import { usePlaybackBuffer } from "@/lib/viewer/playback-buffer";
 
 const Patient3DAnatomyViewer = dynamic(
   () => import("./Patient3DAnatomyViewer").then((m) => m.Patient3DAnatomyViewer),
@@ -261,29 +262,56 @@ export function ClinicalWorkstation({
     }
   }, [activeSeries, currentSlice]);
 
-  // Intelligent slice preloading: pre-caches adjacent ±4 slices into browser cache
-  useEffect(() => {
-    if (!activeSeries.sliceCount || activeSeries.sliceCount <= 1) return;
-    const preloadRadius = 4;
-    const preloadedImages: HTMLImageElement[] = [];
+  // Intelligent clinical playback buffer manager (LOAD -> VALIDATE -> DECODE -> CACHE -> READY -> PLAY)
+  const playbackBuffer = usePlaybackBuffer({
+    seriesId: activeSeries.id,
+    total: activeSeries.sliceCount || 1,
+    currentSlice,
+    urlAt: imageUrlAt,
+    playing,
+    onAutoPause: () => setPlaying(false),
+  });
 
-    for (let offset = -preloadRadius; offset <= preloadRadius; offset++) {
-      if (offset === 0) continue;
-      const idx = currentSlice + offset;
-      if (idx >= 0 && idx < activeSeries.sliceCount) {
-        const url = imageUrlAt(idx);
-        if (url && typeof Image !== "undefined") {
-          const img = new Image();
-          img.src = url;
-          preloadedImages.push(img);
+  // Global Keyboard Navigation (Space for Cine, Arrows for Slices)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (activeMode === "images" && (activeSeries.sliceCount || 1) > 1) {
+          if (!playbackBuffer.isReady && !playing) {
+            pushToast({
+              title: "Buffering Images",
+              description: `Buffering slices for smooth playback (${playbackBuffer.progressPercent}%). Please wait.`,
+              tone: "default",
+            });
+            return;
+          }
+          setPlaying((p) => !p);
+        }
+      } else if (e.code === "ArrowLeft") {
+        if (activeMode === "images") {
+          e.preventDefault();
+          setCurrentSlice((s) => Math.max(0, s - 1));
+        }
+      } else if (e.code === "ArrowRight") {
+        if (activeMode === "images") {
+          e.preventDefault();
+          setCurrentSlice((s) => Math.min((activeSeries.sliceCount || 1) - 1, s + 1));
         }
       }
-    }
-
-    return () => {
-      preloadedImages.length = 0;
     };
-  }, [currentSlice, activeSeries.sliceCount, imageUrlAt]);
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeMode, activeSeries.sliceCount, playbackBuffer.isReady, playbackBuffer.progressPercent, playing, pushToast]);
 
   // Hydrate annotations from session store
   useEffect(() => {
@@ -749,17 +777,7 @@ export function ClinicalWorkstation({
               </div>
             </div>
           ) : (
-            <div className="w-[240px] shrink-0 h-full border-r border-border bg-panel overflow-hidden flex flex-col relative">
-              <div className="flex items-center justify-between border-b border-border px-3 py-1.5 bg-panel-alt">
-                <span className="text-[11px] font-semibold text-ink-primary tracking-tight">Series Browser</span>
-                <button
-                  onClick={() => setLeftSidebarCollapsed(true)}
-                  className="rounded p-1 text-ink-muted hover:text-ink-primary hover:bg-base transition-colors"
-                  title="Collapse Series Browser"
-                >
-                  <ChevronLeft className="h-3.5 w-3.5" />
-                </button>
-              </div>
+            <div className="w-[240px] shrink-0 h-full border-r border-[#1e293b] bg-[#0b0f19] overflow-hidden flex flex-col relative min-w-0">
               <ClinicalSeriesSidebar
                 study={study}
                 series={study.series}
@@ -769,6 +787,7 @@ export function ClinicalWorkstation({
                   setCurrentSlice(0);
                   setPlaying(false);
                 }}
+                onCollapse={() => setLeftSidebarCollapsed(true)}
               />
             </div>
           )
@@ -1361,41 +1380,6 @@ export function ClinicalWorkstation({
                   />
                 )}
 
-                {/* Patient / Technical HUD Watermark Overlays */}
-                <div className="pointer-events-none absolute top-3 left-3 text-[11px] font-mono text-white/70 leading-tight">
-                  <div className="font-semibold text-white">{study.patientAlias}</div>
-                  <div>ID: {study.studyId}</div>
-                  <div>
-                    {[study.age ? `${study.age}y` : "", study.sex].filter(Boolean).join(" · ")}
-                  </div>
-                </div>
-
-                <div className="pointer-events-none absolute top-3 right-3 text-right text-[11px] font-mono text-white/70 leading-tight">
-                  <div className="font-semibold text-white">{study.modality} {study.bodyRegion}</div>
-                  <div>{activeSeries.label}</div>
-                  <div>
-                    {study.date ? new Date(study.date).toLocaleDateString() : ""}
-                  </div>
-                </div>
-
-                <div className="pointer-events-none absolute bottom-14 left-3 text-[11px] font-mono text-white/60 leading-tight">
-                  <div>
-                    W: {Math.round(viewerState.windowWidth)} L: {Math.round(viewerState.windowCenter)}
-                  </div>
-                  <div>Zoom: {viewerState.zoom.toFixed(1)}x</div>
-                </div>
-
-                <div className="pointer-events-none absolute bottom-14 right-3 text-right text-[11px] font-mono text-white/60 leading-tight">
-                  <div>{activeSeries.orientation || "Transverse"}</div>
-                  {activeSeries.sliceCount > 1 && (
-                    <div className="text-clinical font-semibold">
-                      Slice {currentSlice + 1} / {activeSeries.sliceCount}
-                    </div>
-                  )}
-                  {activeSeries.pixelSpacing && (
-                    <div>Pixel Spacing: {activeSeries.pixelSpacing[0].toFixed(2)}mm</div>
-                  )}
-                </div>
 
                 {/* Floating PET Fusion Controls if Modality is PET */}
                 {study.modality === "PET" && (
@@ -1431,7 +1415,25 @@ export function ClinicalWorkstation({
                     onChange={setCurrentSlice}
                     orientation={activeSeries.orientation}
                     playing={playing}
-                    onTogglePlay={() => setPlaying((p) => !p)}
+                    onTogglePlay={() => {
+                      if (!playbackBuffer.isReady && !playing) {
+                        pushToast({
+                          title: "Buffering Images",
+                          description: `Buffering slices for smooth playback (${playbackBuffer.progressPercent}%). Please wait.`,
+                          tone: "default",
+                        });
+                        return;
+                      }
+                      setPlaying((p) => !p);
+                    }}
+                    ready={playbackBuffer.isReady}
+                    playbackState={playbackBuffer.playbackState}
+                    bufferedCount={playbackBuffer.bufferedCount}
+                    totalTarget={playbackBuffer.totalTarget}
+                    progressPercent={playbackBuffer.progressPercent}
+                    isBufferReady={playbackBuffer.isReady}
+                    failedFrames={playbackBuffer.failedFrames}
+                    onRetryBuffer={playbackBuffer.retry}
                   />
                 </div>
               )}

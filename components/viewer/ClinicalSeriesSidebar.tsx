@@ -23,6 +23,7 @@ interface ClinicalSeriesSidebarProps {
   series: SeriesInfo[];
   activeSeriesId: string;
   onSelectSeries: (seriesId: string) => void;
+  onCollapse?: () => void;
   className?: string;
 }
 
@@ -79,6 +80,7 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
   series,
   activeSeriesId,
   onSelectSeries,
+  onCollapse,
   className,
 }: ClinicalSeriesSidebarProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -165,24 +167,42 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
   return (
     <aside
       className={cn(
-        "flex flex-col h-full border-r border-[#1e293b] bg-[#0b0f19] text-slate-200 select-none",
+        "flex flex-col h-full border-r border-[#1e293b] bg-[#0b0f19] text-slate-200 select-none min-w-0 w-full",
         className
       )}
     >
+<<<<<<< HEAD
       {/* Patient & Study Header */}
       <div className="shrink-0 p-3.5 border-b border-[#1e293b] bg-[#0f172a]">
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono">
+=======
+      {/* Patient & Study Summary Header */}
+      <div className="shrink-0 p-3 border-b border-[#1e293b] bg-[#0f172a]">
+        <div className="flex items-center justify-between mb-1.5 gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono truncate">
+>>>>>>> 33ee7d3 (updates)
             SERIES BROWSER
           </span>
-          <ModalityBadge modality={study.modality} />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <ModalityBadge modality={study.modality} />
+            {onCollapse && (
+              <button
+                onClick={onCollapse}
+                className="rounded p-1 text-slate-400 hover:text-white hover:bg-[#1a2333] transition-colors"
+                title="Collapse Series Browser"
+              >
+                <ChevronRight className="h-3.5 w-3.5 rotate-180" />
+              </button>
+            )}
+          </div>
         </div>
 
-        <h2 className="text-[13.5px] font-bold text-white truncate">
+        <h2 className="text-[13px] font-bold text-white truncate" title={study.patientAlias}>
           {study.patientAlias}
         </h2>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-400 font-mono">
-          <span>{study.studyId}</span>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-slate-400 font-mono min-w-0">
+          <span className="truncate">{study.studyId}</span>
           <span>·</span>
           <span>
             {[study.age !== undefined ? `${study.age}y` : undefined, study.sex].filter(Boolean).join(" ")}
@@ -190,9 +210,13 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
           {study.bodyRegion && (
             <>
               <span>·</span>
+<<<<<<< HEAD
               <span className="text-sky-300 font-sans font-medium uppercase text-[10px] tracking-wide">
                 {study.bodyRegion}
               </span>
+=======
+              <span className="text-slate-300 font-sans font-medium truncate">{study.bodyRegion}</span>
+>>>>>>> 33ee7d3 (updates)
             </>
           )}
         </div>
@@ -391,32 +415,46 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
 
         {detailsOpen && activeSeries && (
           <div className="px-3.5 pb-3 text-[10.5px] font-mono text-slate-400 space-y-1.5 bg-[#090d16] border-t border-[#1e293b]">
+<<<<<<< HEAD
             <div className="pt-2 flex justify-between">
               <span className="text-slate-500">Series:</span>
               <span className="truncate max-w-[140px] text-slate-300" title={activeSeries.label}>
                 {activeSeries.label}
+=======
+            <div className="pt-2 grid grid-cols-[auto_1fr] gap-2 items-baseline">
+              <span className="text-slate-500 whitespace-nowrap">Series UID:</span>
+              <span className="truncate text-right text-slate-300 font-medium" title={activeSeries.id}>
+                {activeSeries.id}
+>>>>>>> 33ee7d3 (updates)
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">Plane:</span>
-              <span className="text-slate-300">{activeSeries.orientation}</span>
+            <div className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
+              <span className="text-slate-500 whitespace-nowrap">Plane:</span>
+              <span className="text-right text-slate-300">{activeSeries.orientation}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">Slice Count:</span>
-              <span className="text-slate-300">{activeSeries.sliceCount}</span>
+            <div className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
+              <span className="text-slate-500 whitespace-nowrap">Slice Count:</span>
+              <span className="text-right text-slate-300">{activeSeries.sliceCount}</span>
             </div>
             {activeSeries.pixelSpacing && (
-              <div className="flex justify-between">
-                <span className="text-slate-500">Pixel Spacing:</span>
-                <span className="text-slate-300">
+              <div className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
+                <span className="text-slate-500 whitespace-nowrap">Pixel Spacing:</span>
+                <span className="text-right text-slate-300 truncate">
                   {activeSeries.pixelSpacing[0]?.toFixed(2)} × {activeSeries.pixelSpacing[1]?.toFixed(2)} mm
                 </span>
               </div>
             )}
+<<<<<<< HEAD
             <div className="flex justify-between">
               <span className="text-slate-500">3D Volumetric:</span>
               <span className="text-slate-300">
                 {activeSeries.volumeAvailable ? "Available" : "Planar only"}
+=======
+            <div className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
+              <span className="text-slate-500 whitespace-nowrap">3D Volumetric:</span>
+              <span className="text-right text-slate-300">
+                {activeSeries.volumeAvailable ? "Yes" : "No"}
+>>>>>>> 33ee7d3 (updates)
               </span>
             </div>
           </div>

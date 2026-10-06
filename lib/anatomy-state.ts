@@ -121,10 +121,10 @@ interface BaseLayerDef {
 
 export const STANDARD_LAYER_TAXONOMY: BaseLayerDef[] = [
   // BONE
-  { id: "skull", name: "Skull & Cranial Vault", category: "BONE", defaultColor: "#F1F5F9", description: "Calvarium, cranial base, and temporal bones", bodyRegions: ["HEAD", "ALL"] },
+  { id: "skull", name: "Skull & Cranial Vault", category: "BONE", defaultColor: "#F1F5F9", description: "Calvarium, cranial base, and temporal bones", bodyRegions: ["HEAD"] },
   { id: "facial_bones", name: "Facial Skeleton & Mandible", category: "BONE", defaultColor: "#E2E8F0", description: "Zygoma, maxilla, orbits, and mandible", bodyRegions: ["HEAD"] },
   { id: "spine_ribs", name: "Thoracic Skeleton & Spine", category: "BONE", defaultColor: "#E2E8F0", description: "Vertebral column, ribs, sternum, and clavicles", bodyRegions: ["CHEST", "ABDOMEN"] },
-  { id: "vertebrae", name: "Vertebral Column", category: "BONE", defaultColor: "#CBD5E1", description: "Cervical, thoracic, and lumbar vertebrae", bodyRegions: ["ALL"] },
+  { id: "vertebrae", name: "Vertebral Column", category: "BONE", defaultColor: "#CBD5E1", description: "Cervical, thoracic, and lumbar vertebrae", bodyRegions: ["CHEST", "ABDOMEN", "PELVIS", "HEAD"] },
   { id: "ribs", name: "Ribs & Costal Cartilage", category: "BONE", defaultColor: "#E2E8F0", description: "Bilateral rib cage and costal arches", bodyRegions: ["CHEST"] },
   { id: "pelvis", name: "Pelvic Bones", category: "BONE", defaultColor: "#94A3B8", description: "Ilium, ischium, pubis, and sacrum", bodyRegions: ["PELVIS", "ABDOMEN"] },
 
@@ -167,7 +167,7 @@ export const STANDARD_LAYER_TAXONOMY: BaseLayerDef[] = [
   { id: "veins", name: "Inferior / Superior Vena Cava", category: "VESSELS", defaultColor: "#1D4ED8", description: "Systemic venous drainage into right atrium", bodyRegions: ["CHEST", "ABDOMEN"] },
 
   // FIBERS
-  { id: "fibers", name: "Fiber Orientation (DTI)", category: "FIBERS", defaultColor: "#C084FC", description: "Diffusion tensor tractography fibers", requiresDti: true, bodyRegions: ["HEAD", "ALL"] },
+  { id: "fibers", name: "Fiber Orientation (DTI)", category: "FIBERS", defaultColor: "#C084FC", description: "Diffusion tensor tractography fibers", requiresDti: true, bodyRegions: ["HEAD"] },
 
   // BLOOD
   { id: "blood_pool", name: "Blood Pool & Luminal Contrast", category: "BLOOD", defaultColor: "#EF4444", description: "Contrast-enhanced intravascular volume", requiresContrast: true, bodyRegions: ["ALL"] },

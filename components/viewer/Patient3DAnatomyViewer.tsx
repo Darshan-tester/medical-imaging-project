@@ -289,6 +289,28 @@ export function Patient3DAnatomyViewer({
   const [activeCategoryTab, setActiveCategoryTab] = useState<AnatomicalCategory>("ORGANS");
   const [hoveredFindingMarker, setHoveredFindingMarker] = useState<InteractiveMarkerData | null>(null);
 
+  // Dynamically filter category tabs to only those with relevant anatomy in this study
+  const availableCategoryTabs = useMemo(() => {
+    const presentCategories = new Set(layers.map((l) => l.category));
+    const allTabs: { id: AnatomicalCategory; label: string }[] = [
+      { id: "ORGANS", label: "Organs" },
+      { id: "BONE", label: "Bone" },
+      { id: "CARDIAC", label: "Cardiac" },
+      { id: "VESSELS", label: "Vessels" },
+      { id: "SOFT_TISSUE", label: "Tissue" },
+      { id: "FIBERS", label: "Fibers" },
+      { id: "BLOOD", label: "Blood" },
+    ];
+    const filtered = allTabs.filter((t) => presentCategories.has(t.id));
+    return filtered.length > 0 ? filtered : allTabs.slice(0, 2);
+  }, [layers]);
+
+  useEffect(() => {
+    if (availableCategoryTabs.length > 0 && !availableCategoryTabs.some((t) => t.id === activeCategoryTab)) {
+      setActiveCategoryTab(availableCategoryTabs[0].id);
+    }
+  }, [availableCategoryTabs, activeCategoryTab]);
+
   // Load canonical volume data
   useEffect(() => {
     let cancelled = false;
@@ -760,6 +782,27 @@ export function Patient3DAnatomyViewer({
           )}
         </div>
 
+        {/* ── Clinical 3D Annotation State & Contrast Legend ── */}
+        <div className="absolute bottom-13 left-2 z-20 flex flex-wrap items-center gap-3 rounded-lg bg-[#0d121c]/90 px-3 py-1.5 backdrop-blur-md border border-[#1e293b] text-[10px] font-mono text-slate-300 pointer-events-auto shadow-lg">
+          <span className="font-bold text-slate-400 uppercase tracking-wider text-[9px]">Legend:</span>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-slate-500 opacity-60" />
+            <span className="text-slate-400">Normal Anatomy</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-amber-400" />
+            <span className="text-amber-300">Anomaly VOI</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
+            <span className="text-cyan-300 font-semibold">Active Selection</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-rose-500" />
+            <span className="text-rose-400">Critical / STAT</span>
+          </div>
+        </div>
+
         {/* ── Bottom HUD: Spatial Telemetry & Clipping Shortcuts ── */}
         <div className="absolute bottom-2 left-2 right-2 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
           {/* Coordinates HUD */}
@@ -886,24 +929,14 @@ export function Patient3DAnatomyViewer({
             </div>
           </div>
 
-          {/* Category Tabs */}
+          {/* Context-Aware Category Tabs (Only shows categories present in study anatomy) */}
           <div className="flex items-center border-b border-[#1e293b] bg-[#0d121c] p-1 overflow-x-auto gap-0.5 shrink-0 scrollbar-none">
-            {(
-              [
-                { id: "ORGANS", label: "Organs" },
-                { id: "BONE", label: "Bone" },
-                { id: "CARDIAC", label: "Cardiac" },
-                { id: "VESSELS", label: "Vessels" },
-                { id: "SOFT_TISSUE", label: "Tissue" },
-                { id: "FIBERS", label: "Fibers" },
-                { id: "BLOOD", label: "Blood" },
-              ] as const
-            ).map((tab) => (
+            {availableCategoryTabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveCategoryTab(tab.id)}
                 className={cn(
-                  "rounded px-2 py-1 text-[10.5px] font-medium whitespace-nowrap transition-colors",
+                  "rounded px-2.5 py-1 text-[10.5px] font-medium whitespace-nowrap transition-colors",
                   activeCategoryTab === tab.id
                     ? "bg-sky-600 text-white font-semibold shadow-sm"
                     : "text-slate-400 hover:text-slate-200 hover:bg-[#1a2333]"
@@ -1441,12 +1474,15 @@ interface InteractiveMarkerData {
   };
   contourPoints?: Array<{ x: number; y: number }>;
   isAi?: boolean;
+  confidence?: number;
+  severity?: string;
+  location?: string;
   measureValue?: string;
   color?: string;
   note?: string;
 }
 
-/** Professional 3D Anatomical Region Highlight & Contour */
+/** Professional 3D Anatomical Region Highlight & Localized VOI (No large rectangular boxes) */
 function AnatomicalRegionHighlight({
   marker,
   volumeScale,
@@ -1466,13 +1502,24 @@ function AnatomicalRegionHighlight({
   const posY = -(marker.normY - 0.5) * volumeScale[1];
   const posZ = (marker.normZ - 0.5) * volumeScale[2];
 
+  // Calculate physical localized VOI dimensions (strictly bounded, never arbitrary box)
+  const bounds = marker.bounds;
+  const radiusX = bounds ? Math.max(0.012, ((bounds.maxX - bounds.minX) * volumeScale[0]) / 2) : 0.02;
+  const radiusY = bounds ? Math.max(0.012, ((bounds.maxY - bounds.minY) * volumeScale[1]) / 2) : 0.02;
+  const radiusZ = Math.max(0.012, (radiusX + radiusY) * 0.45);
+
   const highlightColor = isSelected
     ? "#00F0FF"
-    : marker.color || (marker.isAi ? "#F59E0B" : "#EF4444");
+    : marker.color ||
+      (marker.severity === "high" || marker.severity === "stat"
+        ? "#F43F5E"
+        : marker.isAi
+        ? "#F59E0B"
+        : "#38BDF8");
 
-  // Projected 2D contour points in 3D volume coordinates on the slice cut
+  // Projected 2D contour points in 3D volume coordinates on the slice cut (only for real freehand / polygon)
   const contourArray = useMemo(() => {
-    if (!marker.contourPoints || marker.contourPoints.length < 2) return null;
+    if (!marker.contourPoints || marker.contourPoints.length <= 4) return null;
     const coords: number[] = [];
     for (const cp of marker.contourPoints) {
       coords.push(
@@ -1503,7 +1550,29 @@ function AnatomicalRegionHighlight({
 
   return (
     <group>
-      {/* 1. Real 2D slice contour projected directly on the 3D axial plane slice */}
+      {/* 1. Localized 3D Volume of Interest (VOI) Ellipsoid — Real localized anomaly volume, not empty box */}
+      <mesh
+        position={[posX, posY, posZ]}
+        scale={[radiusX, radiusY, radiusZ]}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
+        onClick={handleClick}
+      >
+        <sphereGeometry args={[1, 28, 20]} />
+        <meshStandardMaterial
+          color={highlightColor}
+          emissive={highlightColor}
+          emissiveIntensity={isSelected ? 0.65 : hovered ? 0.4 : 0.18}
+          roughness={0.25}
+          metalness={0.1}
+          transparent
+          opacity={isSelected ? 0.75 : hovered ? 0.55 : 0.38}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {/* 2. Freehand / Polygon anatomical slice contour if available */}
       {contourArray && (
         <lineLoop
           onPointerOver={handlePointerOver}
@@ -1522,16 +1591,15 @@ function AnatomicalRegionHighlight({
         </lineLoop>
       )}
 
-      {/* 2. Delicate Planar Focal Reticle (Flat on the slice plane, no 3D vertical lines, no diamond dot, no box) */}
+      {/* 3. Axial slice intersection focal reticle */}
       <group position={[posX, posY, posZ]}>
-        {/* Subtle flat ring directly on the axial plane cut */}
         <mesh
           rotation={[-Math.PI / 2, 0, 0]}
           onPointerOver={handlePointerOver}
           onPointerOut={handlePointerOut}
           onClick={handleClick}
         >
-          <ringGeometry args={[0.007, 0.010, 32]} />
+          <ringGeometry args={[Math.max(0.008, radiusX * 0.92), Math.max(0.011, radiusX * 1.06), 32]} />
           <meshBasicMaterial
             color={highlightColor}
             transparent
@@ -1541,25 +1609,75 @@ function AnatomicalRegionHighlight({
           />
         </mesh>
 
-        {/* Delicate inner focal dot when hovered or selected */}
-        {(isSelected || hovered) && (
-          <mesh
-            rotation={[-Math.PI / 2, 0, 0]}
-            onPointerOver={handlePointerOver}
-            onPointerOut={handlePointerOut}
-            onClick={handleClick}
-          >
-            <circleGeometry args={[0.0035, 16]} />
-            <meshBasicMaterial
-              color={highlightColor}
-              transparent
-              opacity={isSelected ? 0.9 : 0.7}
-              side={THREE.DoubleSide}
-              depthWrite={false}
-            />
-          </mesh>
-        )}
+        {/* Central focal reticle dot */}
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          onPointerOver={handlePointerOver}
+          onPointerOut={handlePointerOut}
+          onClick={handleClick}
+        >
+          <circleGeometry args={[0.003, 16]} />
+          <meshBasicMaterial
+            color={highlightColor}
+            transparent
+            opacity={isSelected ? 0.95 : 0.75}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
       </group>
+
+      {/* 4. Interactive Clinical Billboard Card on hover or selection */}
+      {(isSelected || hovered) && (
+        <Html position={[posX, posY + radiusY + 0.025, posZ]} center zIndexRange={[100, 0]}>
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect();
+            }}
+            className={cn(
+              "flex flex-col gap-1 rounded-lg border px-3 py-2 shadow-2xl backdrop-blur-md whitespace-nowrap text-white text-[11px] pointer-events-auto cursor-pointer transition-all",
+              isSelected
+                ? "border-cyan-400 bg-[#091524]/95 ring-2 ring-cyan-400/50"
+                : "border-sky-500/60 bg-[#0d121c]/95 hover:border-cyan-400"
+            )}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-bold text-[12px] text-white flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: highlightColor }} />
+                {marker.label}
+              </span>
+              <span className="rounded bg-sky-950 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold text-sky-300 border border-sky-800">
+                Slice {marker.sliceIndex + 1}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 text-[10px] text-slate-300 font-mono">
+              {marker.location && <span>{marker.location}</span>}
+              {marker.findingType && <span>· {marker.findingType}</span>}
+              {marker.confidence !== undefined && marker.confidence > 0 && (
+                <span className="text-amber-300 font-semibold">· {marker.confidence}% AI</span>
+              )}
+            </div>
+
+            {marker.measureValue && (
+              <div className="font-mono text-[10px] text-emerald-300 font-semibold">
+                Measure: {marker.measureValue}
+              </div>
+            )}
+
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect();
+              }}
+              className="mt-1 flex items-center justify-center gap-1.5 rounded bg-sky-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-sky-500 transition-colors shadow-sm"
+            >
+              <span>Jump to 2D Slice {marker.sliceIndex + 1}</span>
+            </button>
+          </div>
+        </Html>
+      )}
     </group>
   );
 }
@@ -1602,25 +1720,21 @@ function InteractiveFindingMarkersLayer({
         minY: f.region.y,
         maxY: f.region.y + f.region.h,
       };
-      const contourPoints = [
-        { x: bounds.minX, y: bounds.minY },
-        { x: bounds.maxX, y: bounds.minY },
-        { x: bounds.maxX, y: bounds.maxY },
-        { x: bounds.minX, y: bounds.maxY },
-      ];
 
       list.push({
         id: f.id,
         label: f.label || "Diagnostic Finding",
         findingType: "Lesion",
+        location: f.location,
         sliceIndex: f.sliceIndex,
         seriesId: f.seriesId,
         normX,
         normY,
         normZ,
         bounds,
-        contourPoints,
         isAi: f.confidence > 0,
+        confidence: f.confidence,
+        severity: f.severity,
         note: f.radiologistNote || f.description,
       });
     }
@@ -1651,12 +1765,6 @@ function InteractiveFindingMarkersLayer({
           normY: (minY + maxY) / 2,
           normZ,
           bounds: { minX, maxX, minY, maxY },
-          contourPoints: [
-            { x: minX, y: minY },
-            { x: maxX, y: minY },
-            { x: maxX, y: maxY },
-            { x: minX, y: maxY },
-          ],
           isAi: false,
           color: a.color,
           measureValue: a.measureValue,
