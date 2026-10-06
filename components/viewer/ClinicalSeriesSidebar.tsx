@@ -171,17 +171,10 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
         className
       )}
     >
-<<<<<<< HEAD
-      {/* Patient & Study Header */}
-      <div className="shrink-0 p-3.5 border-b border-[#1e293b] bg-[#0f172a]">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono">
-=======
       {/* Patient & Study Summary Header */}
       <div className="shrink-0 p-3 border-b border-[#1e293b] bg-[#0f172a]">
         <div className="flex items-center justify-between mb-1.5 gap-2">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono truncate">
->>>>>>> 33ee7d3 (updates)
             SERIES BROWSER
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -210,13 +203,9 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
           {study.bodyRegion && (
             <>
               <span>·</span>
-<<<<<<< HEAD
-              <span className="text-sky-300 font-sans font-medium uppercase text-[10px] tracking-wide">
+              <span className="text-sky-300 font-sans font-medium uppercase text-[10px] tracking-wide truncate">
                 {study.bodyRegion}
               </span>
-=======
-              <span className="text-slate-300 font-sans font-medium truncate">{study.bodyRegion}</span>
->>>>>>> 33ee7d3 (updates)
             </>
           )}
         </div>
@@ -415,17 +404,10 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
 
         {detailsOpen && activeSeries && (
           <div className="px-3.5 pb-3 text-[10.5px] font-mono text-slate-400 space-y-1.5 bg-[#090d16] border-t border-[#1e293b]">
-<<<<<<< HEAD
-            <div className="pt-2 flex justify-between">
-              <span className="text-slate-500">Series:</span>
-              <span className="truncate max-w-[140px] text-slate-300" title={activeSeries.label}>
-                {activeSeries.label}
-=======
             <div className="pt-2 grid grid-cols-[auto_1fr] gap-2 items-baseline">
-              <span className="text-slate-500 whitespace-nowrap">Series UID:</span>
-              <span className="truncate text-right text-slate-300 font-medium" title={activeSeries.id}>
-                {activeSeries.id}
->>>>>>> 33ee7d3 (updates)
+              <span className="text-slate-500 whitespace-nowrap">Series:</span>
+              <span className="truncate text-right text-slate-300 font-medium" title={activeSeries.label || activeSeries.id}>
+                {activeSeries.label || activeSeries.id}
               </span>
             </div>
             <div className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
@@ -444,17 +426,10 @@ export const ClinicalSeriesSidebar = memo(function ClinicalSeriesSidebar({
                 </span>
               </div>
             )}
-<<<<<<< HEAD
-            <div className="flex justify-between">
-              <span className="text-slate-500">3D Volumetric:</span>
-              <span className="text-slate-300">
-                {activeSeries.volumeAvailable ? "Available" : "Planar only"}
-=======
             <div className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
               <span className="text-slate-500 whitespace-nowrap">3D Volumetric:</span>
               <span className="text-right text-slate-300">
-                {activeSeries.volumeAvailable ? "Yes" : "No"}
->>>>>>> 33ee7d3 (updates)
+                {activeSeries.volumeAvailable ? "Available" : "Planar only"}
               </span>
             </div>
           </div>

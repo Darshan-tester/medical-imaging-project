@@ -27,7 +27,7 @@ export async function GET() {
 
     let pythonExe = "python";
     for (const p of pythonPaths) {
-      if (fs.existsSync(p)) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ p)) {
         pythonExe = p;
         break;
       }

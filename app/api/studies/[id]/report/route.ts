@@ -14,9 +14,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const finalFile = path.join(derivedDir, "final.json");
   const draftFile = path.join(derivedDir, "draft.json");
   for (const f of [finalFile, draftFile]) {
-    if (fs.existsSync(f)) {
+    if (fs.existsSync(/*turbopackIgnore: true*/ f)) {
       try {
-        const rep = JSON.parse(fs.readFileSync(f, "utf-8"));
+        const rep = JSON.parse(fs.readFileSync(/*turbopackIgnore: true*/ f, "utf-8"));
         const reportText = rep.sections
           ? `CLINICAL INFORMATION:\n${rep.sections.clinicalInformation}\n\nTECHNIQUE:\n${rep.sections.technique}\n\nFINDINGS:\n${rep.sections.findings}\n\nIMPRESSION:\n${rep.sections.impression}`
           : JSON.stringify(rep);

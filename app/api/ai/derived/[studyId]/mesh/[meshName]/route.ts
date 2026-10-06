@@ -24,7 +24,7 @@ export async function GET(
   const meshesDir = path.join(derivedDir, "meshes");
   let meshPath = path.join(meshesDir, meshName);
 
-  if (!fs.existsSync(meshPath)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ meshPath)) {
     const stem = meshName.replace(/\.(glb|vtp|vtk)$/i, "");
     const candidates = [
       path.join(derivedDir, "heart", meshName),
@@ -37,19 +37,19 @@ export async function GET(
       path.join(derivedDir, stem, "mesh.glb"),
     ];
     for (const c of candidates) {
-      if (fs.existsSync(c)) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ c)) {
         meshPath = c;
         break;
       }
     }
   }
 
-  if (!isPathInside(meshPath, derivedDir) || !fs.existsSync(meshPath)) {
+  if (!isPathInside(meshPath, derivedDir) || !fs.existsSync(/*turbopackIgnore: true*/ meshPath)) {
     return NextResponse.json({ error: "Mesh file not found" }, { status: 404 });
   }
 
-  const stat = fs.statSync(meshPath);
-  const fileBuffer = fs.readFileSync(meshPath);
+  const stat = fs.statSync(/*turbopackIgnore: true*/ meshPath);
+  const fileBuffer = fs.readFileSync(/*turbopackIgnore: true*/ meshPath);
 
   const contentType = meshName.endsWith(".glb")
     ? "model/gltf-binary"

@@ -10,15 +10,15 @@ export const dynamic = "force-dynamic";
 
 function getPythonExecutable(): string {
   const venvPython = path.join(process.cwd(), "services", "ai_worker", ".venv", "Scripts", "python.exe");
-  if (fs.existsSync(venvPython)) return venvPython;
+  if (fs.existsSync(/*turbopackIgnore: true*/ venvPython)) return venvPython;
   const sysPython = "C:\\Program Files\\Python313\\python.exe";
-  if (fs.existsSync(sysPython)) return sysPython;
+  if (fs.existsSync(/*turbopackIgnore: true*/ sysPython)) return sysPython;
   return "python";
 }
 
 function getJobsDir(): string {
   const jobsDir = path.join(process.cwd(), ".scanlab", "derived", ".jobs");
-  if (!fs.existsSync(jobsDir)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ jobsDir)) {
     fs.mkdirSync(jobsDir, { recursive: true });
   }
   return jobsDir;
@@ -46,9 +46,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const manifestPath = path.join(derivedDir, "manifest.json");
 
     for (const targetPath of [metadataPath, manifestPath]) {
-      if (fs.existsSync(targetPath)) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ targetPath)) {
         try {
-          const cachedData = JSON.parse(fs.readFileSync(targetPath, "utf-8"));
+          const cachedData = JSON.parse(fs.readFileSync(/*turbopackIgnore: true*/ targetPath, "utf-8"));
           if (cachedData.status === "completed" && (cachedData.pipeline === pipeline || pipeline === "all")) {
             return NextResponse.json({
               jobId: `cached-${studyId}`,
@@ -76,7 +76,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     } else if (targetSeries?.images?.length) {
       inputFiles = targetSeries.images
         .map((img) => img.absPath)
-        .filter((p): p is string => Boolean(p) && fs.existsSync(p));
+        .filter((p): p is string => Boolean(p) && fs.existsSync(/*turbopackIgnore: true*/ p));
     }
 
     let priorFiles: string[] = [];
@@ -89,7 +89,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         } else if (priorStudy.series?.[0]?.images?.length) {
           priorFiles = priorStudy.series[0].images
             .map((img) => img.absPath)
-            .filter((p): p is string => Boolean(p) && fs.existsSync(p));
+            .filter((p): p is string => Boolean(p) && fs.existsSync(/*turbopackIgnore: true*/ p));
         }
       }
     }
@@ -185,9 +185,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
     let metadata = null;
     for (const p of [metadataPath, manifestPath]) {
-      if (fs.existsSync(p)) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ p)) {
         try {
-          metadata = JSON.parse(fs.readFileSync(p, "utf-8"));
+          metadata = JSON.parse(fs.readFileSync(/*turbopackIgnore: true*/ p, "utf-8"));
           break;
         } catch (e) {}
       }
@@ -213,13 +213,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       meshes: metadata.meshes || [],
       metrics: metadata.metrics || {},
       derivedAssets: {
-        heart: fs.existsSync(path.join(derivedDir, "heart", "mesh.glb")) || fs.existsSync(path.join(derivedDir, "meshes", "heart.glb")),
-        lungs: fs.existsSync(path.join(derivedDir, "lungs", "mesh.glb")) || fs.existsSync(path.join(derivedDir, "meshes", "lung_right.glb")),
-        brain: fs.existsSync(path.join(derivedDir, "brain", "parcellation.nii.gz")),
-        registration: fs.existsSync(path.join(derivedDir, "registration", "registered_prior.nii.gz")),
-        motion4d: fs.existsSync(path.join(derivedDir, "motion4d", "animation.glb")),
-        findings: fs.existsSync(path.join(derivedDir, "findings", "findings.json")),
-        report: fs.existsSync(path.join(derivedDir, "report", "draft.json")),
+        heart: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "heart", "mesh.glb")) || fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "meshes", "heart.glb")),
+        lungs: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "lungs", "mesh.glb")) || fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "meshes", "lung_right.glb")),
+        brain: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "brain", "parcellation.nii.gz")),
+        registration: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "registration", "registered_prior.nii.gz")),
+        motion4d: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "motion4d", "animation.glb")),
+        findings: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "findings", "findings.json")),
+        report: fs.existsSync(/*turbopackIgnore: true*/ path.join(derivedDir, "report", "draft.json")),
       },
       metadata,
     });
