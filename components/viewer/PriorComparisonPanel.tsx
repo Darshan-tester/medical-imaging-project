@@ -17,7 +17,10 @@ import { Study } from "@/lib/types";
 import { runComparisonAgent } from "@/lib/agents/comparison-agent";
 import { Button } from "@/components/ui/Button";
 import { ModalityBadge } from "@/components/ui/Badge";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
+
+import { ImageViewer } from "./ImageViewer";
+import { DEFAULT_VIEWER_STATE, ViewerState } from "./ViewerToolbar";
 
 interface PriorComparisonPanelProps {
   currentStudy: Study;
@@ -30,6 +33,13 @@ export function PriorComparisonPanel({
   allStudies = [],
   onApplyIntervalSummaryToReport,
 }: PriorComparisonPanelProps) {
+  const [viewMode, setViewMode] = useState<"summary" | "side_by_side">("summary");
+  const [currentSlice, setCurrentSlice] = useState(0);
+  const [priorSlice, setPriorSlice] = useState(0);
+  const [syncScroll, setSyncScroll] = useState(true);
+  const [currentViewerState, setCurrentViewerState] = useState<ViewerState>({ ...DEFAULT_VIEWER_STATE });
+  const [priorViewerState, setPriorViewerState] = useState<ViewerState>({ ...DEFAULT_VIEWER_STATE });
+
   // Find potential prior studies for the same patient or matching body region/modality
   const candidatePriors = useMemo(() => {
     return allStudies.filter(
@@ -97,18 +107,157 @@ export function PriorComparisonPanel({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
+      {/* Header with Mode Switcher */}
+      <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <GitCompare className="h-4 w-4 text-clinical" />
           <h3 className="text-[13px] font-semibold text-ink-primary">Longitudinal Comparison</h3>
         </div>
-        <span className="rounded bg-clinical/10 px-1.5 py-0.5 font-mono text-[10.5px] text-clinical">
-          Agent v1.9.0
-        </span>
+        <div className="flex items-center rounded border border-border bg-base p-0.5 text-[11px]">
+          <button
+            onClick={() => setViewMode("summary")}
+            className={cn(
+              "px-2.5 py-1 rounded font-medium transition-colors",
+              viewMode === "summary" ? "bg-clinical text-white font-semibold" : "text-ink-secondary hover:text-ink-primary"
+            )}
+          >
+            Summary &amp; Metrics
+          </button>
+          <button
+            onClick={() => setViewMode("side_by_side")}
+            className={cn(
+              "px-2.5 py-1 rounded font-medium transition-colors",
+              viewMode === "side_by_side" ? "bg-clinical text-white font-semibold" : "text-ink-secondary hover:text-ink-primary"
+            )}
+          >
+            Side-by-Side Images
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+      {viewMode === "side_by_side" ? (
+        <div className="flex-1 flex flex-col min-h-0 bg-black">
+          {/* Linked Scrolling Subheader */}
+          <div className="flex items-center justify-between border-b border-white/10 bg-[#080d1a] px-3 py-1.5 text-[11.5px] text-slate-300">
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer font-medium text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={syncScroll}
+                  onChange={(e) => setSyncScroll(e.target.checked)}
+                  className="rounded border-slate-700 text-clinical accent-clinical"
+                />
+                <span>Synchronized Scrolling</span>
+              </label>
+              <span className="text-[10px] text-amber-400 font-mono">
+                · Visual Correlation Only (Geometric alignment not implied)
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] text-slate-400">
+                Prior: {selectedPriorStudy?.id ?? "None"}
+              </span>
+            </div>
+          </div>
+
+          {/* Split Side-by-Side Viewports */}
+          <div className="flex-1 grid grid-cols-2 divide-x divide-white/10 min-h-0">
+            {/* Left: Current Study */}
+            <div className="flex flex-col min-h-0 relative">
+              <div className="flex items-center justify-between px-2.5 py-1 bg-[#0b1220] border-b border-white/10 text-[10.5px]">
+                <span className="font-semibold text-sky-400 flex items-center gap-1">
+                  CURRENT: {currentStudy.modality} · {formatDate(currentStudy.date || "")}
+                </span>
+                <span className="font-mono text-slate-400">
+                  Slice {currentSlice + 1} / {Math.max(1, currentStudy.series[0]?.sliceCount || 1)}
+                </span>
+              </div>
+              <div className="flex-1 min-h-0 relative">
+                <ImageViewer
+                  modality={currentStudy.modality}
+                  seed={currentStudy.thumbnailSeed + currentSlice}
+                  imageUrl={currentStudy.series[0]?.images?.[currentSlice]?.imageUrl ?? currentStudy.imageUrls?.[currentSlice]}
+                  findings={currentStudy.findings || []}
+                  activeFindingId={null}
+                  onHoverFinding={() => {}}
+                  onSelectFinding={() => {}}
+                  viewerState={currentViewerState}
+                  setViewerState={setCurrentViewerState}
+                  orientation={currentStudy.series[0]?.orientation || "Axial"}
+                  seriesLabel={currentStudy.series[0]?.label}
+                  patientAlias={currentStudy.patientAlias}
+                  pixelSpacing={currentStudy.series[0]?.pixelSpacing}
+                  studyId={currentStudy.id}
+                  seriesId={currentStudy.series[0]?.id}
+                  currentSlice={currentSlice}
+                  onSliceScroll={(d) => {
+                    const maxS = Math.max(1, (currentStudy.series[0]?.sliceCount || 1) - 1);
+                    setCurrentSlice((prev) => {
+                      const next = Math.max(0, Math.min(maxS, prev + d));
+                      if (syncScroll && selectedPriorStudy) {
+                        const priorMax = Math.max(1, (selectedPriorStudy.series[0]?.sliceCount || 1) - 1);
+                        setPriorSlice(Math.round((next / maxS) * priorMax));
+                      }
+                      return next;
+                    });
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Right: Prior Study */}
+            <div className="flex flex-col min-h-0 relative">
+              <div className="flex items-center justify-between px-2.5 py-1 bg-[#0b1220] border-b border-white/10 text-[10.5px]">
+                <span className="font-semibold text-amber-400 flex items-center gap-1">
+                  PRIOR: {selectedPriorStudy?.modality} · {formatDate(selectedPriorStudy?.date || "")}
+                </span>
+                <span className="font-mono text-slate-400">
+                  Slice {priorSlice + 1} / {Math.max(1, selectedPriorStudy?.series[0]?.sliceCount || 1)}
+                </span>
+              </div>
+              <div className="flex-1 min-h-0 relative">
+                {selectedPriorStudy ? (
+                  <ImageViewer
+                    modality={selectedPriorStudy.modality}
+                    seed={selectedPriorStudy.thumbnailSeed + priorSlice}
+                    imageUrl={selectedPriorStudy.series[0]?.images?.[priorSlice]?.imageUrl ?? selectedPriorStudy.imageUrls?.[priorSlice]}
+                    findings={selectedPriorStudy.findings || []}
+                    activeFindingId={null}
+                    onHoverFinding={() => {}}
+                    onSelectFinding={() => {}}
+                    viewerState={priorViewerState}
+                    setViewerState={setPriorViewerState}
+                    orientation={selectedPriorStudy.series[0]?.orientation || "Axial"}
+                    seriesLabel={selectedPriorStudy.series[0]?.label}
+                    patientAlias={selectedPriorStudy.patientAlias}
+                    pixelSpacing={selectedPriorStudy.series[0]?.pixelSpacing}
+                    studyId={selectedPriorStudy.id}
+                    seriesId={selectedPriorStudy.series[0]?.id}
+                    currentSlice={priorSlice}
+                    onSliceScroll={(d) => {
+                      const priorMax = Math.max(1, (selectedPriorStudy.series[0]?.sliceCount || 1) - 1);
+                      setPriorSlice((prev) => {
+                        const next = Math.max(0, Math.min(priorMax, prev + d));
+                        if (syncScroll) {
+                          const maxS = Math.max(1, (currentStudy.series[0]?.sliceCount || 1) - 1);
+                          setCurrentSlice(Math.round((next / priorMax) * maxS));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-slate-500 text-xs">
+                    No prior study selected.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {/* Prior Study Selector */}
         <div className="rounded-lg border border-border bg-panel-alt p-3">
           <label className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
@@ -286,6 +435,7 @@ export function PriorComparisonPanel({
           </p>
         </div>
       </div>
+      )}
     </div>
   );
 }

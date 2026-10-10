@@ -29,9 +29,9 @@ export function runImagingAnalysisAgent(study: Study): ImagingAnalysisAgentOutpu
 
   const applicableModels = [
     {
-      modelId: `med-ai-${study.modality.toLowerCase()}-v2`,
-      name: `Meridian Clinical ${study.modality} Vision Engine`,
-      version: "2.4.1",
+      modelId: `adapter-${study.modality.toLowerCase()}-text-heuristic`,
+      name: `Report Text-Mining Heuristic Adapter (Vision Model Unconnected)`,
+      version: "1.0.0-demo",
       targetAnatomy: study.bodyRegion || "Chest/Abdomen/Neuro",
     },
   ];
@@ -40,10 +40,10 @@ export function runImagingAnalysisAgent(study: Study): ImagingAnalysisAgentOutpu
   const evidenceMap: Record<string, FindingEvidence> = {};
 
   const enhancedFindings: Finding[] = (study.findings || []).map((f) => {
-    // Check if finding is critical
+    // Check if finding is critical based on clinical terms
     const isCritical = CRITICAL_KEYWORDS.some((re) => re.test(f.label) || re.test(f.description));
 
-    // Extract metric measurement from text if present (e.g. "8.4 mm", "1.2 cm")
+    // Extract metric measurement ONLY if explicitly reported in text (e.g. "8.4 mm", "1.2 cm")
     const mmMatch = f.description.match(/(\d+(?:\.\d+)?)\s*(?:mm|millimeter)/i);
     const cmMatch = f.description.match(/(\d+(?:\.\d+)?)\s*(?:cm|centimeter)/i);
     let lengthMm: number | undefined;
@@ -51,19 +51,19 @@ export function runImagingAnalysisAgent(study: Study): ImagingAnalysisAgentOutpu
       lengthMm = parseFloat(mmMatch[1]);
     } else if (cmMatch) {
       lengthMm = parseFloat(cmMatch[1]) * 10;
-    } else {
-      // Estimated from bounding box region if pixels/normalized coords exist
-      lengthMm = Math.round(Math.max(f.region.w, f.region.h) * 120 * 10) / 10;
     }
 
+    // Never fabricate 2D caliper width/area or HU/SUV without actual calibrated DICOM pixels
     const measurement: FindingMeasurement = {
       lengthMm,
-      widthMm: Math.round((lengthMm * 0.75) * 10) / 10,
-      areaMm2: Math.round((Math.PI * (lengthMm / 2) * (lengthMm * 0.75 / 2)) * 10) / 10,
-      meanHu: study.modality === "CT" ? (lengthMm > 10 ? 35 : -15) : undefined,
-      maxSuv: study.modality === "PET" ? Math.round((4.2 + (f.confidence / 25)) * 10) / 10 : undefined,
+      widthMm: undefined,
+      areaMm2: undefined,
+      meanHu: undefined, // Verified CT pixel probe required
+      maxSuv: undefined, // Calibrated PET decay & dose calculation required
     };
-    measurementsMap[f.id] = measurement;
+    if (lengthMm !== undefined) {
+      measurementsMap[f.id] = measurement;
+    }
 
     const evidence: FindingEvidence = {
       seriesId: f.seriesId || study.series[0]?.id || "",
@@ -79,12 +79,13 @@ export function runImagingAnalysisAgent(study: Study): ImagingAnalysisAgentOutpu
 
     return {
       ...f,
-      status: f.status || "unreviewed",
+      status: f.status || "pending",
       isCritical,
-      modelName: applicableModels[0].name,
-      modelVersion: applicableModels[0].version,
-      processingTimeMs: Math.round(180 + (f.sliceIndex * 1.5)),
-      measurements: measurement,
+      provenance: f.provenance || "report_extracted",
+      isDemonstration: f.isDemonstration ?? true,
+      modelName: f.provenance === "model_inference" ? f.modelName : "Report Text Heuristic (Demo Only)",
+      modelVersion: f.provenance === "model_inference" ? f.modelVersion : undefined,
+      measurements: lengthMm !== undefined ? measurement : undefined,
       evidence,
     };
   });

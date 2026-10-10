@@ -77,7 +77,14 @@ export function FindingCard({
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-semibold leading-snug text-ink-primary">{finding.label}</p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-[13px] font-semibold leading-snug text-ink-primary">{finding.label}</p>
+            {(finding.isDemonstration || finding.provenance === "report_extracted") && (
+              <span className="rounded bg-amber-950/60 border border-amber-600/50 px-1.5 py-0.2 text-[9px] font-bold uppercase text-amber-300">
+                DEMO ONLY — NOT FOR DIAGNOSIS
+              </span>
+            )}
+          </div>
           {finding.isCritical && (
             <div className="mt-1.5 inline-flex items-center gap-1 rounded border border-critical/40 bg-critical-dim px-2 py-0.5 text-[10.5px] font-bold text-critical">
               <span>⚠</span> CRITICAL FINDING
@@ -96,7 +103,7 @@ export function FindingCard({
           <p className="mt-2 text-[12px] leading-relaxed text-ink-secondary">{finding.description}</p>
           {finding.modelName && (
             <p className="mt-1 text-[10px] text-ink-muted">
-              {finding.modelName} · {finding.processingTimeMs}ms
+              Provenance: {finding.provenance || "report_extracted"} · {finding.modelName}
             </p>
           )}
           {/*

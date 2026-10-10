@@ -538,6 +538,8 @@ function placeFinding(
     label,
     description: sentence,
     confidence,
+    provenance: "report_extracted",
+    isDemonstration: true,
     band: bandFor(confidence),
     region: { x: round4(cx - w / 2), y: round4(cy - h / 2), w: round4(w), h: round4(h) },
     sliceIndex,

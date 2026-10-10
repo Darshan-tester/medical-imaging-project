@@ -97,17 +97,20 @@ export function ClinicalAIFindingCard({
     study.series.some((s) => /flair|t1|t2/i.test(s.label));
   const isIschemicFinding = /isch[ae]m|infarct|lacun|glios/i.test(finding.label) || /isch[ae]m|infarct/i.test(finding.description);
 
+  const isDemo = finding.isDemonstration || finding.provenance === "report_extracted" || finding.provenance === "demo_synthetic";
+
   // Confidence mapping
   const confidenceCategory =
     finding.confidenceLevel ||
     (finding.confidence >= 75 ? "high" : finding.confidence >= 50 ? "moderate" : "low");
 
-  const confidenceDisplay =
-    confidenceCategory === "high"
-      ? { text: "High confidence", badgeClass: "bg-emerald-950/40 text-emerald-300 border-emerald-800/40" }
-      : confidenceCategory === "moderate"
-      ? { text: "Moderate confidence", badgeClass: "bg-amber-950/40 text-amber-300 border-amber-800/40" }
-      : { text: "Low confidence", badgeClass: "bg-orange-950/40 text-orange-300 border-orange-800/40" };
+  const confidenceDisplay = isDemo
+    ? { text: "Report cue (Uncalibrated)", badgeClass: "bg-amber-950/40 text-amber-300 border-amber-800/40" }
+    : confidenceCategory === "high"
+    ? { text: "High confidence", badgeClass: "bg-emerald-950/40 text-emerald-300 border-emerald-800/40" }
+    : confidenceCategory === "moderate"
+    ? { text: "Moderate confidence", badgeClass: "bg-amber-950/40 text-amber-300 border-amber-800/40" }
+    : { text: "Low confidence", badgeClass: "bg-orange-950/40 text-orange-300 border-orange-800/40" };
 
   // Status mapping
   const isAccepted = finding.status === "accepted" || finding.status === "confirmed";
@@ -178,7 +181,13 @@ export function ClinicalAIFindingCard({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-ink-muted">AI Finding</span>
+              {isDemo ? (
+                <span className="rounded bg-amber-950/60 border border-amber-600/50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-300">
+                  DEMO ONLY — NOT FOR DIAGNOSIS
+                </span>
+              ) : (
+                <span className="text-[10px] uppercase font-bold tracking-wider text-ink-muted">AI Finding</span>
+              )}
               {finding.isCritical && !isRejected && (
                 <span className="rounded bg-critical/20 border border-critical/50 px-1.5 py-0.2 text-[9px] font-bold uppercase text-critical">
                   STAT / High Priority
@@ -209,29 +218,41 @@ export function ClinicalAIFindingCard({
                 setShowTechnicalScore((v) => !v);
               }}
               className="text-[9.5px] font-mono text-ink-muted hover:text-ink-secondary flex items-center gap-0.5"
-              title="Model confidence is not equivalent to diagnostic certainty"
+              title="Provenance and validation status"
             >
-              <span>Score info</span>
+              <span>Provenance info</span>
               {showTechnicalScore ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}
             </button>
           </div>
         </div>
 
-        {/* Technical Score Expansion */}
+        {/* Technical Score / Provenance Expansion */}
         {showTechnicalScore && (
           <div className="rounded bg-base/80 p-2 border border-border text-[10px] space-y-1 font-mono text-ink-secondary">
             <div className="flex justify-between">
-              <span>Raw Model Score:</span>
-              <span className="text-ink-primary font-bold">{(finding.confidence / 100).toFixed(2)}</span>
+              <span>Source Provenance:</span>
+              <span className="text-amber-400 font-bold uppercase">{finding.provenance || (isDemo ? "report_extracted" : "model_inference")}</span>
             </div>
-            {finding.modelName && (
-              <div className="flex justify-between">
-                <span>Model Architecture:</span>
-                <span className="text-ink-primary">{finding.modelName}</span>
-              </div>
+            {isDemo ? (
+              <p className="text-[9.5px] text-amber-300/90 pt-0.5">
+                Notice: Bounding box and coordinates were inferred from report sentence cues. No deep learning computer vision model is currently connected.
+              </p>
+            ) : (
+              <>
+                <div className="flex justify-between">
+                  <span>Raw Model Score:</span>
+                  <span className="text-ink-primary font-bold">{(finding.confidence / 100).toFixed(2)}</span>
+                </div>
+                {finding.modelName && (
+                  <div className="flex justify-between">
+                    <span>Model Architecture:</span>
+                    <span className="text-ink-primary">{finding.modelName}</span>
+                  </div>
+                )}
+              </>
             )}
             <p className="text-[9px] text-ink-muted italic pt-0.5 border-t border-border/50">
-              Model confidence is not equivalent to diagnostic certainty.
+              Not for diagnosis. Findings are subject to mandatory radiologist verification.
             </p>
           </div>
         )}

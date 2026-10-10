@@ -99,7 +99,7 @@ export default function StudiesPage() {
       }
       if (filters.query.trim()) {
         const q = filters.query.toLowerCase();
-        const haystack = `${s.patientAlias} ${s.studyId} ${s.modality} ${s.bodyRegion ?? ""}`.toLowerCase();
+        const haystack = `${s.patientAlias} ${s.patientName || ""} ${s.studyId} ${s.accessionNumber || ""} ${s.studyInstanceUid || ""} ${s.id} ${s.modality} ${s.bodyRegion ?? ""}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;

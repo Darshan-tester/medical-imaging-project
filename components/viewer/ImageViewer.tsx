@@ -47,75 +47,9 @@ function getOrientationLabels(orientation?: string): { top: string; bottom: stri
   }
 }
 
-/** Compute authentic radiological tissue contrast & brightness filters */
-function getRadiologicalFilter(state: ViewerState, modality: Modality): string {
-  const { brightness, contrast, windowWidth = 400, windowCenter = 40, inverted } = state;
-  const inv = inverted ? "invert(1)" : "";
+import { peekSlice } from "@/lib/viewer/slice-cache";
+import { applyDicomWindowLevel, probeDicomPixel } from "@/lib/demo/decode";
 
-  if (modality === "CT") {
-    // 1. Bone / Skull: Stark cortical bone and trabecular sharpness, brain tissue attenuated
-    if (windowWidth >= 1800 && windowCenter >= 300) {
-      return `contrast(195%) brightness(74%) grayscale(100%) ${inv}`.trim();
-    }
-    // 2. Brain Window: Steep gray matter vs white matter differentiation
-    if (windowWidth <= 100 && windowCenter >= 20 && windowCenter <= 60) {
-      return `contrast(172%) brightness(110%) grayscale(100%) ${inv}`.trim();
-    }
-    // 3. Subdural / Acute Stroke / Blood: Accentuate acute blood hyperdensities
-    if (windowWidth >= 110 && windowWidth <= 160 && windowCenter >= 20 && windowCenter <= 50) {
-      return `contrast(164%) brightness(105%) grayscale(100%) ${inv}`.trim();
-    }
-    // 4. Lung Window: Wide dynamic range for low-density pulmonary parenchymal markings
-    if (windowCenter <= -300) {
-      return `contrast(138%) brightness(138%) grayscale(100%) ${inv}`.trim();
-    }
-    // 5. Soft Tissue / Mediastinum / Abdomen: Balanced visceral & soft muscular definition
-    if (windowWidth >= 300 && windowWidth <= 450) {
-      return `contrast(124%) brightness(104%) grayscale(100%) ${inv}`.trim();
-    }
-  }
-
-  return `brightness(${brightness}%) contrast(${contrast}%) ${inv}`.trim();
-}
-
-/** Live Diagnostic Hounsfield Unit (HU) probe calculation for radiologist hover inspection */
-function estimatePixelHU(
-  coord: Point | null,
-  state: ViewerState,
-  modality: Modality
-): { hu: number; tissue: string } | null {
-  if (!coord || modality !== "CT") return null;
-
-  // Distance from scan center (0..1 normalized)
-  const dx = coord.x - 0.5;
-  const dy = coord.y - 0.5;
-  const dist = Math.hypot(dx, dy);
-
-  let hu: number;
-  let tissue: string;
-
-  if (dist > 0.44) {
-    hu = -980;
-    tissue = "Air / Background";
-  } else if (dist > 0.38 && dist <= 0.44) {
-    hu = Math.round(650 + (dist - 0.38) * 4500);
-    tissue = "Cortical Bone (Skull)";
-  } else if (dist > 0.34 && dist <= 0.38) {
-    hu = Math.round(180 + (dist - 0.34) * 8000);
-    tissue = "Diploe / Trabecular Bone";
-  } else if (dist < 0.12) {
-    // Deep center: Ventricles / CSF or central parenchyma
-    hu = Math.round(12 + Math.sin(coord.x * 20 + coord.y * 20) * 8);
-    tissue = hu < 15 ? "CSF (Ventricle)" : "White Matter";
-  } else {
-    // Cerebral cortex: Gray / White matter
-    const base = 36 + Math.cos(coord.x * 35 + coord.y * 25) * 8;
-    hu = Math.round(base);
-    tissue = hu >= 38 ? "Gray Matter (Cortex)" : "White Matter (Subcortical)";
-  }
-
-  return { hu, tissue };
-}
 
 export function ImageViewer({
   modality,
@@ -234,6 +168,44 @@ export function ImageViewer({
   const [natural, setNatural] = useState<{ width: number; height: number }>();
   const [hoverCoord, setHoverCoord] = useState<Point | null>(null);
 
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [hasCanvasRender, setHasCanvasRender] = useState(false);
+  const [, setSliceUpdateKey] = useState(0);
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
+
+  // Synchronously read decoded slice from cache if present
+  const decoded = imageUrl ? peekSlice(imageUrl) : undefined;
+
+  // True DICOM pixel window/level mapping directly to HTML5 canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !decoded?.rawValues) {
+      setHasCanvasRender(false);
+      return;
+    }
+    const cols = decoded.columns ?? decoded.width;
+    const rows = decoded.rows ?? decoded.height;
+    if (!cols || !rows) return;
+
+    canvas.width = cols;
+    canvas.height = rows;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const imgData = applyDicomWindowLevel(
+      decoded.rawValues,
+      rows,
+      cols,
+      viewerState.windowCenter,
+      viewerState.windowWidth,
+      decoded.rescaleSlope ?? 1,
+      decoded.rescaleIntercept ?? 0,
+      viewerState.inverted
+    );
+    ctx.putImageData(imgData, 0, 0);
+    setHasCanvasRender(true);
+  }, [decoded, viewerState.windowCenter, viewerState.windowWidth, viewerState.inverted]);
+
   const handleNaturalSize = useCallback((size: { width: number; height: number }) => {
     setNatural((prev) => {
       if (prev && prev.width === size.width && prev.height === size.height) {
@@ -311,10 +283,16 @@ export function ImageViewer({
     dragging.current = false;
   };
 
-  // Wheel zoom with focal point or slice scroll
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
+  // Native non-passive wheel listener to prevent background page scroll while paging slices
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const handleNativeWheel = (e: WheelEvent) => {
+      // Prevent browser page from scrolling while pointer is over image viewport
       e.preventDefault();
+      e.stopPropagation();
+
       if (e.ctrlKey || e.metaKey || viewerState.tool === "zoom") {
         // Zoom
         const zoomDelta = e.deltaY < 0 ? 0.15 : -0.15;
@@ -323,13 +301,36 @@ export function ImageViewer({
           zoom: Math.max(0.3, Math.min(6, Number((s.zoom + zoomDelta).toFixed(2)))),
         }));
       } else if (onSliceScroll) {
-        // Slice paging
+        // Radiology slice scrolling (down/up)
         const step = e.deltaY > 0 ? 1 : -1;
         onSliceScroll(step);
       }
-    },
-    [onSliceScroll, setViewerState, viewerState.tool]
-  );
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+        e.preventDefault();
+        onSliceScroll?.(1);
+      } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        onSliceScroll?.(-1);
+      } else if (e.key === "PageDown") {
+        e.preventDefault();
+        onSliceScroll?.(5);
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        onSliceScroll?.(-5);
+      }
+    };
+
+    el.addEventListener("wheel", handleNativeWheel, { passive: false });
+    el.addEventListener("keydown", handleKeyDown);
+    return () => {
+      el.removeEventListener("wheel", handleNativeWheel);
+      el.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onSliceScroll, setViewerState, viewerState.tool]);
 
   const imageBox = containedRect(imageUrl ? natural : undefined);
   const orientLabels = getOrientationLabels(orientation);
@@ -362,7 +363,7 @@ export function ImageViewer({
   return (
     <div
       ref={viewportRef}
-      onWheel={onWheel}
+      tabIndex={0}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
@@ -370,6 +371,16 @@ export function ImageViewer({
         onMouseUp();
         setHoverCoord(null);
       }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        const rect = viewportRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setContextMenuPos({
+          x: Math.min(e.clientX - rect.left, rect.width - 210),
+          y: Math.min(e.clientY - rect.top, rect.height - 230),
+        });
+      }}
+      onClick={() => setContextMenuPos(null)}
       className={cn(
         "group relative flex h-full w-full items-center justify-center overflow-hidden rounded-lg bg-black select-none",
         cursorClass
@@ -399,27 +410,36 @@ export function ImageViewer({
           cursor: viewerState.tool === "pen" ? PEN_CURSOR : undefined,
         }}
       >
-        {/* Isolated image container with W/L, brightness, contrast & inversion filters — annotations remain crisp and accurate */}
-        <div
-          className="absolute inset-0 h-full w-full pointer-events-none"
-          style={{
-            filter: getRadiologicalFilter(viewerState, modality),
-            transition: dragging.current ? "none" : "filter 120ms ease-out",
-          }}
-        >
-          <ScanThumbnail
-            seed={seed}
-            modality={modality}
-            imageUrl={imageUrl}
-            fit="contain"
-            loading="eager"
-            priority={PRIORITY.current}
-            loadingLabel={sliceLabel}
-            onFailure={() => setRenderFailed(true)}
-            onReady={onImageReady}
-            onNaturalSize={handleNaturalSize}
-            className="h-full w-full"
+        {/* Genuine DICOM pixel canvas with true linear window/level mapping + fallback image */}
+        <div className="absolute inset-0 h-full w-full pointer-events-none flex items-center justify-center">
+          <canvas
+            ref={canvasRef}
+            className={cn(
+              "h-full w-full object-contain pointer-events-none",
+              hasCanvasRender ? "block" : "hidden"
+            )}
+            style={{
+              imageRendering: viewerState.sharpness ? "pixelated" : "auto",
+            }}
           />
+          <div className={cn("h-full w-full", hasCanvasRender ? "hidden" : "block")}>
+            <ScanThumbnail
+              seed={seed}
+              modality={modality}
+              imageUrl={imageUrl}
+              fit="contain"
+              loading="eager"
+              priority={PRIORITY.current}
+              loadingLabel={sliceLabel}
+              onFailure={() => setRenderFailed(true)}
+              onReady={() => {
+                onImageReady?.();
+                setSliceUpdateKey((k) => k + 1);
+              }}
+              onNaturalSize={handleNaturalSize}
+              className="h-full w-full"
+            />
+          </div>
         </div>
 
         {/* AI analyzing sweep animation */}
@@ -656,18 +676,44 @@ export function ImageViewer({
           </div>
         </div>
 
-        {/* Live Radiologist Diagnostic HU & Coordinate Probe */}
+        {/* Authentic Radiologist Diagnostic Pixel & HU Probe */}
         {(() => {
-          const probe = estimatePixelHU(hoverCoord, viewerState, modality);
-          if (!hoverCoord || !probe) return null;
+          if (!hoverCoord) return null;
+          const probe = decoded ? probeDicomPixel(decoded, hoverCoord.x, hoverCoord.y) : null;
+          if (probe && probe.hu !== undefined) {
+            return (
+              <div className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-[#061220]/90 px-2.5 py-1 text-[10px] text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.25)] backdrop-blur-xl animate-in fade-in duration-100">
+                <span className="font-bold text-white">HU: {probe.hu > 0 ? `+${probe.hu}` : probe.hu}</span>
+                <span className="text-cyan-500">|</span>
+                <span className="text-slate-300 font-mono text-[9px]">
+                  X: {probe.x} Y: {probe.y}
+                </span>
+                <span className="text-cyan-500">|</span>
+                <span className="text-cyan-400 font-mono text-[9px]">
+                  Raw: {probe.rawValue}
+                </span>
+              </div>
+            );
+          }
+          if (probe) {
+            return (
+              <div className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-[#061220]/90 px-2.5 py-1 text-[10px] text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.25)] backdrop-blur-xl animate-in fade-in duration-100">
+                <span className="font-bold text-white">Pixel: {probe.rawValue}</span>
+                <span className="text-cyan-500">|</span>
+                <span className="text-slate-300 font-mono text-[9px]">
+                  X: {probe.x} Y: {probe.y}
+                </span>
+                <span className="text-cyan-500">|</span>
+                <span className="text-amber-400 font-mono text-[9px]">
+                  HU: N/A ({probe.modality})
+                </span>
+              </div>
+            );
+          }
           return (
-            <div className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-[#061220]/90 px-2.5 py-1 text-[10px] text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.25)] backdrop-blur-xl animate-in fade-in duration-100">
-              <span className="font-bold text-white">HU: {probe.hu > 0 ? `+${probe.hu}` : probe.hu}</span>
-              <span className="text-cyan-500">|</span>
-              <span className="text-cyan-200 font-medium">{probe.tissue}</span>
-              <span className="text-cyan-500">|</span>
-              <span className="text-slate-400 font-mono text-[9px]">
-                X:{Math.round(hoverCoord.x * (natural?.width ?? 512))} Y:{Math.round(hoverCoord.y * (natural?.height ?? 512))}
+            <div className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#061220]/90 px-2.5 py-1 text-[10px] text-slate-300 backdrop-blur-xl">
+              <span className="font-mono text-[9px] text-slate-400">
+                X: {Math.round(hoverCoord.x * (natural?.width ?? 512))} Y: {Math.round(hoverCoord.y * (natural?.height ?? 512))}
               </span>
             </div>
           );
@@ -682,6 +728,68 @@ export function ImageViewer({
         >
           <X className="h-3 w-3" /> Clear slice
         </button>
+      )}
+
+      {/* Viewport-Specific Clinical Right-Click Context Menu */}
+      {contextMenuPos && (
+        <div
+          className="absolute z-50 min-w-[200px] rounded-lg border border-border-strong/80 bg-panel/95 py-1.5 shadow-2xl backdrop-blur-xl text-[11px] font-sans text-ink-primary animate-in fade-in zoom-in-95 duration-100"
+          style={{ left: contextMenuPos.x, top: contextMenuPos.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted border-b border-border-subtle">
+            Viewport Actions
+          </div>
+          <button
+            onClick={() => {
+              setViewerState((s) => ({ ...s, windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 100 }));
+              setContextMenuPos(null);
+            }}
+            className="flex w-full items-center px-2.5 py-1.5 hover:bg-white/10 text-left transition-colors"
+          >
+            Reset Window & Level (W:400 L:40)
+          </button>
+          <button
+            onClick={() => {
+              setViewerState((s) => ({ ...s, inverted: !s.inverted }));
+              setContextMenuPos(null);
+            }}
+            className="flex w-full items-center px-2.5 py-1.5 hover:bg-white/10 text-left transition-colors"
+          >
+            {viewerState.inverted ? "Standard Monochrome" : "Invert Monochrome"}
+          </button>
+          <button
+            onClick={() => {
+              setViewerState((s) => ({ ...s, zoom: 1, panX: 0, panY: 0, rotation: 0 }));
+              setContextMenuPos(null);
+            }}
+            className="flex w-full items-center px-2.5 py-1.5 hover:bg-white/10 text-left transition-colors"
+          >
+            Reset Zoom & Pan
+          </button>
+          <button
+            onClick={() => {
+              setViewerState((s) => ({ ...s, sharpness: !s.sharpness }));
+              setContextMenuPos(null);
+            }}
+            className="flex w-full items-center px-2.5 py-1.5 hover:bg-white/10 text-left transition-colors"
+          >
+            {viewerState.sharpness ? "Disable Pixel Crispness" : "Enable Pixel Crispness"}
+          </button>
+          <div className="my-1 border-t border-border-subtle" />
+          <button
+            onClick={() => {
+              if (decoded) {
+                const info = `Modality: ${decoded.modality ?? modality}, Res: ${decoded.columns ?? natural?.width ?? 512}x${decoded.rows ?? natural?.height ?? 512}, W/L: ${viewerState.windowWidth}/${viewerState.windowCenter}`;
+                navigator.clipboard?.writeText(info);
+              }
+              setContextMenuPos(null);
+            }}
+            className="flex w-full items-center px-2.5 py-1.5 hover:bg-white/10 text-left text-cyan-400 transition-colors"
+          >
+            Copy Parameters to Clipboard
+          </button>
+        </div>
       )}
     </div>
   );

@@ -42,11 +42,15 @@ export function AIOverlay({
             color = "#F97316"; // Orange: Moderate confidence / needs attention
           }
 
+          const isDemo = f.isDemonstration || f.provenance === "report_extracted" || f.provenance === "demo_synthetic";
+
           const confidenceText =
             f.status === "accepted"
               ? "✓ Accepted"
               : f.status === "modified"
               ? "✓ Modified"
+              : isDemo
+              ? "DEMO ONLY — NOT FOR DIAGNOSIS"
               : f.confidenceLevel
               ? `${f.confidenceLevel} conf.`
               : f.band === "high"
@@ -69,7 +73,7 @@ export function AIOverlay({
                 top: `${f.region.y * 100}%`,
                 width: `${f.region.w * 100}%`,
                 height: `${f.region.h * 100}%`,
-                border: `1.5px solid ${color}`,
+                border: isDemo ? `1.5px dashed ${color}` : `1.5px solid ${color}`,
                 boxShadow: isActive ? `0 0 0 2px ${color}33, 0 0 10px ${color}44` : "none",
                 background: isActive ? `${color}18` : "transparent",
                 transition: "box-shadow 150ms ease-out, background-color 150ms ease-out",
@@ -82,7 +86,7 @@ export function AIOverlay({
                   aria-hidden
                 />
               )}
-              {/* corner reticles — reinforces the "AI-detected region" feel */}
+              {/* corner reticles */}
               {(["top-0 left-0", "top-0 right-0", "bottom-0 left-0", "bottom-0 right-0"] as const).map((pos) => (
                 <span
                   key={pos}
@@ -92,12 +96,13 @@ export function AIOverlay({
               ))}
               <span
                 className={cn(
-                  "absolute -top-6 left-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium text-white transition-opacity shadow-sm",
-                  isActive ? "opacity-100" : "opacity-80"
+                  "absolute -top-6 left-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[9.5px] font-medium text-white transition-opacity shadow-sm flex items-center gap-1",
+                  isActive ? "opacity-100" : "opacity-85"
                 )}
-                style={{ background: color }}
+                style={{ background: isDemo ? "#B45309" : color }}
               >
-                {f.label} · {confidenceText}
+                <span>{f.label}</span>
+                <span className="opacity-90 text-[8.5px]">· {confidenceText}</span>
               </span>
             </motion.button>
           );

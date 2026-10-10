@@ -46,10 +46,18 @@ export interface FindingEvidenceDetails {
   explainabilityNote?: string;
 }
 
+export type FindingProvenance =
+  | "radiologist"
+  | "report_extracted"
+  | "model_inference"
+  | "demo_synthetic";
+
 export interface Finding {
   id: string;
   label: string;
   confidence: number; // 0-100
+  provenance?: FindingProvenance;
+  isDemonstration?: boolean;
   band: AIConfidenceBand;
   region: { x: number; y: number; w: number; h: number }; // normalized 0-1 bbox on the reference slice
   sliceIndex: number;
@@ -371,6 +379,10 @@ export interface Study {
   id: string;
   studyId: string;
   patientAlias: string;
+  patientName?: string;
+  patientId?: string;
+  accessionNumber?: string;
+  studyInstanceUid?: string;
   /** Undefined when the source dataset doesn't provide it — never fabricated. Render as "Not available" rather than guessing. */
   age?: number;
   sex?: "M" | "F" | "Other";
@@ -481,6 +493,8 @@ export interface Report {
   version: number;
   reviewer: Radiologist | null;
   approvedAt: string | null;
+  signedBy?: Radiologist | null;
+  signedAt?: string | null;
 }
 
 export type IncidentSeverity = "low" | "medium" | "high" | "critical";

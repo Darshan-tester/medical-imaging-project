@@ -24,11 +24,24 @@
  * ---------------------------------------------------------------------------
  */
 
-/** What a decoded slice URL resolves to: an object URL an `<img>` can use directly. */
 export interface DecodedImage {
   objectUrl: string;
   width: number;
   height: number;
+  /** Actual decoded raw pixel data in stored/modality units (not CSS filtered) */
+  rawValues?: Float32Array | Int16Array | Uint16Array | Uint8Array;
+  rows?: number;
+  columns?: number;
+  rescaleSlope?: number;
+  rescaleIntercept?: number;
+  modality?: string;
+  windowCenter?: number;
+  windowWidth?: number;
+  pixelSpacing?: [number, number];
+  position?: [number, number, number];
+  photometric?: string;
+  bitsAllocated?: number;
+  pixelRepresentation?: number;
 }
 
 /**

@@ -1116,6 +1116,17 @@ function SingleViewportPanel({
   );
 
   const is3D = panel.planeType === "3D";
+  const hasAcquiredOrientation = activeSeries?.orientation === panel.planeType;
+  const isVolumetric = Boolean(study.series.some((s) => s.volumeAvailable));
+  const mprUnavailable = !is3D && !hasAcquiredOrientation && !isVolumetric;
+
+  const displayedPlaneLabel = is3D
+    ? "3D VOLUME"
+    : hasAcquiredOrientation
+    ? `${panel.planeType.toUpperCase()}`
+    : isVolumetric
+    ? `${panel.planeType.toUpperCase()} (MPR)`
+    : `${activeSeries?.orientation?.toUpperCase() ?? "SOURCE"} (Planar)`;
 
   return (
     <div
@@ -1140,9 +1151,18 @@ function SingleViewportPanel({
             className="flex items-center gap-1 font-semibold text-clinical hover:text-clinical-strong"
           >
             {is3D ? <Box className="h-3 w-3" /> : <Square className="h-3 w-3" />}
-            <span>{panel.planeType.toUpperCase()}</span>
+            <span>{displayedPlaneLabel}</span>
             <ChevronDown className="h-2.5 w-2.5" />
           </button>
+
+          {mprUnavailable && (
+            <span
+              className="text-[9px] px-1.5 py-0.2 rounded bg-amber-950/60 border border-amber-600/40 text-amber-300 font-mono"
+              title="Volumetric reconstruction unavailable: showing 2D acquired series instead of reconstructed MPR"
+            >
+              MPR N/A (Planar)
+            </span>
+          )}
 
           <span className="text-ink-muted truncate max-w-[120px]">
             {activeSeries?.label ?? ""}

@@ -272,6 +272,12 @@ export function StudyTable({
                         </Link>
                         <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-400">
                           <span className="truncate">{s.studyId}</span>
+                          {s.accessionNumber && (
+                            <>
+                              <span className="text-slate-600">·</span>
+                              <span className="text-slate-300">ACC: {s.accessionNumber}</span>
+                            </>
+                          )}
                           {(s.age !== undefined || s.sex) && (
                             <>
                               <span className="text-slate-600">·</span>

@@ -526,11 +526,6 @@ function outputSize(width: number, height: number, maxEdge?: number): [number, n
  * Exported for `lib/uploads/decode.ts`, which has the same bytes from IndexedDB
  * rather than from a fetch. `frame` is for a multi-frame instance — a cine loop
  * or an enhanced object, which an upload can be and a demo asset never is.
- */
-export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, frame = 0): Promise<DecodedImage> {
-  const plane = dicomGrayPlane(bytes, maxEdge, frame);
-  return grayToObjectUrl(plane.gray, plane.width, plane.height);
-}
 
 /**
  * One instance as an 8-bit plane, plus the header facts needed to place it in
@@ -549,6 +544,7 @@ export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, fram
  */
 interface DicomPlane {
   gray: Uint8Array;
+  rawValues: Float32Array | Int16Array | Uint16Array | Uint8Array;
   /** Size of `gray`, after any `maxEdge` reduction. */
   width: number;
   height: number;
@@ -557,12 +553,115 @@ interface DicomPlane {
   columns: number;
   /** Stored-value window mapped onto 0-255, as `[lo, hi]`. HU for CT — the rescale is applied first. */
   window: [number, number];
+  windowCenter: number;
+  windowWidth: number;
+  rescaleSlope: number;
+  rescaleIntercept: number;
+  modality: string;
+  photometric: string;
+  bitsAllocated: number;
+  pixelRepresentation: number;
   /** `PixelSpacing` (0028,0030), as `[betweenRows, betweenColumns]` in mm. */
   pixelSpacing?: [number, number];
   /** `ImagePositionPatient` (0020,0032) — where this plane sits, for measuring slice separation. */
   position?: [number, number, number];
   /** `SpacingBetweenSlices` (0018,0088), else `SliceThickness` (0018,0050), in mm. */
   nominalGap?: number;
+}
+
+export async function decodeDicomBytes(bytes: Uint8Array, maxEdge?: number, frame = 0): Promise<DecodedImage> {
+  const plane = dicomGrayPlane(bytes, maxEdge, frame);
+  const baseImg = await grayToObjectUrl(plane.gray, plane.width, plane.height);
+  return {
+    ...baseImg,
+    rawValues: plane.rawValues,
+    rows: plane.rows,
+    columns: plane.columns,
+    rescaleSlope: plane.rescaleSlope,
+    rescaleIntercept: plane.rescaleIntercept,
+    modality: plane.modality,
+    windowCenter: plane.windowCenter,
+    windowWidth: plane.windowWidth,
+    pixelSpacing: plane.pixelSpacing,
+    position: plane.position,
+    photometric: plane.photometric,
+    bitsAllocated: plane.bitsAllocated,
+    pixelRepresentation: plane.pixelRepresentation,
+  };
+}
+
+/**
+ * Computes live Window/Level remapped 8-bit grayscale pixels directly from 16-bit DICOM pixel data.
+ * Does not modify original source pixel values.
+ */
+export function applyDicomWindowLevel(
+  rawValues: Float32Array | Int16Array | Uint16Array | Uint8Array,
+  rows: number,
+  columns: number,
+  windowCenter: number,
+  windowWidth: number,
+  rescaleSlope = 1,
+  rescaleIntercept = 0,
+  invert = false
+): ImageData {
+  const total = rows * columns;
+  const lo = windowCenter - windowWidth / 2;
+  const scale = 255 / Math.max(1e-5, windowWidth);
+  const data = new Uint8ClampedArray(total * 4);
+
+  for (let i = 0; i < total; i++) {
+    const val = rawValues[i] * rescaleSlope + rescaleIntercept;
+    let v = Math.round((val - lo) * scale);
+    if (v < 0) v = 0;
+    else if (v > 255) v = 255;
+    if (invert) v = 255 - v;
+
+    const o = i * 4;
+    data[o] = v;
+    data[o + 1] = v;
+    data[o + 2] = v;
+    data[o + 3] = 255;
+  }
+
+  return new ImageData(data, columns, rows);
+}
+
+/**
+ * Live Hounsfield Unit probe for radiologist hover inspection.
+ * Reads the actual underlying pixel value and applies rescale slope and intercept.
+ * Returns HU only when the source image is CT and contains valid rescale parameters.
+ * Never invents tissue labels from cursor position.
+ */
+export function probeDicomPixel(
+  decoded: DecodedImage,
+  xNorm: number,
+  yNorm: number
+): { hu?: number; rawValue: number; x: number; y: number; modality: string } | null {
+  if (!decoded.rawValues) return null;
+  const cols = decoded.columns ?? decoded.width;
+  const rows = decoded.rows ?? decoded.height;
+  if (!cols || !rows) return null;
+
+  const x = Math.max(0, Math.min(cols - 1, Math.floor(xNorm * cols)));
+  const y = Math.max(0, Math.min(rows - 1, Math.floor(yNorm * rows)));
+  const idx = y * cols + x;
+  if (idx < 0 || idx >= decoded.rawValues.length) return null;
+
+  const raw = decoded.rawValues[idx];
+  const isCt = decoded.modality === "CT" || (!decoded.modality && (decoded.rescaleIntercept !== 0 || decoded.rescaleSlope !== 1));
+
+  let hu: number | undefined = undefined;
+  if (isCt) {
+    hu = Math.round(raw * (decoded.rescaleSlope ?? 1) + (decoded.rescaleIntercept ?? 0));
+  }
+
+  return {
+    hu,
+    rawValue: raw,
+    x,
+    y,
+    modality: decoded.modality || "CT",
+  };
 }
 
 function dicomGrayPlane(
@@ -581,6 +680,7 @@ function dicomGrayPlane(
   const photometric = dataSet.string("x00280004") ?? "MONOCHROME2";
   const rescaleSlope = dataSet.floatString("x00281053") ?? 1;
   const rescaleIntercept = dataSet.floatString("x00281052") ?? 0;
+  const modality = dataSet.string("x00080060") ?? "CT";
   let windowCenter = dataSet.floatString("x00281050");
   let windowWidth = dataSet.floatString("x00281051");
 
@@ -600,25 +700,25 @@ function dicomGrayPlane(
   const available = Math.max(1, Math.floor((pixelElement.length || frameBytes) / frameBytes));
   const offset = pixelElement.dataOffset + Math.min(Math.max(0, Math.trunc(frame)), available - 1) * frameBytes;
 
-  /**
-   * Reads source pixel `i` in modality units. One indirection per pixel, chosen
-   * once per image, in place of a 2 MB `Float64Array` copy of the whole plane.
-   */
+  let rawValues: Float32Array | Int16Array | Uint16Array | Uint8Array;
   let valueAt: (i: number) => number;
   if (samplesPerPixel >= 3) {
     // RGB/YBR — converted to 8-bit luma for a consistent single-channel viewer.
     const buf = byteArray.subarray(offset, offset + pixelCount);
+    rawValues = new Uint8Array(buf);
     valueAt = (i) => 0.299 * (buf[i * 3] ?? 0) + 0.587 * (buf[i * 3 + 1] ?? 0) + 0.114 * (buf[i * 3 + 2] ?? 0);
     windowCenter = windowCenter ?? 128;
     windowWidth = windowWidth ?? 256;
   } else if (bitsAllocated === 8) {
     const buf = byteArray.subarray(offset, offset + pixelCount);
+    rawValues = buf;
     valueAt = (i) => buf[i] * rescaleSlope + rescaleIntercept;
   } else {
     const view =
       pixelRepresentation === 1
-        ? new Int16Array(byteArray.buffer, byteArray.byteOffset + offset, pixelCount)
-        : new Uint16Array(byteArray.buffer, byteArray.byteOffset + offset, pixelCount);
+        ? new Int16Array(byteArray.buffer.slice(byteArray.byteOffset + offset, byteArray.byteOffset + offset + pixelCount * 2))
+        : new Uint16Array(byteArray.buffer.slice(byteArray.byteOffset + offset, byteArray.byteOffset + offset + pixelCount * 2));
+    rawValues = view;
     valueAt = (i) => view[i] * rescaleSlope + rescaleIntercept;
   }
 
@@ -671,11 +771,20 @@ function dicomGrayPlane(
 
   return {
     gray,
+    rawValues,
     width,
     height,
     rows,
     columns,
     window: [lo, lo + windowWidth],
+    windowCenter: windowCenter ?? (lo + windowWidth / 2),
+    windowWidth: windowWidth,
+    rescaleSlope,
+    rescaleIntercept,
+    modality,
+    photometric,
+    bitsAllocated,
+    pixelRepresentation,
     pixelSpacing:
       rowSpacing !== undefined && colSpacing !== undefined && rowSpacing > 0 && colSpacing > 0
         ? [rowSpacing, colSpacing]

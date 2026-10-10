@@ -45,15 +45,18 @@ export function runComparisonAgent(study: Study, priorStudy?: Study): Comparison
       (pf) => pf.label.toLowerCase() === curr.label.toLowerCase()
     );
 
-    const currSize = curr.measurements?.lengthMm || 8;
+    const currSize = curr.measurements?.lengthMm;
     if (matchedPrior) {
-      const priorSize = matchedPrior.measurements?.lengthMm || Math.round(currSize * 0.85 * 10) / 10;
-      const delta = currSize - priorSize;
-      const pctChange = Math.round((delta / priorSize) * 100);
-
+      const priorSize = matchedPrior.measurements?.lengthMm;
+      let pctChange: number | undefined;
       let status: "new" | "stable" | "increased" | "decreased" | "resolved" = "stable";
-      if (pctChange > 20) status = "increased";
-      else if (pctChange < -20) status = "decreased";
+
+      if (currSize !== undefined && priorSize !== undefined && priorSize > 0) {
+        const delta = currSize - priorSize;
+        pctChange = Math.round((delta / priorSize) * 100);
+        if (pctChange > 20) status = "increased";
+        else if (pctChange < -20) status = "decreased";
+      }
 
       trackedLesions.push({
         findingName: curr.label,
@@ -61,7 +64,7 @@ export function runComparisonAgent(study: Study, priorStudy?: Study): Comparison
         currentSizeMm: currSize,
         priorSizeMm: priorSize,
         percentageChange: pctChange,
-        clinicalSignificance: Math.abs(pctChange) > 20 ? "significant" : "indeterminate",
+        clinicalSignificance: pctChange !== undefined && Math.abs(pctChange) > 20 ? "significant" : "indeterminate",
       });
 
       findingDeltas.push({
