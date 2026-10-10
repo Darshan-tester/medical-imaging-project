@@ -231,24 +231,7 @@ export function AnnotationCanvas({
     };
   }, []);
 
-  // Keyboard shortcut listener for Polygon tool (Enter = close, Esc = cancel)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (polygonPoints.length > 0) {
-        if (e.key === "Enter" && polygonPoints.length >= 3) {
-          e.preventDefault();
-          commitPolygon(polygonPoints);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          setPolygonPoints([]);
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [polygonPoints]);
-
-  const commitPolygon = (pts: Point[]) => {
+  const commitPolygon = useCallback((pts: Point[]) => {
     if (pts.length < 3) {
       setPolygonPoints([]);
       return;
@@ -281,7 +264,47 @@ export function AnnotationCanvas({
     onCommitAnnotation?.(ann);
     onSelect(ann.id);
     setPolygonPoints([]);
-  };
+  }, [
+    studyId,
+    seriesId,
+    sliceIndex,
+    brushColor,
+    brushSize,
+    brushOpacity,
+    activeFindingType,
+    activeCustomLabel,
+    pixelSpacing,
+    onCommitAnnotation,
+    onSelect,
+  ]);
+
+  // Keyboard shortcut listener for Polygon tool (Enter = close, Esc = cancel) and Annotation Deletion
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
+      if (polygonPoints.length > 0) {
+        if (e.key === "Enter" && polygonPoints.length >= 3) {
+          e.preventDefault();
+          commitPolygon(polygonPoints);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          setPolygonPoints([]);
+        }
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        e.preventDefault();
+        onDeleteAnnotation(selectedId);
+        onSelect(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [polygonPoints, selectedId, onDeleteAnnotation, onSelect, commitPolygon]);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!active || !isAnnotationTool) return;

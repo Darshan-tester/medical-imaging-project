@@ -2,37 +2,159 @@
 
 import { useState } from "react";
 import { Sun, Contrast, Sliders, RotateCcw, Check, Sparkles } from "lucide-react";
-import { WindowLevelPreset } from "@/lib/types";
+import { Modality, WindowLevelPreset } from "@/lib/types";
 import { ViewerState } from "./ViewerToolbar";
 import { cn } from "@/lib/utils";
 
-export const WINDOW_LEVEL_PRESETS: (WindowLevelPreset & { category: "CT" | "MRI" | "General" })[] = [
-  // General
-  { id: "default", name: "Default", description: "Standard clinical window", windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 100, category: "General" },
-  { id: "high-contrast", name: "High Contrast", description: "High dynamic range & steep curve", windowWidth: 160, windowCenter: 60, brightness: 105, contrast: 150, category: "General" },
-  { id: "low-contrast", name: "Low Contrast", description: "Smooth gradient for wide density", windowWidth: 800, windowCenter: 40, brightness: 95, contrast: 80, category: "General" },
-  // CT Modality Presets
-  { id: "brain", name: "Brain (CT)", description: "Gray/white matter differentiation", windowWidth: 80, windowCenter: 40, brightness: 110, contrast: 140, category: "CT" },
-  { id: "bone", name: "Bone (CT)", description: "Cortical definition & fracture line", windowWidth: 2000, windowCenter: 500, brightness: 90, contrast: 130, category: "CT" },
-  { id: "lung", name: "Lung (CT)", description: "Parenchymal air-tissue contrast", windowWidth: 1500, windowCenter: -600, brightness: 125, contrast: 130, category: "CT" },
-  { id: "abdomen", name: "Soft Tissue (CT)", description: "Visceral soft tissue margins", windowWidth: 350, windowCenter: 50, brightness: 100, contrast: 110, category: "CT" },
-  { id: "liver", name: "Liver (CT)", description: "Hepatic parenchyma & focal lesions", windowWidth: 150, windowCenter: 30, brightness: 105, contrast: 135, category: "CT" },
+export interface ModalityWindowPreset extends WindowLevelPreset {
+  label: string;
+  category: "CT" | "MRI" | "X-Ray" | "PET" | "Ultrasound" | "General";
+}
+
+export const CLINICAL_PRESETS: ModalityWindowPreset[] = [
+  // CT Presets
+  { id: "ct-lung", name: "Lung", label: "Lung (CT)", description: "Parenchymal air-tissue contrast", windowWidth: 1500, windowCenter: -600, brightness: 125, contrast: 130, category: "CT" },
+  { id: "ct-mediastinum", name: "Mediastinum", label: "Mediastinum (CT)", description: "Visceral margins & lymph nodes", windowWidth: 350, windowCenter: 40, brightness: 100, contrast: 115, category: "CT" },
+  { id: "ct-bone", name: "Bone", label: "Bone (CT)", description: "Cortical definition & trabeculae", windowWidth: 2000, windowCenter: 450, brightness: 90, contrast: 130, category: "CT" },
+  { id: "ct-soft-tissue", name: "Soft Tissue", label: "Soft Tissue (CT)", description: "Musculature and visceral density", windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 110, category: "CT" },
+  { id: "ct-brain", name: "Brain", label: "Brain (CT)", description: "Gray/white matter differentiation", windowWidth: 80, windowCenter: 40, brightness: 110, contrast: 140, category: "CT" },
+  { id: "ct-subdural", name: "Subdural / Stroke", label: "Subdural / Stroke (CT)", description: "Acute hemorrhage & ischemia", windowWidth: 130, windowCenter: 35, brightness: 105, contrast: 145, category: "CT" },
+  { id: "ct-skull-bone", name: "Bone / Skull", label: "Bone / Skull (CT)", description: "Calvarial & skull base bone", windowWidth: 2000, windowCenter: 450, brightness: 90, contrast: 130, category: "CT" },
+  { id: "ct-abdomen", name: "Abdomen", label: "Abdomen (CT)", description: "Peritoneal organs & viscera", windowWidth: 350, windowCenter: 40, brightness: 100, contrast: 115, category: "CT" },
+  { id: "ct-liver", name: "Liver", label: "Liver (CT)", description: "Hepatic parenchyma & focal lesions", windowWidth: 150, windowCenter: 30, brightness: 105, contrast: 135, category: "CT" },
+
   // MRI Presets
-  { id: "mri-t1", name: "T1 Weighted (MRI)", description: "Fat bright, CSF dark anatomical", windowWidth: 500, windowCenter: 250, brightness: 105, contrast: 115, category: "MRI" },
-  { id: "mri-t2", name: "T2 / FLAIR (MRI)", description: "Fluid and edema hyperintensity", windowWidth: 600, windowCenter: 350, brightness: 115, contrast: 125, category: "MRI" },
+  { id: "mri-t1", name: "T1 Anatomical", label: "T1 Anatomical (MRI)", description: "Fat bright, CSF dark anatomical", windowWidth: 500, windowCenter: 250, brightness: 105, contrast: 115, category: "MRI" },
+  { id: "mri-t2", name: "T2 / FLAIR", label: "T2 / FLAIR (MRI)", description: "Fluid & edema hyperintensity", windowWidth: 600, windowCenter: 350, brightness: 115, contrast: 125, category: "MRI" },
+  { id: "mri-contrast", name: "High Dynamic", label: "High Dynamic (MRI)", description: "Enhanced gradient echo / contrast", windowWidth: 300, windowCenter: 150, brightness: 105, contrast: 140, category: "MRI" },
+  { id: "mri-soft", name: "Soft Tissue", label: "Soft Tissue (MRI)", description: "Musculoskeletal & diffuse signal", windowWidth: 700, windowCenter: 300, brightness: 100, contrast: 110, category: "MRI" },
+
+  // X-Ray Presets
+  { id: "xray-standard", name: "Standard", label: "Standard (X-Ray)", description: "Diagnostic projection contrast", windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 105, category: "General" },
+  { id: "xray-bone", name: "Bone Detail", label: "Bone Detail (X-Ray)", description: "Trabecular & cortical sharpness", windowWidth: 250, windowCenter: 50, brightness: 95, contrast: 135, category: "General" },
+  { id: "xray-lung", name: "Lung Fields", label: "Lung Fields (X-Ray)", description: "Thoracic pulmonary fields", windowWidth: 350, windowCenter: -100, brightness: 115, contrast: 120, category: "General" },
+  { id: "xray-high", name: "High Contrast", label: "High Contrast (X-Ray)", description: "Steep edge dynamic range", windowWidth: 200, windowCenter: 40, brightness: 100, contrast: 140, category: "General" },
+
+  // PET Presets
+  { id: "pet-suv-standard", name: "Standard SUV", label: "Standard SUV (PET)", description: "Standard metabolic tracer uptake", windowWidth: 100, windowCenter: 50, brightness: 100, contrast: 100, category: "General" },
+  { id: "pet-suv-high", name: "High SUV", label: "High SUV (PET)", description: "Hypermetabolic focus contrast", windowWidth: 60, windowCenter: 30, brightness: 110, contrast: 130, category: "General" },
+  { id: "pet-suv-low", name: "Low Background", label: "Low Background (PET)", description: "Wide background uptake curve", windowWidth: 150, windowCenter: 70, brightness: 90, contrast: 110, category: "General" },
+
+  // Ultrasound Presets
+  { id: "us-standard", name: "Standard Echo", label: "Standard Echo (US)", description: "Acoustic impedance baseline", windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 105, category: "General" },
+  { id: "us-high", name: "High Contrast", label: "High Contrast (US)", description: "Hypoechoic lesion margin", windowWidth: 250, windowCenter: 40, brightness: 105, contrast: 135, category: "General" },
+  { id: "us-smooth", name: "Smooth Tissue", label: "Smooth Tissue (US)", description: "Uniform speckle suppression", windowWidth: 600, windowCenter: 40, brightness: 95, contrast: 90, category: "General" },
+
+  // Baseline Default
+  { id: "default", name: "Default / Reset", label: "Default / Reset", description: "Standard calibrated baseline", windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 100, category: "General" },
 ];
+
+export const WINDOW_LEVEL_PRESETS = CLINICAL_PRESETS;
+
+export function getModalityPresets(modality?: Modality, bodyRegion?: string): ModalityWindowPreset[] {
+  const normRegion = (bodyRegion || "").toUpperCase();
+  const defaultPreset = CLINICAL_PRESETS.find((p) => p.id === "default")!;
+
+  if (modality === "MRI") {
+    return [
+      CLINICAL_PRESETS.find((p) => p.id === "mri-t1")!,
+      CLINICAL_PRESETS.find((p) => p.id === "mri-t2")!,
+      CLINICAL_PRESETS.find((p) => p.id === "mri-contrast")!,
+      CLINICAL_PRESETS.find((p) => p.id === "mri-soft")!,
+      defaultPreset,
+    ];
+  }
+
+  if (modality === "X-Ray") {
+    return [
+      CLINICAL_PRESETS.find((p) => p.id === "xray-standard")!,
+      CLINICAL_PRESETS.find((p) => p.id === "xray-bone")!,
+      CLINICAL_PRESETS.find((p) => p.id === "xray-lung")!,
+      CLINICAL_PRESETS.find((p) => p.id === "xray-high")!,
+      defaultPreset,
+    ];
+  }
+
+  if (modality === "PET") {
+    return [
+      CLINICAL_PRESETS.find((p) => p.id === "pet-suv-standard")!,
+      CLINICAL_PRESETS.find((p) => p.id === "pet-suv-high")!,
+      CLINICAL_PRESETS.find((p) => p.id === "pet-suv-low")!,
+      defaultPreset,
+    ];
+  }
+
+  if (modality === "Ultrasound") {
+    return [
+      CLINICAL_PRESETS.find((p) => p.id === "us-standard")!,
+      CLINICAL_PRESETS.find((p) => p.id === "us-high")!,
+      CLINICAL_PRESETS.find((p) => p.id === "us-smooth")!,
+      defaultPreset,
+    ];
+  }
+
+  if (modality === "CT") {
+    if (normRegion.includes("CHEST") || normRegion.includes("THORAX") || normRegion.includes("LUNG")) {
+      return [
+        CLINICAL_PRESETS.find((p) => p.id === "ct-lung")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-mediastinum")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
+        defaultPreset,
+      ];
+    }
+    if (normRegion.includes("BRAIN") || normRegion.includes("HEAD") || normRegion.includes("NECK")) {
+      return [
+        CLINICAL_PRESETS.find((p) => p.id === "ct-brain")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-subdural")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-skull-bone")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
+        defaultPreset,
+      ];
+    }
+    if (normRegion.includes("ABDOMEN") || normRegion.includes("PELVIS") || normRegion.includes("LIVER")) {
+      return [
+        CLINICAL_PRESETS.find((p) => p.id === "ct-abdomen")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-liver")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
+        CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
+        defaultPreset,
+      ];
+    }
+    // Generic CT
+    return [
+      CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-lung")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-brain")!,
+      defaultPreset,
+    ];
+  }
+
+  // General fallback
+  return [
+    defaultPreset,
+    CLINICAL_PRESETS.find((p) => p.id === "xray-high")!,
+    CLINICAL_PRESETS.find((p) => p.id === "us-smooth")!,
+  ];
+}
 
 export function WindowLevelControls({
   state,
   setState,
   onClose,
+  modality,
+  bodyRegion,
 }: {
   state: ViewerState;
   setState: (updater: (prev: ViewerState) => ViewerState) => void;
   onClose: () => void;
+  modality?: Modality;
+  bodyRegion?: string;
 }) {
   const [activePreset, setActivePreset] = useState<string>("default");
   const [activeCategory, setActiveCategory] = useState<"All" | "CT" | "MRI" | "General">("All");
+  const modalityPresets = getModalityPresets(modality, bodyRegion);
 
   const applyPreset = (preset: WindowLevelPreset) => {
     setActivePreset(preset.id);
@@ -46,13 +168,15 @@ export function WindowLevelControls({
   };
 
   const resetWindow = () => {
-    applyPreset(WINDOW_LEVEL_PRESETS[0]);
+    const def = modalityPresets.find((p) => p.id === "default") || CLINICAL_PRESETS.find((p) => p.id === "default")!;
+    applyPreset(def);
   };
 
-  const filteredPresets =
-    activeCategory === "All"
-      ? WINDOW_LEVEL_PRESETS
-      : WINDOW_LEVEL_PRESETS.filter((p) => p.category === activeCategory);
+  const displayPresets = modality
+    ? modalityPresets
+    : activeCategory === "All"
+    ? WINDOW_LEVEL_PRESETS
+    : WINDOW_LEVEL_PRESETS.filter((p) => p.category === activeCategory);
 
   return (
     <div className="w-84 rounded-xl border border-border-strong bg-panel/95 p-4 shadow-2xl backdrop-blur-md">
@@ -71,29 +195,32 @@ export function WindowLevelControls({
         </button>
       </div>
 
-      {/* Category selector */}
-      <div className="mb-2 flex items-center gap-1">
-        {(["All", "CT", "MRI", "General"] as const).map((cat) => (
-          <button
-            key={cat}
-            onClick={() => setActiveCategory(cat)}
-            className={cn(
-              "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
-              activeCategory === cat
-                ? "bg-clinical text-white font-semibold"
-                : "bg-base text-ink-secondary hover:text-ink-primary"
-            )}
-          >
-            {cat}
-          </button>
-        ))}
-      </div>
+      {/* Category selector only when modality is not explicitly locked */}
+      {!modality && (
+        <div className="mb-2 flex items-center gap-1">
+          {(["All", "CT", "MRI", "General"] as const).map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setActiveCategory(cat)}
+              className={cn(
+                "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
+                activeCategory === cat
+                  ? "bg-clinical text-white font-semibold"
+                  : "bg-base text-ink-secondary hover:text-ink-primary"
+              )}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Preset buttons */}
       <div className="mb-4">
-        <div className="grid grid-cols-3 gap-1.5 max-h-36 overflow-y-auto pr-0.5">
-          {filteredPresets.map((p) => {
-            const isSelected = activePreset === p.id;
+        <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto pr-0.5">
+          {displayPresets.map((p) => {
+            const isSelected =
+              state.windowWidth === p.windowWidth && state.windowCenter === p.windowCenter;
             return (
               <button
                 key={p.id}

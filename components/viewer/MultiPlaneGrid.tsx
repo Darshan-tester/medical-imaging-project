@@ -20,6 +20,7 @@ import { ViewerState } from "./ViewerToolbar";
 import { ViewerErrorBoundary } from "./ViewerErrorBoundary";
 import { cn } from "@/lib/utils";
 import { OrganMeshState } from "./AIAnalysisPanel";
+import { AnatomicalLayer, AnatomicalClipping } from "@/lib/anatomy-state";
 
 const Volume3DViewer = dynamic(() => import("./Volume3DViewer").then((m) => m.Volume3DViewer), {
   ssr: false,
@@ -59,6 +60,12 @@ export function MultiPlaneGrid({
   getImageUrl,
   organMeshes,
   onOrganMeshesChange,
+  anatomicalLayers,
+  onAnatomicalLayersChange,
+  anatomicalClipping,
+  onAnatomicalClippingChange,
+  activeViewportId,
+  onActiveViewportChange,
 }: {
   study: Study;
   layout: ViewportLayout;
@@ -82,8 +89,24 @@ export function MultiPlaneGrid({
   getImageUrl: (series: SeriesInfo, sliceIndex: number) => string | undefined;
   organMeshes?: OrganMeshState[];
   onOrganMeshesChange?: (meshes: OrganMeshState[]) => void;
+  anatomicalLayers?: AnatomicalLayer[];
+  onAnatomicalLayersChange?: (layers: AnatomicalLayer[]) => void;
+  anatomicalClipping?: AnatomicalClipping;
+  onAnatomicalClippingChange?: (clipping: AnatomicalClipping) => void;
+  activeViewportId?: string;
+  onActiveViewportChange?: (id: string) => void;
 }) {
-  // Find series matching planes if available
+  const [activePanelId, setActivePanelId] = useState<string>(activeViewportId || "panel-0");
+
+  useEffect(() => {
+    if (activeViewportId) setActivePanelId(activeViewportId);
+  }, [activeViewportId]);
+
+  const handleSelectPanel = (id: string) => {
+    setActivePanelId(id);
+    onActiveViewportChange?.(id);
+  };
+
   const axialSeries = useMemo(
     () => study.series.find((s) => s.orientation === "Axial") ?? study.series[0],
     [study.series]
@@ -680,153 +703,58 @@ export function MultiPlaneGrid({
         </div>
       )}
 
-      {/* 2x2 4-Panel Quad View */}
+      {/* 2x2 4-Panel Quad View with Stable CSS Grid & Non-Collapsing Canvases */}
       {layout === "2x2" && !maximizedPanelId && (
-        <div className="relative flex flex-col h-full w-full">
-          {/* Top Row: Axial & Sagittal */}
-          <div style={{ height: `${splitY}%` }} className="flex w-full">
-            <div style={{ width: `${splitX}%` }} className="h-full">
+        <div className="grid grid-cols-2 grid-rows-2 gap-1 p-1 h-full w-full min-h-0 min-w-0 bg-black overflow-hidden">
+          {panels.map((p) => (
+            <div key={p.id} className="min-w-0 min-h-0 relative h-full w-full overflow-hidden">
               <SingleViewportPanel
-                panel={panels[0]}
+                panel={p}
                 study={study}
                 isMaximized={false}
-                onToggleMaximize={() => setMaximizedPanelId(panels[0].id)}
-                onUpdateState={(u) => updatePanelState(panels[0].id, u)}
-                onSliceScroll={(d) => updatePanelSlice(panels[0].id, d)}
-                onSwitchSeries={(sId, pType) => switchPanelSeries(panels[0].id, sId, pType)}
-                crosshairPos={{ x: crosshairNorm.x, y: crosshairNorm.y }}
-                onCrosshairMove={(pt) => handleCrosshairMoveFromPlane("Axial", pt)}
-                getImageUrl={getImageUrl}
-                findings={findings}
-                activeFindingId={activeFindingId}
-                onHoverFinding={onHoverFinding}
-                onSelectFinding={onSelectFinding}
-                markers={markers}
-                onAddMarker={onAddMarker}
-                measurements={measurements}
-                onAddMeasurement={onAddMeasurement}
-                annotations={annotations}
-                onCommitAnnotation={onCommitAnnotation}
-                onDeleteAnnotation={onDeleteAnnotation}
-                onQuickAnnotationNote={onQuickAnnotationNote}
-                onAddFinding={onAddFinding}
-                onEditFinding={onEditFinding}
-                annotations3D={annotations3D}
-                onAnnotations3DChange={onAnnotations3DChange}
-              />
-            </div>
-            <div
-              onMouseDown={onDividerMouseDown("x")}
-              className="w-1.5 cursor-col-resize bg-border-strong hover:bg-clinical transition-colors z-20"
-            />
-            <div style={{ width: `${100 - splitX}%` }} className="h-full">
-              <SingleViewportPanel
-                panel={panels[1]}
-                study={study}
-                isMaximized={false}
-                onToggleMaximize={() => setMaximizedPanelId(panels[1].id)}
-                onUpdateState={(u) => updatePanelState(panels[1].id, u)}
-                onSliceScroll={(d) => updatePanelSlice(panels[1].id, d)}
-                onSwitchSeries={(sId, pType) => switchPanelSeries(panels[1].id, sId, pType)}
-                crosshairPos={{ x: crosshairNorm.y, y: crosshairNorm.z }}
-                onCrosshairMove={(pt) => handleCrosshairMoveFromPlane("Sagittal", pt)}
-                getImageUrl={getImageUrl}
-                findings={findings}
-                activeFindingId={activeFindingId}
-                onHoverFinding={onHoverFinding}
-                onSelectFinding={onSelectFinding}
-                markers={markers}
-                onAddMarker={onAddMarker}
-                measurements={measurements}
-                onAddMeasurement={onAddMeasurement}
-                annotations={annotations}
-                onCommitAnnotation={onCommitAnnotation}
-                onDeleteAnnotation={onDeleteAnnotation}
-                onQuickAnnotationNote={onQuickAnnotationNote}
-                onAddFinding={onAddFinding}
-                onEditFinding={onEditFinding}
-                annotations3D={annotations3D}
-                onAnnotations3DChange={onAnnotations3DChange}
-              />
-            </div>
-          </div>
-
-          {/* Center Horizontal Divider */}
-          <div
-            onMouseDown={onDividerMouseDown("y")}
-            className="h-1.5 cursor-row-resize bg-border-strong hover:bg-clinical transition-colors z-20"
-          />
-
-          {/* Bottom Row: Coronal & 3D */}
-          <div style={{ height: `${100 - splitY}%` }} className="flex w-full">
-            <div style={{ width: `${splitX}%` }} className="h-full">
-              <SingleViewportPanel
-                panel={panels[2]}
-                study={study}
-                isMaximized={false}
-                onToggleMaximize={() => setMaximizedPanelId(panels[2].id)}
-                onUpdateState={(u) => updatePanelState(panels[2].id, u)}
-                onSliceScroll={(d) => updatePanelSlice(panels[2].id, d)}
-                onSwitchSeries={(sId, pType) => switchPanelSeries(panels[2].id, sId, pType)}
-                crosshairPos={{ x: crosshairNorm.x, y: crosshairNorm.z }}
-                onCrosshairMove={(pt) => handleCrosshairMoveFromPlane("Coronal", pt)}
-                getImageUrl={getImageUrl}
-                findings={findings}
-                activeFindingId={activeFindingId}
-                onHoverFinding={onHoverFinding}
-                onSelectFinding={onSelectFinding}
-                markers={markers}
-                onAddMarker={onAddMarker}
-                measurements={measurements}
-                onAddMeasurement={onAddMeasurement}
-                annotations={annotations}
-                onCommitAnnotation={onCommitAnnotation}
-                onDeleteAnnotation={onDeleteAnnotation}
-                onQuickAnnotationNote={onQuickAnnotationNote}
-                onAddFinding={onAddFinding}
-                onEditFinding={onEditFinding}
-                annotations3D={annotations3D}
-                onAnnotations3DChange={onAnnotations3DChange}
-              />
-            </div>
-            <div
-              onMouseDown={onDividerMouseDown("x")}
-              className="w-1.5 cursor-col-resize bg-border-strong hover:bg-clinical transition-colors z-20"
-            />
-            <div style={{ width: `${100 - splitX}%` }} className="h-full">
-              <SingleViewportPanel
-                panel={panels[3]}
-                study={study}
-                isMaximized={false}
-                onToggleMaximize={() => setMaximizedPanelId(panels[3].id)}
-                onUpdateState={(u) => updatePanelState(panels[3].id, u)}
-                onSliceScroll={(d) => updatePanelSlice(panels[3].id, d)}
-                onSwitchSeries={(sId, pType) => switchPanelSeries(panels[3].id, sId, pType)}
-                crosshairPos={crosshairNorm}
-                onCrosshairMove={() => {}}
+                isActive={activePanelId === p.id}
+                onSelectViewport={() => handleSelectPanel(p.id)}
+                onToggleMaximize={() => setMaximizedPanelId(p.id)}
+                onUpdateState={(u) => updatePanelState(p.id, u)}
+                onSliceScroll={(d) => updatePanelSlice(p.id, d)}
+                onSwitchSeries={(sId, pType) => switchPanelSeries(p.id, sId, pType)}
+                crosshairPos={
+                  p.planeType === "Axial"
+                    ? { x: crosshairNorm.x, y: crosshairNorm.y }
+                    : p.planeType === "Sagittal"
+                    ? { x: crosshairNorm.y, y: crosshairNorm.z }
+                    : p.planeType === "Coronal"
+                    ? { x: crosshairNorm.x, y: crosshairNorm.z }
+                    : crosshairNorm
+                }
+                onCrosshairMove={(pt) => handleCrosshairMoveFromPlane(p.planeType, pt)}
                 onPointSelected={handle3DPointSelected}
+                getImageUrl={getImageUrl}
+                findings={findings}
+                activeFindingId={activeFindingId}
+                onHoverFinding={onHoverFinding}
+                onSelectFinding={onSelectFinding}
+                markers={markers}
+                onAddMarker={onAddMarker}
+                measurements={measurements}
+                onAddMeasurement={onAddMeasurement}
+                annotations={annotations}
+                onCommitAnnotation={onCommitAnnotation}
+                onDeleteAnnotation={onDeleteAnnotation}
+                onQuickAnnotationNote={onQuickAnnotationNote}
+                onAddFinding={onAddFinding}
+                onEditFinding={onEditFinding}
+                annotations3D={annotations3D}
+                onAnnotations3DChange={onAnnotations3DChange}
                 organMeshes={organMeshes}
                 onOrganMeshesChange={onOrganMeshesChange}
-                getImageUrl={getImageUrl}
-                findings={findings}
-                activeFindingId={activeFindingId}
-                onHoverFinding={onHoverFinding}
-                onSelectFinding={onSelectFinding}
-                markers={markers}
-                onAddMarker={onAddMarker}
-                measurements={measurements}
-                onAddMeasurement={onAddMeasurement}
-                annotations={annotations}
-                onCommitAnnotation={onCommitAnnotation}
-                onDeleteAnnotation={onDeleteAnnotation}
-                onQuickAnnotationNote={onQuickAnnotationNote}
-                onAddFinding={onAddFinding}
-                onEditFinding={onEditFinding}
-                annotations3D={annotations3D}
-                onAnnotations3DChange={onAnnotations3DChange}
+                anatomicalLayers={anatomicalLayers}
+                onAnatomicalLayersChange={onAnatomicalLayersChange}
+                anatomicalClipping={anatomicalClipping}
+                onClippingChange={onAnatomicalClippingChange}
               />
             </div>
-          </div>
+          ))}
         </div>
       )}
 
@@ -1100,6 +1028,8 @@ function SingleViewportPanel({
   panel,
   study,
   isMaximized,
+  isActive = false,
+  onSelectViewport,
   onToggleMaximize,
   onUpdateState,
   onSliceScroll,
@@ -1126,10 +1056,16 @@ function SingleViewportPanel({
   onEditFinding,
   annotations3D,
   onAnnotations3DChange,
+  anatomicalLayers,
+  onAnatomicalLayersChange,
+  anatomicalClipping,
+  onClippingChange,
 }: {
   panel: ViewportPanelConfig;
   study: Study;
   isMaximized: boolean;
+  isActive?: boolean;
+  onSelectViewport?: () => void;
   onToggleMaximize: () => void;
   onUpdateState: (updater: (prev: ViewerState) => ViewerState) => void;
   onSliceScroll: (delta: number) => void;
@@ -1156,6 +1092,10 @@ function SingleViewportPanel({
   onEditFinding: (id: string) => void;
   annotations3D: Annotation3D[];
   onAnnotations3DChange: (anns: Annotation3D[]) => void;
+  anatomicalLayers?: AnatomicalLayer[];
+  onAnatomicalLayersChange?: (layers: AnatomicalLayer[]) => void;
+  anatomicalClipping?: AnatomicalClipping;
+  onClippingChange?: (clipping: AnatomicalClipping) => void;
 }) {
   const [showPlaneMenu, setShowPlaneMenu] = useState(false);
   const activeSeries = study.series.find((s) => s.id === panel.seriesId) ?? study.series[0];
@@ -1178,9 +1118,22 @@ function SingleViewportPanel({
   const is3D = panel.planeType === "3D";
 
   return (
-    <div className="relative flex flex-col h-full w-full overflow-hidden border border-border-strong/60 bg-black">
+    <div
+      onClick={onSelectViewport}
+      className={cn(
+        "relative flex flex-col h-full w-full min-h-0 min-w-0 overflow-hidden bg-black transition-all",
+        isActive
+          ? "border-2 border-clinical ring-1 ring-clinical/50 shadow-[0_0_12px_rgba(14,165,233,0.3)]"
+          : "border border-border-strong/60"
+      )}
+    >
       {/* Viewport Header */}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-border-strong/60 bg-panel/90 px-2 text-[11px] backdrop-blur z-20">
+      <div className={cn(
+        "flex h-7 shrink-0 items-center justify-between border-b px-2 text-[11px] backdrop-blur z-20 transition-colors",
+        isActive
+          ? "border-clinical/40 bg-clinical/15 text-clinical-strong"
+          : "border-border-strong/60 bg-panel/90 text-ink-primary"
+      )}>
         <div className="relative flex items-center gap-1.5">
           <button
             onClick={() => setShowPlaneMenu((v) => !v)}

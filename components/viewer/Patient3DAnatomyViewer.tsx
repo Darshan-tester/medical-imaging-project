@@ -39,6 +39,7 @@ import {
   CATEGORY_LABELS,
   AnatomicalCategory,
 } from "@/lib/anatomy-state";
+import { AnatomicalLayersPanel } from "./AnatomicalLayersPanel";
 import { cn } from "@/lib/utils";
 
 const gltfLoader = new GLTFLoader();
@@ -206,6 +207,8 @@ export interface Patient3DAnatomyViewerProps {
   className?: string;
   height?: string | number;
   showLayerPanel?: boolean;
+  onCloseLayerPanel?: () => void;
+  compact?: boolean;
 }
 
 export function Patient3DAnatomyViewer({
@@ -238,7 +241,9 @@ export function Patient3DAnatomyViewer({
   onClippingChange,
   className,
   height = "100%",
-  showLayerPanel = true,
+  showLayerPanel = false,
+  onCloseLayerPanel,
+  compact = false,
 }: Patient3DAnatomyViewerProps) {
   const webglSupported = useWebGLSupport();
   const controlsRef = useRef<any>(null);
@@ -572,14 +577,18 @@ export function Patient3DAnatomyViewer({
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-semibold text-white tracking-tight">Patient 3D Anatomy</span>
-                <span className="rounded bg-sky-950/80 border border-sky-500/50 px-1.5 py-0.2 text-[9px] font-mono text-sky-300 font-bold">
-                  PATIENT-DERIVED
-                </span>
+                <span className="text-xs font-semibold text-white tracking-tight">{compact ? "3D Anatomy" : "Patient 3D Anatomy"}</span>
+                {!compact && (
+                  <span className="rounded bg-sky-950/80 border border-sky-500/50 px-1.5 py-0.2 text-[9px] font-mono text-sky-300 font-bold">
+                    PATIENT-DERIVED
+                  </span>
+                )}
               </div>
-              <span className="block text-[9.5px] font-mono text-slate-400">
-                {availableLayers.length} segmented structures · MONAI TotalSegmentator
-              </span>
+              {!compact && (
+                <span className="block text-[9.5px] font-mono text-slate-400">
+                  {availableLayers.length} segmented structures · TotalSegmentator
+                </span>
+              )}
             </div>
           </div>
 
@@ -665,7 +674,7 @@ export function Patient3DAnatomyViewer({
         </div>
 
         {/* ── WebGL Canvas Stage ── */}
-        <div className="flex-1 w-full h-full relative cursor-grab active:cursor-grabbing">
+        <div className="flex-1 w-full h-full min-h-0 min-w-0 relative cursor-grab active:cursor-grabbing">
           {webglSupported === false && (
             <div className="flex h-full w-full items-center justify-center p-6 text-center text-slate-400">
               <AlertTriangle className="h-8 w-8 text-amber-400 mb-2" />
@@ -893,280 +902,21 @@ export function Patient3DAnatomyViewer({
 
       {/* ── Right Clinical Layer Control Panel (Section 6 & 14) ── */}
       {showLayerPanel && (
-        <aside className="w-80 shrink-0 h-full border-l border-[#1e293b] bg-[#0b0f19] flex flex-col text-[12px] z-20">
-          {/* Panel Header */}
-          <div className="p-3 border-b border-[#1e293b] bg-[#0f172a] flex items-center justify-between">
-            <div className="flex items-center gap-1.5 font-bold text-white text-[12px]">
-              <Layers className="h-4 w-4 text-sky-400" />
-              <span>Anatomical Layers</span>
-            </div>
-
-            {/* Global Actions */}
-            <div className="flex items-center gap-1.5 text-[10.5px]">
-              <button
-                onClick={handleShowAll}
-                className="text-sky-400 hover:underline font-medium"
-                title="Show all available layers"
-              >
-                All
-              </button>
-              <span className="text-slate-600">·</span>
-              <button
-                onClick={handleHideAll}
-                className="text-slate-400 hover:underline"
-                title="Hide all layers"
-              >
-                Hide
-              </button>
-              <span className="text-slate-600">·</span>
-              <button
-                onClick={handleResetLayers}
-                className="text-slate-400 hover:underline"
-                title="Reset layer opacities"
-              >
-                Reset
-              </button>
-            </div>
-          </div>
-
-          {/* Context-Aware Category Tabs (Only shows categories present in study anatomy) */}
-          <div className="flex items-center border-b border-[#1e293b] bg-[#0d121c] p-1 overflow-x-auto gap-0.5 shrink-0 scrollbar-none">
-            {availableCategoryTabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveCategoryTab(tab.id)}
-                className={cn(
-                  "rounded px-2.5 py-1 text-[10.5px] font-medium whitespace-nowrap transition-colors",
-                  activeCategoryTab === tab.id
-                    ? "bg-sky-600 text-white font-semibold shadow-sm"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-[#1a2333]"
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Active Category Layers List */}
-          <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 divide-y divide-[#1e293b]/40">
-            {layers
-              .filter((l) => l.category === activeCategoryTab)
-              .map((layer) => {
-                const isAvailable = layer.availability === "available";
-                const isSelected = selectedStructureId === layer.id;
-
-                return (
-                  <div
-                    key={layer.id}
-                    className={cn(
-                      "flex flex-col gap-1 rounded-md border p-2 transition-all pt-2.5",
-                      isAvailable
-                        ? isSelected
-                          ? "border-sky-500 bg-sky-950/30 ring-1 ring-sky-500/50"
-                          : layer.visible
-                          ? "border-[#1e293b] bg-[#111827]"
-                          : "border-[#1e293b]/40 bg-[#0d121c] opacity-60"
-                        : "border-[#1e293b]/20 bg-[#090d14] opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    {/* Layer Header */}
-                    <div className="flex items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className={cn(
-                            "h-2.5 w-2.5 rounded-full shrink-0 border border-black/40",
-                            !isAvailable && "opacity-30"
-                          )}
-                          style={{ backgroundColor: layer.color }}
-                        />
-                        <span
-                          className={cn(
-                            "truncate font-medium text-[11.5px]",
-                            isAvailable ? (layer.visible ? "text-slate-100" : "text-slate-400") : "text-slate-500"
-                          )}
-                        >
-                          {layer.name}
-                        </span>
-                      </div>
-
-                      {/* Controls (Disabled if not available) */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        {isAvailable ? (
-                          <>
-                            <button
-                              onClick={() => handleIsolateLayer(layer.id)}
-                              className={cn(
-                                "rounded px-1.5 py-0.5 text-[9.5px] font-mono font-medium transition-colors",
-                                layer.isolated
-                                  ? "bg-sky-600 text-white font-bold"
-                                  : "border border-[#1e293b] text-slate-400 hover:text-white"
-                              )}
-                              title={layer.isolated ? "Clear isolation" : "Isolate this structure"}
-                            >
-                              Iso
-                            </button>
-                            <button
-                              onClick={() => handleToggleLayer(layer.id)}
-                              className={cn(
-                                "p-1 rounded transition-colors",
-                                layer.visible ? "text-sky-400 hover:bg-sky-950" : "text-slate-500 hover:bg-[#1a2333]"
-                              )}
-                              title={layer.visible ? "Hide layer" : "Show layer"}
-                            >
-                              {layer.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                            </button>
-                          </>
-                        ) : (
-                          <span
-                            className="text-[9.5px] font-mono text-slate-600 rounded bg-[#111827] px-1.5 py-0.5 border border-[#1e293b]/60"
-                            title={layer.unavailabilityReason}
-                          >
-                            ○ Not available
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Metadata & Opacity Slider */}
-                    {isAvailable ? (
-                      <div className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
-                        <span className="font-mono text-sky-400 font-semibold">
-                          {layer.volumeMl !== undefined ? `${layer.volumeMl.toFixed(1)} mL` : "Patient Isosurface"}
-                        </span>
-                        {layer.visible && (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-slate-500 text-[9.5px]">Opacity:</span>
-                            <input
-                              type="range"
-                              min={0.1}
-                              max={1.0}
-                              step={0.05}
-                              value={layer.opacity}
-                              onChange={(e) => handleLayerOpacity(layer.id, parseFloat(e.target.value))}
-                              className="w-14 h-1 accent-sky-500 cursor-pointer"
-                            />
-                            <span className="font-mono text-[9px] w-5 text-right text-slate-300">
-                              {Math.round(layer.opacity * 100)}%
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-[10px] text-slate-500 italic mt-0.5">
-                        {layer.unavailabilityReason || "Not available for this study."}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-          </div>
-
-          {/* ── Section 8: Anatomical 3D Clipping Planes ── */}
-          <div className="p-3 border-t border-[#1e293b] bg-[#0d121c] space-y-2.5 shrink-0">
-            <div className="flex items-center justify-between">
-              <span className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
-                <Scissors className="h-3 w-3 text-sky-400" />
-                3D Anatomical Clipping
-              </span>
-              <button
-                onClick={() => setClipping(DEFAULT_CLIPPING)}
-                className="text-[10px] text-slate-400 hover:underline"
-              >
-                Reset Planes
-              </button>
-            </div>
-
-            {/* Clipping Plane Controls: Axial, Coronal, Sagittal */}
-            {(
-              [
-                { axis: "axial", label: "Axial (Z)", color: "text-sky-400" },
-                { axis: "coronal", label: "Coronal (Y)", color: "text-amber-400" },
-                { axis: "sagittal", label: "Sagittal (X)", color: "text-purple-400" },
-              ] as const
-            ).map(({ axis, label, color }) => {
-              const state = clipping[axis];
-              return (
-                <div key={axis} className="flex flex-col gap-1 rounded bg-[#111827] p-2 border border-[#1e293b]">
-                  <div className="flex items-center justify-between">
-                    <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-medium text-slate-200">
-                      <input
-                        type="checkbox"
-                        checked={state.enabled}
-                        onChange={(e) =>
-                          setClipping({
-                            ...clipping,
-                            [axis]: { ...state, enabled: e.target.checked },
-                          })
-                        }
-                        className="rounded accent-sky-500"
-                      />
-                      <span className={color}>{label}</span>
-                    </label>
-
-                    <div className="flex items-center gap-1 text-[10px] font-mono">
-                      <button
-                        onClick={() =>
-                          setClipping({
-                            ...clipping,
-                            [axis]: { ...state, reverse: !state.reverse },
-                          })
-                        }
-                        className={cn(
-                          "rounded px-1.5 py-0.2 border transition-colors",
-                          state.reverse
-                            ? "border-sky-500 bg-sky-950 text-sky-300"
-                            : "border-[#1e293b] text-slate-400 hover:text-white"
-                        )}
-                        title="Reverse clipping direction"
-                      >
-                        {state.reverse ? "Rev" : "Fwd"}
-                      </button>
-                      <button
-                        onClick={() =>
-                          setClipping({
-                            ...clipping,
-                            [axis]: { ...state, syncWithSlice: !state.syncWithSlice },
-                          })
-                        }
-                        className={cn(
-                          "rounded px-1.5 py-0.2 border transition-colors",
-                          state.syncWithSlice
-                            ? "border-emerald-500 bg-emerald-950 text-emerald-300"
-                            : "border-[#1e293b] text-slate-500"
-                        )}
-                        title="Synchronize plane with 2D slice position"
-                      >
-                        Sync
-                      </button>
-                    </div>
-                  </div>
-
-                  {state.enabled && (
-                    <div className="flex items-center gap-2 mt-1">
-                      <input
-                        type="range"
-                        min={0}
-                        max={1}
-                        step={0.01}
-                        value={state.position}
-                        onChange={(e) =>
-                          setClipping({
-                            ...clipping,
-                            [axis]: { ...state, position: parseFloat(e.target.value), syncWithSlice: false },
-                          })
-                        }
-                        className="w-full h-1 accent-sky-500 cursor-pointer"
-                      />
-                      <span className="font-mono text-[10px] w-8 text-right text-slate-300">
-                        {Math.round(state.position * 100)}%
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </aside>
+        <AnatomicalLayersPanel
+          layers={layers}
+          onToggleLayer={handleToggleLayer}
+          onLayerOpacity={handleLayerOpacity}
+          onIsolateLayer={handleIsolateLayer}
+          onShowAll={handleShowAll}
+          onHideAll={handleHideAll}
+          onResetLayers={handleResetLayers}
+          selectedStructureId={selectedStructureId}
+          onSelectStructure={onSelectStructure}
+          clipping={clipping}
+          onClippingChange={setClipping}
+          onClose={onCloseLayerPanel}
+          className="w-80 shrink-0 h-full border-l border-[#1e293b] bg-[#0b0f19] z-20"
+        />
       )}
     </div>
   );

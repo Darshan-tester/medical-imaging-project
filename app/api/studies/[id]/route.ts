@@ -12,7 +12,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
 
   const manifest = readManifest();
-  const ds = manifest?.studies.find((s) => s.id === id);
+  const ds = manifest?.studies.find(
+    (s) => s.id === id || s.studyCode === id || s.sourceStudyId === id
+  );
   if (!ds) {
     return NextResponse.json({ error: "Study not found" }, { status: 404 });
   }

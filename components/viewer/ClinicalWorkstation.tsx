@@ -85,8 +85,16 @@ import { AuditTrail } from "@/lib/audit-trail";
 import { useAuthStore, useUIStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-import { detectGenuine4D } from "@/lib/anatomy-state";
+import {
+  detectGenuine4D,
+  AnatomicalLayer,
+  AnatomicalClipping,
+  DEFAULT_CLIPPING,
+  buildAnatomicalLayers,
+} from "@/lib/anatomy-state";
+import { AnatomicalLayersPanel } from "./AnatomicalLayersPanel";
 import { usePlaybackBuffer } from "@/lib/viewer/playback-buffer";
+import { getModalityPresets, ModalityWindowPreset, CLINICAL_PRESETS } from "./WindowLevelControls";
 
 const Patient3DAnatomyViewer = dynamic(
   () => import("./Patient3DAnatomyViewer").then((m) => m.Patient3DAnatomyViewer),
@@ -114,15 +122,13 @@ const Patient4DCineViewer = dynamic(
   }
 );
 
-// Window/Level presets
-export const WINDOW_PRESETS: { id: string; label: string; window: number; level: number }[] = [
-  { id: "lung", label: "Lung", window: 1500, level: -600 },
-  { id: "soft_tissue", label: "Soft Tissue", window: 400, level: 40 },
-  { id: "bone", label: "Bone", window: 2000, level: 450 },
-  { id: "brain", label: "Brain", window: 80, level: 40 },
-  { id: "abdomen", label: "Abdomen", window: 350, level: 40 },
-  { id: "default", label: "Default / Reset", window: 1, level: 1 },
-];
+// Window/Level presets mapped from clinical calibrated definitions
+export const WINDOW_PRESETS: { id: string; label: string; window: number; level: number }[] = CLINICAL_PRESETS.map((p) => ({
+  id: p.id,
+  label: p.label || p.name,
+  window: p.windowWidth,
+  level: p.windowCenter,
+}));
 
 export interface ClinicalWorkstationProps {
   study: Study;
@@ -153,7 +159,91 @@ export function ClinicalWorkstation({
   const [currentSlice, setCurrentSlice] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [cineFps, setCineFps] = useState(8);
-  const [layout, setLayout] = useState<ViewportLayout>("1x1");
+  const [layout, setLayout] = useState<ViewportLayout>(() => {
+    if (
+      study.series.some((s) => s.volumeAvailable || s.orientation === "Axial" || s.orientation === "Coronal") ||
+      study.modality === "CT"
+    ) {
+      return "2x2";
+    }
+    return "1x1";
+  });
+
+  // Dedicated Canonical Anatomical Layers & 3D Spatial Inspector State
+  const [anatomicalLayers, setAnatomicalLayers] = useState<AnatomicalLayer[]>(() =>
+    buildAnatomicalLayers(
+      study.id,
+      (study as any).manifest?.segments || [],
+      (study as any).manifest?.meshes || [],
+      study.modality,
+      Boolean((study as any).contrastEnhanced),
+      study.bodyRegion
+    )
+  );
+  const [anatomicalClipping, setAnatomicalClipping] = useState<AnatomicalClipping>(DEFAULT_CLIPPING);
+  const [showAnatomicalLayersDrawer, setShowAnatomicalLayersDrawer] = useState(false);
+
+  // Sync anatomical state whenever study changes, ensuring zero stale data leakage
+  useEffect(() => {
+    setAnatomicalLayers(
+      buildAnatomicalLayers(
+        study.id,
+        (study as any).manifest?.segments || [],
+        (study as any).manifest?.meshes || [],
+        study.modality,
+        Boolean((study as any).contrastEnhanced),
+        study.bodyRegion
+      )
+    );
+    setAnatomicalClipping(DEFAULT_CLIPPING);
+    setShowAnatomicalLayersDrawer(false);
+  }, [study]);
+
+  const handleToggleAnatomicalLayer = (layerId: string) => {
+    setAnatomicalLayers((prev) =>
+      prev.map((l) => (l.id === layerId ? { ...l, visible: !l.visible, isolated: false } : l))
+    );
+  };
+
+  const handleAnatomicalLayerOpacity = (layerId: string, opacity: number) => {
+    setAnatomicalLayers((prev) =>
+      prev.map((l) => (l.id === layerId ? { ...l, opacity } : l))
+    );
+  };
+
+  const handleIsolateAnatomicalLayer = (layerId: string) => {
+    setAnatomicalLayers((prev) => {
+      const target = prev.find((l) => l.id === layerId);
+      const wasIsolated = target?.isolated;
+      return prev.map((l) => {
+        if (l.id === layerId) {
+          return { ...l, isolated: !wasIsolated, visible: true };
+        }
+        return { ...l, isolated: false, visible: wasIsolated ? true : false };
+      });
+    });
+  };
+
+  const handleShowAllAnatomicalLayers = () => {
+    setAnatomicalLayers((prev) =>
+      prev.map((l) => ({ ...l, visible: l.availability === "available", isolated: false, opacity: 0.75 }))
+    );
+  };
+
+  const handleHideAllAnatomicalLayers = () => {
+    setAnatomicalLayers((prev) => prev.map((l) => ({ ...l, visible: false, isolated: false })));
+  };
+
+  const handleResetAnatomicalLayers = () => {
+    setAnatomicalLayers((prev) =>
+      prev.map((l) => ({
+        ...l,
+        visible: l.availability === "available" && l.id !== "skin_body",
+        isolated: false,
+        opacity: l.category === "BONE" ? 0.85 : 0.75,
+      }))
+    );
+  };
   const [viewerState, setViewerState] = useState<ViewerState>(DEFAULT_VIEWER_STATE);
   const [annotatedView, setAnnotatedView] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -254,6 +344,11 @@ export function ClinicalWorkstation({
   const isDatasetStudy = Boolean(study.datasetSource);
   const hasImageData = !isDatasetStudy || Boolean(activeImageUrl);
 
+  const modalityPresets = useMemo(
+    () => getModalityPresets(study.modality, study.bodyRegion),
+    [study.modality, study.bodyRegion]
+  );
+
   // Slice clamping on series switch
   useEffect(() => {
     const maxSlice = Math.max(0, (activeSeries.sliceCount || 1) - 1);
@@ -313,23 +408,37 @@ export function ClinicalWorkstation({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeMode, activeSeries.sliceCount, playbackBuffer.isReady, playbackBuffer.progressPercent, playing, pushToast]);
 
-  // Hydrate annotations from session store
+  // Hydrate annotations from session store & cleanly reset study-dependent states
   useEffect(() => {
     const saved = SessionAnnotationStore.load(study.id);
-    if (saved) {
-      if (saved.markers?.length) setMarkers(saved.markers);
-      if (saved.measurements?.length) setMeasurements(saved.measurements);
-      if (saved.annotations?.length) setAnnotations(saved.annotations);
-      if (saved.annotations3D?.length) setAnnotations3D(saved.annotations3D);
-    } else {
-      setMarkers([]);
-      setMeasurements([]);
-      setAnnotations([]);
-      setAnnotations3D([]);
-    }
+    setMarkers(saved?.markers ?? []);
+    setMeasurements(saved?.measurements ?? []);
+    setAnnotations(saved?.annotations ?? []);
+    setAnnotations3D(saved?.annotations3D ?? []);
     setUndoStack([]);
     setRedoStack([]);
-  }, [study.id]);
+    setCurrentSlice(0);
+    setPlaying(false);
+    setSelectedAnnotationId(null);
+    setSelectedFindingId(null);
+    setHoveredFindingId(null);
+
+    // Reset window/level to study-specific modality default
+    const defPreset =
+      getModalityPresets(study.modality, study.bodyRegion).find((p) => p.id === "default") ||
+      CLINICAL_PRESETS.find((p) => p.id === "default");
+    if (defPreset) {
+      setViewerState({
+        ...DEFAULT_VIEWER_STATE,
+        windowWidth: defPreset.windowWidth,
+        windowCenter: defPreset.windowCenter,
+        brightness: defPreset.brightness,
+        contrast: defPreset.contrast,
+      });
+    } else {
+      setViewerState(DEFAULT_VIEWER_STATE);
+    }
+  }, [study.id, study.modality, study.bodyRegion]);
 
   // Debounced auto-save
   useEffect(() => {
@@ -1009,21 +1118,29 @@ export function ClinicalWorkstation({
                     <span className="text-[11px] text-gray-400 hidden lg:inline">Preset:</span>
                     <select
                       className="rounded border border-white/20 bg-black/60 px-2 py-0.5 text-[11px] text-white focus:outline-none focus:ring-1 focus:ring-clinical"
-                      value={WINDOW_PRESETS.find((p) => p.window === viewerState.windowWidth && p.level === viewerState.windowCenter)?.id || "custom"}
+                      value={
+                        modalityPresets.find(
+                          (p) =>
+                            p.windowWidth === viewerState.windowWidth &&
+                            p.windowCenter === viewerState.windowCenter
+                        )?.id || "custom"
+                      }
                       onChange={(e) => {
-                        const target = WINDOW_PRESETS.find((p) => p.id === e.target.value);
+                        const target = modalityPresets.find((p) => p.id === e.target.value);
                         if (target) {
                           setViewerState((s) => ({
                             ...s,
-                            windowWidth: target.window,
-                            windowCenter: target.level,
+                            windowWidth: target.windowWidth,
+                            windowCenter: target.windowCenter,
+                            brightness: target.brightness,
+                            contrast: target.contrast,
                           }));
                         }
                       }}
                     >
-                      {WINDOW_PRESETS.map((p) => (
+                      {modalityPresets.map((p) => (
                         <option key={p.id} value={p.id} className="bg-neutral-900 text-white">
-                          {p.label}
+                          {p.name || p.label}
                         </option>
                       ))}
                       <option value="custom" disabled className="bg-neutral-900 text-white">
@@ -1163,6 +1280,10 @@ export function ClinicalWorkstation({
                     }}
                     organMeshes={organMeshes}
                     onOrganMeshesChange={setOrganMeshes}
+                    anatomicalLayers={anatomicalLayers}
+                    onAnatomicalLayersChange={setAnatomicalLayers}
+                    anatomicalClipping={anatomicalClipping}
+                    onAnatomicalClippingChange={setAnatomicalClipping}
                   />
                 ) : (
                   <ImageViewer
@@ -1406,37 +1527,89 @@ export function ClinicalWorkstation({
                 )}
               </div>
 
-              {/* Bottom Slice Navigation / Cine Controls */}
-              {activeSeries.sliceCount > 1 && (
-                <div className="shrink-0 border-t border-white/10 bg-[#0d121c] px-4 py-2 z-10">
-                  <SliceNavigator
-                    current={currentSlice}
-                    total={activeSeries.sliceCount}
-                    onChange={setCurrentSlice}
-                    orientation={activeSeries.orientation}
-                    playing={playing}
-                    onTogglePlay={() => {
-                      if (!playbackBuffer.isReady && !playing) {
-                        pushToast({
-                          title: "Buffering Images",
-                          description: `Buffering slices for smooth playback (${playbackBuffer.progressPercent}%). Please wait.`,
-                          tone: "default",
-                        });
-                        return;
-                      }
-                      setPlaying((p) => !p);
-                    }}
-                    ready={playbackBuffer.isReady}
-                    playbackState={playbackBuffer.playbackState}
-                    bufferedCount={playbackBuffer.bufferedCount}
-                    totalTarget={playbackBuffer.totalTarget}
-                    progressPercent={playbackBuffer.progressPercent}
-                    isBufferReady={playbackBuffer.isReady}
-                    failedFrames={playbackBuffer.failedFrames}
-                    onRetryBuffer={playbackBuffer.retry}
-                  />
+                            {/* Bottom Spatial Control Bar */}
+              <div className="shrink-0 border-t border-[#1e293b] bg-[#0b0f19] px-3.5 py-1.5 z-10 flex flex-wrap items-center justify-between gap-2 select-none shadow-lg">
+                {/* Left/Center: Slice Navigation / Cine Controls */}
+                <div className="flex-1 min-w-[280px]">
+                  {activeSeries.sliceCount > 1 ? (
+                    <SliceNavigator
+                      current={currentSlice}
+                      total={activeSeries.sliceCount}
+                      onChange={setCurrentSlice}
+                      orientation={activeSeries.orientation}
+                      playing={playing}
+                      onTogglePlay={() => {
+                        if (!playbackBuffer.isReady && !playing) {
+                          pushToast({
+                            title: "Buffering Images",
+                            description: `Buffering slices for smooth playback (${playbackBuffer.progressPercent}%). Please wait.`,
+                            tone: "default",
+                          });
+                          return;
+                        }
+                        setPlaying((p) => !p);
+                      }}
+                      ready={playbackBuffer.isReady}
+                      playbackState={playbackBuffer.playbackState}
+                      bufferedCount={playbackBuffer.bufferedCount}
+                      totalTarget={playbackBuffer.totalTarget}
+                      progressPercent={playbackBuffer.progressPercent}
+                      isBufferReady={playbackBuffer.isReady}
+                      failedFrames={playbackBuffer.failedFrames}
+                      onRetryBuffer={playbackBuffer.retry}
+                    />
+                  ) : (
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+                      <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-200">Single Frame</span>
+                      <span>Orientation: {activeSeries.orientation || "Standard"}</span>
+                    </div>
+                  )}
                 </div>
-              )}
+
+                {/* Right: Dedicated Anatomical Layers Button & Viewport Layout */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    id="anatomical-layers-toggle-btn"
+                    onClick={() => setShowAnatomicalLayersDrawer((prev) => !prev)}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-1.5 rounded-md border text-[11px] font-medium transition-all shadow-sm select-none",
+                      showAnatomicalLayersDrawer
+                        ? "bg-clinical/20 text-clinical border-clinical shadow-[0_0_12px_rgba(14,165,233,0.3)] ring-1 ring-clinical/50 font-semibold"
+                        : "bg-[#131b2e] border-slate-700 text-slate-200 hover:bg-[#1a243d] hover:border-clinical/40 hover:text-white"
+                    )}
+                    title="Toggle Anatomical Layers and 3D Spatial Inspector"
+                  >
+                    <Layers className="h-3.5 w-3.5 text-clinical" />
+                    <span>Anatomical Layers</span>
+                    <span className="ml-0.5 rounded-full bg-clinical/25 px-1.5 py-0.2 text-[10px] font-mono text-clinical">
+                      {anatomicalLayers.filter((l) => l.visible).length}/{anatomicalLayers.length}
+                    </span>
+                  </button>
+
+                  <div className="flex items-center rounded border border-slate-700 bg-black/40 p-0.5 text-[11px]">
+                    <button
+                      onClick={() => setLayout("1x1")}
+                      className={cn(
+                        "px-2 py-1 rounded font-medium transition-colors",
+                        layout === "1x1" ? "bg-clinical text-white font-semibold" : "text-slate-400 hover:text-white"
+                      )}
+                      title="Single Viewport (1x1)"
+                    >
+                      1x1
+                    </button>
+                    <button
+                      onClick={() => setLayout("2x2")}
+                      className={cn(
+                        "px-2 py-1 rounded font-medium transition-colors",
+                        layout === "2x2" ? "bg-clinical text-white font-semibold" : "text-slate-400 hover:text-white"
+                      )}
+                      title="Quad Multi-Plane Viewports (2x2)"
+                    >
+                      2x2
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1709,6 +1882,24 @@ export function ClinicalWorkstation({
           )}
         </main>
 
+        {/* Dedicated Docked Anatomical Layers Drawer */}
+        {showAnatomicalLayersDrawer && !isFullscreen && (
+          <aside className="w-80 shrink-0 h-full border-l border-border bg-panel shadow-2xl flex flex-col z-20 animate-in slide-in-from-right duration-200">
+            <AnatomicalLayersPanel
+              layers={anatomicalLayers}
+              onToggleLayer={handleToggleAnatomicalLayer}
+              onLayerOpacity={handleAnatomicalLayerOpacity}
+              onIsolateLayer={handleIsolateAnatomicalLayer}
+              onShowAll={handleShowAllAnatomicalLayers}
+              onHideAll={handleHideAllAnatomicalLayers}
+              onResetLayers={handleResetAnatomicalLayers}
+              clipping={anatomicalClipping}
+              onClippingChange={setAnatomicalClipping}
+              onClose={() => setShowAnatomicalLayersDrawer(false)}
+            />
+          </aside>
+        )}
+
         {/* 3. RIGHT CONTEXT PANEL: Contextual based on active workflow mode */}
         {!isFullscreen && activeMode !== "report" && activeMode !== "ai" && (
           rightPanelCollapsed ? (
@@ -1838,53 +2029,70 @@ export function ClinicalWorkstation({
 
                           <div className="space-y-2">
                             <div className="flex items-center justify-between text-[11px] text-ink-secondary">
-                              <span>Window Width</span>
-                              <span>{Math.round(viewerState.windowWidth)}</span>
+                              <span>Window Width (Contrast)</span>
+                              <span className="font-mono">{Math.round(viewerState.windowWidth)}</span>
                             </div>
                             <input
                               type="range"
-                              min="1"
+                              min="10"
                               max="2500"
                               value={viewerState.windowWidth}
-                              onChange={(e) =>
-                                setViewerState((s) => ({ ...s, windowWidth: Number(e.target.value) }))
-                              }
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                const approxContrast = Math.round(Math.max(40, Math.min(220, 100 + (400 - val) * 0.05)));
+                                setViewerState((s) => ({ ...s, windowWidth: val, contrast: approxContrast }));
+                              }}
                               className="w-full accent-clinical"
                             />
 
                             <div className="flex items-center justify-between text-[11px] text-ink-secondary pt-1">
-                              <span>Window Level (Center)</span>
-                              <span>{Math.round(viewerState.windowCenter)}</span>
+                              <span>Window Level (Brightness)</span>
+                              <span className="font-mono">{Math.round(viewerState.windowCenter)}</span>
                             </div>
                             <input
                               type="range"
-                              min="-1000"
+                              min="-700"
                               max="1000"
                               value={viewerState.windowCenter}
-                              onChange={(e) =>
-                                setViewerState((s) => ({ ...s, windowCenter: Number(e.target.value) }))
-                              }
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                const approxBrightness = Math.round(Math.max(40, Math.min(200, 100 - (val - 40) * 0.08)));
+                                setViewerState((s) => ({ ...s, windowCenter: val, brightness: approxBrightness }));
+                              }}
                               className="w-full accent-clinical"
                             />
                           </div>
 
-                          {/* Quick Preset Buttons */}
+                          {/* Quick Modality-Aware Preset Buttons */}
                           <div className="grid grid-cols-2 gap-1.5 pt-2">
-                            {WINDOW_PRESETS.map((p) => (
-                              <button
-                                key={p.id}
-                                onClick={() =>
-                                  setViewerState((s) => ({
-                                    ...s,
-                                    windowWidth: p.window,
-                                    windowCenter: p.level,
-                                  }))
-                                }
-                                className="rounded border border-border bg-base px-2 py-1 text-[11px] font-medium text-ink-primary hover:border-clinical/50 transition-colors"
-                              >
-                                {p.label}
-                              </button>
-                            ))}
+                            {modalityPresets.map((p) => {
+                              const isSelected =
+                                viewerState.windowWidth === p.windowWidth &&
+                                viewerState.windowCenter === p.windowCenter;
+                              return (
+                                <button
+                                  key={p.id}
+                                  onClick={() =>
+                                    setViewerState((s) => ({
+                                      ...s,
+                                      windowWidth: p.windowWidth,
+                                      windowCenter: p.windowCenter,
+                                      brightness: p.brightness,
+                                      contrast: p.contrast,
+                                    }))
+                                  }
+                                  className={cn(
+                                    "rounded border px-2 py-1 text-[11px] font-medium text-left transition-colors flex items-center justify-between",
+                                    isSelected
+                                      ? "border-clinical bg-clinical/20 text-clinical font-semibold"
+                                      : "border-border bg-base text-ink-primary hover:border-clinical/50"
+                                  )}
+                                >
+                                  <span className="truncate">{p.name}</span>
+                                  {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-clinical shrink-0" />}
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
 

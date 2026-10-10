@@ -133,38 +133,38 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
       </div>
 
       {/* Center: Clinical Workflow Segmented Mode Switcher */}
-      <nav aria-label="Clinical workflow modes" className="flex items-center gap-1.5 min-w-0 shrink">
+      <nav aria-label="Clinical workflow modes" className="flex items-center gap-1 sm:gap-1.5 min-w-0 shrink">
         <div className="flex items-center gap-0.5 md:gap-1 rounded-lg border border-[#1e293b] bg-[#111827] p-1 shadow-inner shrink-0">
           {/* 1. 2D / MPR (Primary Diagnostic Workspace) */}
           <button
             onClick={() => onSelectMode("images")}
             className={cn(
-              "flex items-center gap-1.5 rounded-md px-2.5 sm:px-3.5 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
+              "flex items-center gap-1.5 rounded-md px-2 sm:px-3 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
               activeMode === "images"
                 ? "bg-sky-600 text-white shadow-sm font-semibold shadow-sky-600/30 ring-1 ring-sky-400/40"
                 : "text-slate-400 hover:bg-[#1a2333] hover:text-slate-200"
             )}
             title="Multi-Planar Diagnostic Viewer (Axial, Coronal, Sagittal)"
           >
-            <Layers className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">2D / MPR</span>
-            <span className="sm:hidden">2D</span>
+            <Layers className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden xl:inline">2D / MPR</span>
+            <span className="xl:hidden">2D</span>
           </button>
 
           {/* 2. 3D Anatomy */}
           <button
             onClick={() => onSelectMode("3d")}
             className={cn(
-              "flex items-center gap-1.5 rounded-md px-2.5 sm:px-3.5 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
+              "flex items-center gap-1.5 rounded-md px-2 sm:px-3 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
               activeMode === "3d"
                 ? "bg-sky-600 text-white shadow-sm font-semibold shadow-sky-600/30 ring-1 ring-sky-400/40"
                 : "text-slate-400 hover:bg-[#1a2333] hover:text-slate-200"
             )}
             title="Patient-specific 3D anatomy reconstruction & segmented structures"
           >
-            <Box className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">3D Anatomy</span>
-            <span className="sm:hidden">3D</span>
+            <Box className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden xl:inline">3D Anatomy</span>
+            <span className="xl:hidden">3D</span>
           </button>
 
           {/* 3. 4D Cine (Only when genuine temporal cine data exists) */}
@@ -172,16 +172,16 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
             <button
               onClick={() => onSelectMode("4d")}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-2.5 sm:px-3.5 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
+                "flex items-center gap-1.5 rounded-md px-2 sm:px-3 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
                 activeMode === "4d"
                   ? "bg-sky-600 text-white shadow-sm font-semibold shadow-sky-600/30 ring-1 ring-sky-400/40"
                   : "text-slate-400 hover:bg-[#1a2333] hover:text-slate-200"
               )}
               title="Dynamic 4D cine acquisition sequence (temporal phases)"
             >
-              <Play className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">4D Cine</span>
-              <span className="sm:hidden">4D</span>
+              <Play className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden xl:inline">4D Cine</span>
+              <span className="xl:hidden">4D</span>
             </button>
           )}
 
@@ -189,16 +189,16 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
           <button
             onClick={() => onSelectMode("ai")}
             className={cn(
-              "relative flex items-center gap-1.5 rounded-md px-2.5 sm:px-3.5 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
+              "relative flex items-center gap-1.5 rounded-md px-2 sm:px-3 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
               activeMode === "ai"
                 ? "bg-sky-600 text-white shadow-sm font-semibold shadow-sky-600/30 ring-1 ring-sky-400/40"
                 : "text-slate-400 hover:bg-[#1a2333] hover:text-slate-200"
             )}
             title="Clinical AI: organ segmentation, volumetrics, and lesion detection"
           >
-            <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-            <span className="hidden md:inline">Clinical AI</span>
-            <span className="md:hidden">AI</span>
+            <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+            <span className="hidden xl:inline">Clinical AI</span>
+            <span className="xl:hidden">AI</span>
             {aiStatus === "running" && (
               <span className="flex h-1.5 w-1.5 rounded-full bg-amber-400 animate-ping" />
             )}
@@ -208,14 +208,14 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
           <button
             onClick={() => onSelectMode("report")}
             className={cn(
-              "relative flex items-center gap-1.5 rounded-md px-2.5 sm:px-3.5 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
+              "relative flex items-center gap-1.5 rounded-md px-2 sm:px-3 py-1.5 text-[11.5px] sm:text-[12px] font-medium transition-all shrink-0",
               activeMode === "report"
                 ? "bg-sky-600 text-white shadow-sm font-semibold shadow-sky-600/30 ring-1 ring-sky-400/40"
                 : "text-slate-400 hover:bg-[#1a2333] hover:text-slate-200"
             )}
             title="Diagnostic radiology report and formal sign-off"
           >
-            <FileText className="h-3.5 w-3.5" />
+            <FileText className="h-3.5 w-3.5 shrink-0" />
             <span>Report</span>
             {study.report.status === "approved" ? (
               <CheckCircle2 className="h-3 w-3 text-emerald-400 ml-0.5" />
@@ -241,9 +241,9 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
               )}
               title="2D Annotation Mode: draw precise ROIs, contours, calipers, and lesions on the current slice"
             >
-              <Crosshair className="h-3.5 w-3.5 text-sky-400" />
-              <span className="hidden lg:inline">2D Annotation</span>
-              <span className="lg:hidden">2D</span>
+              <Crosshair className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+              <span className="hidden xl:inline">2D Annotation</span>
+              <span className="xl:hidden">2D</span>
               {annotationCount > 0 && (
                 <span className="ml-0.5 rounded-full bg-sky-500/30 px-1.5 py-0.2 font-mono text-[9px] font-bold text-sky-200 border border-sky-400/40">
                   {annotationCount}
@@ -261,9 +261,9 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
               )}
               title="3D Annotation Mode: view 3D VOI spatial bounding highlights and anatomical regions"
             >
-              <Box className="h-3.5 w-3.5 text-amber-400" />
-              <span className="hidden lg:inline">3D Annotation</span>
-              <span className="lg:hidden">3D</span>
+              <Box className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+              <span className="hidden xl:inline">3D Annotation</span>
+              <span className="xl:hidden">3D</span>
             </button>
           </div>
         )}
