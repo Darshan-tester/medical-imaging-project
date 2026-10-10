@@ -209,6 +209,10 @@ export interface Patient3DAnatomyViewerProps {
   showLayerPanel?: boolean;
   onCloseLayerPanel?: () => void;
   compact?: boolean;
+  activePresetId?: string;
+  colorMapPreset?: ColorMap3D;
+  annotationDisplayMode?: "original" | "annotated";
+  onAnnotationDisplayModeChange?: (mode: "original" | "annotated") => void;
 }
 
 export function Patient3DAnatomyViewer({
@@ -244,6 +248,10 @@ export function Patient3DAnatomyViewer({
   showLayerPanel = false,
   onCloseLayerPanel,
   compact = false,
+  activePresetId,
+  colorMapPreset,
+  annotationDisplayMode: externalAnnotationMode,
+  onAnnotationDisplayModeChange,
 }: Patient3DAnatomyViewerProps) {
   const webglSupported = useWebGLSupport();
   const controlsRef = useRef<any>(null);
@@ -278,6 +286,14 @@ export function Patient3DAnatomyViewer({
     [onClippingChange]
   );
 
+  // 3D Annotation Display Mode: "original" (clean anatomy) vs "annotated" (with subtle spatial VOIs)
+  const [internalAnnotationMode, setInternalAnnotationMode] = useState<"original" | "annotated">("annotated");
+  const annotationDisplayMode = externalAnnotationMode ?? internalAnnotationMode;
+  const setAnnotationDisplayMode = (mode: "original" | "annotated") => {
+    setInternalAnnotationMode(mode);
+    onAnnotationDisplayModeChange?.(mode);
+  };
+
   // Viewport Settings
   const [showOriginalVolume, setShowOriginalVolume] = useState(true);
   const [showSegmentedMeshes, setShowSegmentedMeshes] = useState(true);
@@ -293,6 +309,35 @@ export function Patient3DAnatomyViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeCategoryTab, setActiveCategoryTab] = useState<AnatomicalCategory>("ORGANS");
   const [hoveredFindingMarker, setHoveredFindingMarker] = useState<InteractiveMarkerData | null>(null);
+
+  // Synchronize 3D colormap, density & threshold when clinical preset changes
+  useEffect(() => {
+    if (colorMapPreset) {
+      setColorMap(colorMapPreset);
+    } else if (activePresetId) {
+      if (activePresetId === "bone" || activePresetId === "bone_skull") {
+        setColorMap("bone");
+        setThreshold(0.22);
+        setDensity(0.85);
+      } else if (
+        activePresetId === "soft_tissue" ||
+        activePresetId === "mediastinum" ||
+        activePresetId === "abdomen"
+      ) {
+        setColorMap("mri-tissue");
+        setThreshold(0.08);
+        setDensity(0.7);
+      } else if (activePresetId === "brain" || activePresetId === "subdural") {
+        setColorMap("grayscale");
+        setThreshold(0.12);
+        setDensity(0.75);
+      } else if (activePresetId === "lung") {
+        setColorMap("grayscale");
+        setThreshold(0.05);
+        setDensity(0.5);
+      }
+    }
+  }, [colorMapPreset, activePresetId]);
 
   // Dynamically filter category tabs to only those with relevant anatomy in this study
   const availableCategoryTabs = useMemo(() => {
@@ -570,38 +615,35 @@ export function Patient3DAnatomyViewer({
       <div className="relative flex-1 h-full min-w-0 flex flex-col overflow-hidden bg-black">
         {/* Top Floating Diagnostic Toolbar */}
         <div className="absolute top-2 left-2 right-2 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-          {/* Left: Study Provenance Header */}
-          <div className="flex items-center gap-2 rounded-lg bg-[#0d121c]/90 px-3 py-1.5 backdrop-blur-md border border-[#1e293b] shadow pointer-events-auto">
-            <div className="flex h-5 w-5 items-center justify-center rounded bg-sky-500/20 text-sky-400">
-              <Box className="h-3 w-3" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-semibold text-white tracking-tight">{compact ? "3D Anatomy" : "Patient 3D Anatomy"}</span>
-                {!compact && (
+          {/* Left: Study Provenance Header (Hidden in compact 2x2 mode) */}
+          {!compact && (
+            <div className="flex items-center gap-2 rounded-xl bg-[#070d18]/85 px-3 py-1.5 backdrop-blur-xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)] pointer-events-auto">
+              <div className="flex h-5 w-5 items-center justify-center rounded-lg bg-sky-500/20 text-sky-400">
+                <Box className="h-3 w-3" />
+              </div>
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-white tracking-tight">Patient 3D Anatomy</span>
                   <span className="rounded bg-sky-950/80 border border-sky-500/50 px-1.5 py-0.2 text-[9px] font-mono text-sky-300 font-bold">
                     PATIENT-DERIVED
                   </span>
-                )}
-              </div>
-              {!compact && (
+                </div>
                 <span className="block text-[9.5px] font-mono text-slate-400">
                   {availableLayers.length} segmented structures · TotalSegmentator
                 </span>
-              )}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Right: Camera Presets & Rendering Presets */}
-          <div className="flex items-center gap-1.5 rounded-lg bg-[#0d121c]/90 p-1 backdrop-blur-md border border-[#1e293b] shadow pointer-events-auto">
+          {/* Right: Camera Presets, Original/Annotated Toggle & Viewport Actions */}
+          <div className="flex items-center gap-1.5 rounded-xl bg-[#070d18]/85 px-2 py-1 backdrop-blur-xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)] pointer-events-auto ml-auto">
             {/* Camera Presets */}
-            <div className="flex items-center border-r border-[#1e293b] pr-1 mr-0.5 gap-0.5">
+            <div className="flex items-center border-r border-white/10 pr-1 mr-0.5 gap-0.5">
               {(
                 [
                   { label: "AP", title: "Anterior (Frontal)", key: "anterior" },
                   { label: "PA", title: "Posterior (Back)", key: "posterior" },
-                  { label: "LAT-L", title: "Left Lateral", key: "lateral_left" },
-                  { label: "LAT-R", title: "Right Lateral", key: "lateral_right" },
+                  { label: "LAT", title: "Lateral", key: "lateral_left" },
                   { label: "SUP", title: "Superior (Cranial)", key: "superior" },
                 ] as const
               ).map((btn) => (
@@ -609,66 +651,100 @@ export function Patient3DAnatomyViewer({
                   key={btn.key}
                   onClick={() => setCameraPreset(btn.key)}
                   title={btn.title}
-                  className="rounded px-1.5 py-0.5 text-[9.5px] font-mono font-medium text-slate-300 hover:bg-sky-600/30 hover:text-sky-300 transition-colors"
+                  className="rounded px-1.5 py-0.5 text-[9.5px] font-mono font-medium text-slate-300 hover:bg-sky-500/20 hover:text-sky-300 transition-colors"
                 >
                   {btn.label}
                 </button>
               ))}
             </div>
 
-            {/* Colormap Preset */}
-            <select
-              value={colorMap}
-              onChange={(e) => setColorMap(e.target.value as ColorMap3D)}
-              className="rounded border border-[#1e293b] bg-[#111827] px-2 py-0.5 text-[10.5px] font-mono text-slate-200 outline-none cursor-pointer"
-            >
-              <option value="bone">Bone CT</option>
-              <option value="mri-tissue">Soft Tissue</option>
-              <option value="grayscale">Grayscale</option>
-              <option value="hotiron">Hot Iron</option>
-              <option value="pet">PET Thermal</option>
-            </select>
+            {/* 3D Annotation: Original vs Annotated Toggle */}
+            <div className="flex items-center rounded-lg bg-black/60 p-0.5 border border-white/10 text-[9.5px] font-mono">
+              <button
+                type="button"
+                onClick={() => setAnnotationDisplayMode("original")}
+                className={cn(
+                  "rounded px-2 py-0.5 transition-all font-medium",
+                  annotationDisplayMode === "original"
+                    ? "bg-sky-500 text-white shadow-sm font-semibold"
+                    : "text-slate-400 hover:text-slate-200"
+                )}
+                title="View clean original 3D volume without annotation overlays"
+              >
+                Original
+              </button>
+              <button
+                type="button"
+                onClick={() => setAnnotationDisplayMode("annotated")}
+                className={cn(
+                  "rounded px-2 py-0.5 transition-all font-medium",
+                  annotationDisplayMode === "annotated"
+                    ? "bg-amber-500/90 text-white shadow-sm font-semibold"
+                    : "text-slate-400 hover:text-slate-200"
+                )}
+                title="View 3D volume with spatial anatomical VOIs and annotations"
+              >
+                Annotated
+              </button>
+            </div>
 
-            {/* Quality Preset */}
-            <select
-              value={quality}
-              onChange={(e) => setQuality(e.target.value as Quality3D)}
-              className="rounded border border-[#1e293b] bg-[#111827] px-2 py-0.5 text-[10.5px] font-mono text-slate-200 outline-none cursor-pointer"
-            >
-              <option value="performance">256 Steps</option>
-              <option value="balanced">512 Steps</option>
-              <option value="high">768 Steps</option>
-              <option value="ultra">1024 Steps</option>
-            </select>
+            {!compact && (
+              <>
+                {/* Colormap Preset */}
+                <select
+                  value={colorMap}
+                  onChange={(e) => setColorMap(e.target.value as ColorMap3D)}
+                  className="rounded-lg border border-white/10 bg-[#090f1d] px-2 py-0.5 text-[10px] font-mono text-slate-200 outline-none cursor-pointer"
+                >
+                  <option value="bone">Bone CT</option>
+                  <option value="mri-tissue">Soft Tissue</option>
+                  <option value="grayscale">Grayscale</option>
+                  <option value="hotiron">Hot Iron</option>
+                  <option value="pet">PET Thermal</option>
+                </select>
 
-            {/* Wireframe Toggle */}
-            <button
-              onClick={() => setWireframe(!wireframe)}
-              className={cn(
-                "rounded p-1 text-xs transition-colors",
-                wireframe ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"
-              )}
-              title={wireframe ? "Solid Surfaces" : "Wireframe Mesh"}
-            >
-              <Layers className="h-3.5 w-3.5" />
-            </button>
+                {/* Quality Steps Preset */}
+                <select
+                  value={quality}
+                  onChange={(e) => setQuality(e.target.value as Quality3D)}
+                  className="rounded-lg border border-white/10 bg-[#090f1d] px-2 py-0.5 text-[10px] font-mono text-slate-200 outline-none cursor-pointer"
+                >
+                  <option value="performance">256 Steps</option>
+                  <option value="balanced">512 Steps</option>
+                  <option value="high">768 Steps</option>
+                  <option value="ultra">1024 Steps</option>
+                </select>
+
+                {/* Wireframe Toggle */}
+                <button
+                  onClick={() => setWireframe(!wireframe)}
+                  className={cn(
+                    "rounded-lg p-1 text-xs transition-colors",
+                    wireframe ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"
+                  )}
+                  title={wireframe ? "Solid Surfaces" : "Wireframe Mesh"}
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                </button>
+              </>
+            )}
 
             {/* Reset Camera */}
             <button
               onClick={resetCamera}
-              className="rounded p-1 text-slate-400 hover:text-white transition-colors"
+              className="rounded-lg p-1 text-slate-400 hover:text-white transition-colors"
               title="Reset Camera View"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
+              <RotateCcw className="h-3 w-3" />
             </button>
 
             {/* Fullscreen Toggle */}
             <button
               onClick={() => setIsFullscreen(!isFullscreen)}
-              className="rounded p-1 text-slate-400 hover:text-white transition-colors"
+              className="rounded-lg p-1 text-slate-400 hover:text-white transition-colors"
               title={isFullscreen ? "Exit Fullscreen" : "Fullscreen Viewport"}
             >
-              {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+              {isFullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
             </button>
           </div>
         </div>
@@ -765,16 +841,18 @@ export function Patient3DAnatomyViewer({
                   <CrosshairOrthogonalLayer crosshairPos={crosshairPos} volumeScale={volumeScale} />
                 )}
 
-                {/* 4. Interactive Finding & Annotation 3D Markers Layer */}
-                <InteractiveFindingMarkersLayer
-                  findings={findings}
-                  annotations={annotations}
-                  activeFindingId={activeFindingId}
-                  volumeDims={volume.dims}
-                  volumeScale={volumeScale}
-                  onSelectFindingMarker={onSelectFindingMarker}
-                  onHoverMarker={setHoveredFindingMarker}
-                />
+                {/* 4. Interactive Finding & Annotation 3D Markers Layer (Toggleable: Original vs Annotated) */}
+                {annotationDisplayMode === "annotated" && (
+                  <InteractiveFindingMarkersLayer
+                    findings={findings}
+                    annotations={annotations}
+                    activeFindingId={activeFindingId}
+                    volumeDims={volume.dims}
+                    volumeScale={volumeScale}
+                    onSelectFindingMarker={onSelectFindingMarker}
+                    onHoverMarker={setHoveredFindingMarker}
+                  />
+                )}
 
                 <OrbitControls
                   ref={controlsRef}
@@ -791,113 +869,117 @@ export function Patient3DAnatomyViewer({
           )}
         </div>
 
-        {/* ── Clinical 3D Annotation State & Contrast Legend ── */}
-        <div className="absolute bottom-13 left-2 z-20 flex flex-wrap items-center gap-3 rounded-lg bg-[#0d121c]/90 px-3 py-1.5 backdrop-blur-md border border-[#1e293b] text-[10px] font-mono text-slate-300 pointer-events-auto shadow-lg">
-          <span className="font-bold text-slate-400 uppercase tracking-wider text-[9px]">Legend:</span>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-slate-500 opacity-60" />
-            <span className="text-slate-400">Normal Anatomy</span>
+        {/* ── Clinical 3D Annotation State & Contrast Legend (Suppressed in compact 2x2 grid to preserve full viewport) ── */}
+        {!compact && (
+          <div className="absolute bottom-13 left-2 z-20 flex flex-wrap items-center gap-3 rounded-xl bg-[#070d18]/85 px-3 py-1.5 backdrop-blur-xl border border-white/10 text-[10px] font-mono text-slate-300 pointer-events-auto shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+            <span className="font-bold text-slate-400 uppercase tracking-wider text-[9px]">Legend:</span>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-slate-500 opacity-60" />
+              <span className="text-slate-400">Normal Anatomy</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-amber-400" />
+              <span className="text-amber-300">Anomaly VOI</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
+              <span className="text-cyan-300 font-semibold">Active Selection</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-rose-500" />
+              <span className="text-rose-400">Critical / STAT</span>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-amber-400" />
-            <span className="text-amber-300">Anomaly VOI</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
-            <span className="text-cyan-300 font-semibold">Active Selection</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-rose-500" />
-            <span className="text-rose-400">Critical / STAT</span>
-          </div>
-        </div>
+        )}
 
-        {/* ── Bottom HUD: Spatial Telemetry & Clipping Shortcuts ── */}
-        <div className="absolute bottom-2 left-2 right-2 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-          {/* Coordinates HUD */}
-          <div className="flex items-center gap-3 rounded-lg bg-[#0d121c]/90 px-3 py-1.5 backdrop-blur-md border border-[#1e293b] text-[10.5px] font-mono text-slate-400 pointer-events-auto">
-            <span>
-              X:{" "}
-              <strong className="text-white">
-                {crosshairPos ? (crosshairPos.x * 100).toFixed(1) : "50.0"}%
-              </strong>
-            </span>
-            <span>
-              Y:{" "}
-              <strong className="text-white">
-                {crosshairPos ? (crosshairPos.y * 100).toFixed(1) : "50.0"}%
-              </strong>
-            </span>
-            <span>
-              Z:{" "}
-              <strong className="text-white">
-                {crosshairPos ? (crosshairPos.z * 100).toFixed(1) : "50.0"}%
-              </strong>
-            </span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-500">Click 3D anatomy to reposition 2D slices</span>
-          </div>
-
-          {/* Hovered Finding Telemetry Pill (Fixed 2D screen space - Never balloons or distorts) */}
-          {hoveredFindingMarker && (
-            <div className="flex items-center gap-2 rounded-lg bg-[#0d121c]/95 px-3 py-1.5 backdrop-blur-md border border-sky-500/50 shadow-xl text-[11px] text-white pointer-events-auto animate-in fade-in duration-150">
-              <span
-                className="h-2 w-2 rounded-full shrink-0"
-                style={{
-                  backgroundColor:
-                    hoveredFindingMarker.color || (hoveredFindingMarker.isAi ? "#F59E0B" : "#00F0FF"),
-                }}
-              />
-              <span className="font-semibold text-white">{hoveredFindingMarker.label}</span>
-              <span className="rounded bg-sky-950 px-1.5 py-0.2 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
-                Slice {hoveredFindingMarker.sliceIndex + 1}
+        {/* ── Bottom HUD: Spatial Telemetry & Clipping Shortcuts (Suppressed in compact 2x2 grid to preserve full viewport) ── */}
+        {!compact && (
+          <div className="absolute bottom-2 left-2 right-2 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+            {/* Coordinates HUD */}
+            <div className="flex items-center gap-3 rounded-xl bg-[#070d18]/85 px-3 py-1.5 backdrop-blur-xl border border-white/10 text-[10.5px] font-mono text-slate-400 pointer-events-auto shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+              <span>
+                X:{" "}
+                <strong className="text-white">
+                  {crosshairPos ? (crosshairPos.x * 100).toFixed(1) : "50.0"}%
+                </strong>
               </span>
-              {hoveredFindingMarker.measureValue && (
-                <span className="font-mono text-slate-300 text-[10px]">
-                  {hoveredFindingMarker.measureValue}
+              <span>
+                Y:{" "}
+                <strong className="text-white">
+                  {crosshairPos ? (crosshairPos.y * 100).toFixed(1) : "50.0"}%
+                </strong>
+              </span>
+              <span>
+                Z:{" "}
+                <strong className="text-white">
+                  {crosshairPos ? (crosshairPos.z * 100).toFixed(1) : "50.0"}%
+                </strong>
+              </span>
+              <span className="text-slate-600">|</span>
+              <span className="text-slate-400">Click 3D anatomy to reposition 2D slices</span>
+            </div>
+
+            {/* Hovered Finding Telemetry Pill */}
+            {hoveredFindingMarker && (
+              <div className="flex items-center gap-2 rounded-xl bg-[#070d18]/95 px-3 py-1.5 backdrop-blur-xl border border-sky-400/50 shadow-2xl text-[11px] text-white pointer-events-auto animate-in fade-in duration-150">
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{
+                    backgroundColor:
+                      hoveredFindingMarker.color || (hoveredFindingMarker.isAi ? "#F59E0B" : "#00F0FF"),
+                  }}
+                />
+                <span className="font-semibold text-white">{hoveredFindingMarker.label}</span>
+                <span className="rounded bg-sky-950 px-1.5 py-0.2 font-mono text-[9px] text-sky-300 font-semibold border border-sky-500/30">
+                  Slice {hoveredFindingMarker.sliceIndex + 1}
                 </span>
-              )}
+                {hoveredFindingMarker.measureValue && (
+                  <span className="font-mono text-slate-300 text-[10px]">
+                    {hoveredFindingMarker.measureValue}
+                  </span>
+                )}
+                <button
+                  onClick={() => {
+                    onSelectFindingMarker?.(
+                      hoveredFindingMarker.id,
+                      hoveredFindingMarker.sliceIndex,
+                      hoveredFindingMarker.normX,
+                      hoveredFindingMarker.normY,
+                      hoveredFindingMarker.seriesId
+                    );
+                  }}
+                  className="ml-1.5 flex items-center gap-1 rounded bg-sky-600 hover:bg-sky-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm transition-colors cursor-pointer"
+                  title="View in 2D slice viewer"
+                >
+                  <Target className="h-3 w-3" />
+                  <span>View in 2D</span>
+                </button>
+              </div>
+            )}
+
+            {/* Quick Render Modes */}
+            <div className="flex items-center gap-1 rounded-xl bg-[#070d18]/85 p-1 backdrop-blur-xl border border-white/10 text-[11px] font-mono pointer-events-auto shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
               <button
-                onClick={() => {
-                  onSelectFindingMarker?.(
-                    hoveredFindingMarker.id,
-                    hoveredFindingMarker.sliceIndex,
-                    hoveredFindingMarker.normX,
-                    hoveredFindingMarker.normY,
-                    hoveredFindingMarker.seriesId
-                  );
-                }}
-                className="ml-1.5 flex items-center gap-1 rounded bg-sky-600 hover:bg-sky-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm transition-colors cursor-pointer"
-                title="View in 2D slice viewer"
+                onClick={() => setShowOriginalVolume(!showOriginalVolume)}
+                className={cn(
+                  "rounded-lg px-2 py-0.5 transition-colors",
+                  showOriginalVolume ? "bg-sky-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                )}
               >
-                <Target className="h-3 w-3" />
-                <span>View in 2D</span>
+                Voxel Field
+              </button>
+              <button
+                onClick={() => setShowSegmentedMeshes(!showSegmentedMeshes)}
+                className={cn(
+                  "rounded-lg px-2 py-0.5 transition-colors",
+                  showSegmentedMeshes ? "bg-sky-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                )}
+              >
+                AI Surfaces ({visibleMeshes.length})
               </button>
             </div>
-          )}
-
-          {/* Quick Render Modes */}
-          <div className="flex items-center gap-1 rounded-lg bg-[#0d121c]/90 p-1 backdrop-blur-md border border-[#1e293b] text-[11px] font-mono pointer-events-auto">
-            <button
-              onClick={() => setShowOriginalVolume(!showOriginalVolume)}
-              className={cn(
-                "rounded px-2 py-0.5 transition-colors",
-                showOriginalVolume ? "bg-sky-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-              )}
-            >
-              Voxel Field
-            </button>
-            <button
-              onClick={() => setShowSegmentedMeshes(!showSegmentedMeshes)}
-              className={cn(
-                "rounded px-2 py-0.5 transition-colors",
-                showSegmentedMeshes ? "bg-sky-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-              )}
-            >
-              AI Surfaces ({visibleMeshes.length})
-            </button>
           </div>
-        </div>
+        )}
       </div>
 
       {/* ── Right Clinical Layer Control Panel (Section 6 & 14) ── */}
@@ -1300,25 +1382,21 @@ function AnatomicalRegionHighlight({
 
   return (
     <group>
-      {/* 1. Localized 3D Volume of Interest (VOI) Ellipsoid — Real localized anomaly volume, not empty box */}
+      {/* 1. Subtle, non-obtrusive 3D Volume of Interest (VOI) Bounding Reticle (No giant yellow spheres/circles) */}
       <mesh
         position={[posX, posY, posZ]}
-        scale={[radiusX, radiusY, radiusZ]}
+        scale={[radiusX * 2, radiusY * 2, radiusZ * 2]}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
         onClick={handleClick}
       >
-        <sphereGeometry args={[1, 28, 20]} />
-        <meshStandardMaterial
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
           color={highlightColor}
-          emissive={highlightColor}
-          emissiveIntensity={isSelected ? 0.65 : hovered ? 0.4 : 0.18}
-          roughness={0.25}
-          metalness={0.1}
+          wireframe
           transparent
-          opacity={isSelected ? 0.75 : hovered ? 0.55 : 0.38}
+          opacity={isSelected ? 0.8 : hovered ? 0.6 : 0.25}
           depthWrite={false}
-          side={THREE.DoubleSide}
         />
       </mesh>
 
@@ -1341,7 +1419,7 @@ function AnatomicalRegionHighlight({
         </lineLoop>
       )}
 
-      {/* 3. Axial slice intersection focal reticle */}
+      {/* 3. Axial slice intersection focal reticle — subtle glowing micro-point, not large circle */}
       <group position={[posX, posY, posZ]}>
         <mesh
           rotation={[-Math.PI / 2, 0, 0]}
@@ -1349,28 +1427,11 @@ function AnatomicalRegionHighlight({
           onPointerOut={handlePointerOut}
           onClick={handleClick}
         >
-          <ringGeometry args={[Math.max(0.008, radiusX * 0.92), Math.max(0.011, radiusX * 1.06), 32]} />
+          <circleGeometry args={[0.0035, 16]} />
           <meshBasicMaterial
             color={highlightColor}
             transparent
-            opacity={isSelected ? 0.95 : hovered ? 0.85 : 0.6}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-          />
-        </mesh>
-
-        {/* Central focal reticle dot */}
-        <mesh
-          rotation={[-Math.PI / 2, 0, 0]}
-          onPointerOver={handlePointerOver}
-          onPointerOut={handlePointerOut}
-          onClick={handleClick}
-        >
-          <circleGeometry args={[0.003, 16]} />
-          <meshBasicMaterial
-            color={highlightColor}
-            transparent
-            opacity={isSelected ? 0.95 : 0.75}
+            opacity={isSelected ? 0.95 : 0.8}
             side={THREE.DoubleSide}
             depthWrite={false}
           />
@@ -1714,14 +1775,16 @@ const VOLUME_FRAGMENT_SHADER = /* glsl */ `
 
     bounds.x = max(bounds.x, 0.0);
     float dt = (bounds.y - bounds.x) / float(uSteps);
-    vec3 p = vOrigin + bounds.x * rayDir;
+    vec3 p = vOrigin + (bounds.x + dt * 0.5) * rayDir;
 
     vec4 accum = vec4(0.0);
     float maxVal = 0.0;
 
     for (int i = 0; i < uSteps; i++) {
-      vec3 uv = p + 0.5;
-      if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) break;
+      float distTraveled = bounds.x + (float(i) + 0.5) * dt;
+      if (distTraveled > bounds.y) break;
+
+      vec3 uv = clamp(p + 0.5, 0.0, 1.0);
 
       float val = texture(uVolume, uv).r;
       val = clamp((val - 0.5) * uContrast + 0.5 + (uBrightness - 1.0), 0.0, 1.0);

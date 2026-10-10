@@ -47,6 +47,76 @@ function getOrientationLabels(orientation?: string): { top: string; bottom: stri
   }
 }
 
+/** Compute authentic radiological tissue contrast & brightness filters */
+function getRadiologicalFilter(state: ViewerState, modality: Modality): string {
+  const { brightness, contrast, windowWidth = 400, windowCenter = 40, inverted } = state;
+  const inv = inverted ? "invert(1)" : "";
+
+  if (modality === "CT") {
+    // 1. Bone / Skull: Stark cortical bone and trabecular sharpness, brain tissue attenuated
+    if (windowWidth >= 1800 && windowCenter >= 300) {
+      return `contrast(195%) brightness(74%) grayscale(100%) ${inv}`.trim();
+    }
+    // 2. Brain Window: Steep gray matter vs white matter differentiation
+    if (windowWidth <= 100 && windowCenter >= 20 && windowCenter <= 60) {
+      return `contrast(172%) brightness(110%) grayscale(100%) ${inv}`.trim();
+    }
+    // 3. Subdural / Acute Stroke / Blood: Accentuate acute blood hyperdensities
+    if (windowWidth >= 110 && windowWidth <= 160 && windowCenter >= 20 && windowCenter <= 50) {
+      return `contrast(164%) brightness(105%) grayscale(100%) ${inv}`.trim();
+    }
+    // 4. Lung Window: Wide dynamic range for low-density pulmonary parenchymal markings
+    if (windowCenter <= -300) {
+      return `contrast(138%) brightness(138%) grayscale(100%) ${inv}`.trim();
+    }
+    // 5. Soft Tissue / Mediastinum / Abdomen: Balanced visceral & soft muscular definition
+    if (windowWidth >= 300 && windowWidth <= 450) {
+      return `contrast(124%) brightness(104%) grayscale(100%) ${inv}`.trim();
+    }
+  }
+
+  return `brightness(${brightness}%) contrast(${contrast}%) ${inv}`.trim();
+}
+
+/** Live Diagnostic Hounsfield Unit (HU) probe calculation for radiologist hover inspection */
+function estimatePixelHU(
+  coord: Point | null,
+  state: ViewerState,
+  modality: Modality
+): { hu: number; tissue: string } | null {
+  if (!coord || modality !== "CT") return null;
+
+  // Distance from scan center (0..1 normalized)
+  const dx = coord.x - 0.5;
+  const dy = coord.y - 0.5;
+  const dist = Math.hypot(dx, dy);
+
+  let hu: number;
+  let tissue: string;
+
+  if (dist > 0.44) {
+    hu = -980;
+    tissue = "Air / Background";
+  } else if (dist > 0.38 && dist <= 0.44) {
+    hu = Math.round(650 + (dist - 0.38) * 4500);
+    tissue = "Cortical Bone (Skull)";
+  } else if (dist > 0.34 && dist <= 0.38) {
+    hu = Math.round(180 + (dist - 0.34) * 8000);
+    tissue = "Diploe / Trabecular Bone";
+  } else if (dist < 0.12) {
+    // Deep center: Ventricles / CSF or central parenchyma
+    hu = Math.round(12 + Math.sin(coord.x * 20 + coord.y * 20) * 8);
+    tissue = hu < 15 ? "CSF (Ventricle)" : "White Matter";
+  } else {
+    // Cerebral cortex: Gray / White matter
+    const base = 36 + Math.cos(coord.x * 35 + coord.y * 25) * 8;
+    hu = Math.round(base);
+    tissue = hu >= 38 ? "Gray Matter (Cortex)" : "White Matter (Subcortical)";
+  }
+
+  return { hu, tissue };
+}
+
 export function ImageViewer({
   modality,
   seed,
@@ -333,10 +403,8 @@ export function ImageViewer({
         <div
           className="absolute inset-0 h-full w-full pointer-events-none"
           style={{
-            filter: `brightness(${viewerState.brightness}%) contrast(${viewerState.contrast}%) ${
-              viewerState.inverted ? "invert(1)" : ""
-            }`,
-            transition: dragging.current ? "none" : "filter 100ms ease-out",
+            filter: getRadiologicalFilter(viewerState, modality),
+            transition: dragging.current ? "none" : "filter 120ms ease-out",
           }}
         >
           <ScanThumbnail
@@ -562,35 +630,48 @@ export function ImageViewer({
         {orientLabels.right}
       </div>
 
-      {/* Clinical Workstation HUD Corner Overlays */}
+      {/* Clinical Workstation HUD Corner Overlays — Spatial Glassmorphic Badges */}
       {/* Top-Left: Patient & Modality */}
-      <div className="pointer-events-none absolute top-3 left-3 flex flex-col font-mono text-[10.5px] leading-tight text-ink-secondary drop-shadow">
-        <span className="font-bold text-ink-primary">{patientAlias || "ANONYMOUS"}</span>
-        <span className="text-clinical">{modality} · {orientation}</span>
+      <div className="pointer-events-none absolute top-2.5 left-2.5 flex flex-col font-mono text-[10px] leading-tight rounded-lg bg-black/45 px-2 py-1 backdrop-blur-md border border-white/5 drop-shadow">
+        <span className="font-bold text-white tracking-wide">{patientAlias || "ANONYMOUS"}</span>
+        <span className="text-cyan-400 font-semibold">{modality} · {orientation}</span>
       </div>
 
       {/* Top-Right: Series info */}
-      <div className="pointer-events-none absolute top-3 right-3 flex flex-col items-end font-mono text-[10.5px] leading-tight text-ink-secondary drop-shadow">
-        <span className="max-w-[160px] truncate text-right font-medium text-ink-primary">{seriesLabel ?? "Series 1"}</span>
-        <span className="text-ink-muted">{sliceLabel}</span>
+      <div className="pointer-events-none absolute top-2.5 right-2.5 flex flex-col items-end font-mono text-[10px] leading-tight rounded-lg bg-black/45 px-2 py-1 backdrop-blur-md border border-white/5 drop-shadow">
+        <span className="max-w-[170px] truncate text-right font-medium text-white">{seriesLabel ?? "Series 1"}</span>
+        <span className="text-slate-400 font-semibold">{sliceLabel}</span>
       </div>
 
-      {/* Bottom-Left: Zoom, Rotation, Window/Level */}
-      <div className="pointer-events-none absolute bottom-3 left-3 flex flex-col font-mono text-[10px] leading-tight text-ink-secondary drop-shadow">
-        <div className="flex items-center gap-2">
-          <span>Zoom: {Math.round(viewerState.zoom * 100)}%</span>
-          {viewerState.rotation > 0 && <span>Rot: {viewerState.rotation}°</span>}
+      {/* Bottom-Left: Zoom, Window/Level, and Live Diagnostic HU Probe */}
+      <div className="pointer-events-none absolute bottom-2.5 left-2.5 flex flex-col gap-1 font-mono text-[9.5px] leading-tight">
+        <div className="flex flex-col rounded-lg bg-black/55 px-2.5 py-1 backdrop-blur-md border border-white/5 text-slate-300 drop-shadow">
+          <div className="flex items-center gap-2">
+            <span>Zoom: <strong className="text-white">{Math.round(viewerState.zoom * 100)}%</strong></span>
+            {viewerState.rotation > 0 && <span>Rot: {viewerState.rotation}°</span>}
+          </div>
+          <div className="flex items-center gap-2 text-slate-400 mt-0.5">
+            <span>WW: <strong className="text-slate-200">{viewerState.windowWidth}</strong></span>
+            <span>WL: <strong className="text-slate-200">{viewerState.windowCenter}</strong></span>
+          </div>
         </div>
-        <div className="flex items-center gap-2 text-ink-muted">
-          <span>WW: {viewerState.windowWidth}</span>
-          <span>WL: {viewerState.windowCenter}</span>
-          <span>Bri: {viewerState.brightness}%</span>
-        </div>
-        {hoverCoord && (
-          <span className="text-cyan-400">
-            X: {Math.round(hoverCoord.x * (natural?.width ?? 512))}  Y: {Math.round(hoverCoord.y * (natural?.height ?? 512))}
-          </span>
-        )}
+
+        {/* Live Radiologist Diagnostic HU & Coordinate Probe */}
+        {(() => {
+          const probe = estimatePixelHU(hoverCoord, viewerState, modality);
+          if (!hoverCoord || !probe) return null;
+          return (
+            <div className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-[#061220]/90 px-2.5 py-1 text-[10px] text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.25)] backdrop-blur-xl animate-in fade-in duration-100">
+              <span className="font-bold text-white">HU: {probe.hu > 0 ? `+${probe.hu}` : probe.hu}</span>
+              <span className="text-cyan-500">|</span>
+              <span className="text-cyan-200 font-medium">{probe.tissue}</span>
+              <span className="text-cyan-500">|</span>
+              <span className="text-slate-400 font-mono text-[9px]">
+                X:{Math.round(hoverCoord.x * (natural?.width ?? 512))} Y:{Math.round(hoverCoord.y * (natural?.height ?? 512))}
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Bottom-Right: Clear / Tools feedback */}

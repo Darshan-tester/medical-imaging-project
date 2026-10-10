@@ -290,6 +290,7 @@ export function ClinicalWorkstation({
 
   // Dedicated 2D & 3D Annotation Mode State
   const [annotationMode, setAnnotationMode] = useState<"2d" | "3d" | null>(null);
+  const [annotation3DDisplayMode, setAnnotation3DDisplayMode] = useState<"original" | "annotated">("annotated");
   const [activeFindingType, setActiveFindingType] = useState<FindingType>("Lesion");
   const [activeCustomLabel, setActiveCustomLabel] = useState<string>("");
   const [emphasizedAnnotationId, setEmphasizedAnnotationId] = useState<string | null>(null);
@@ -866,6 +867,8 @@ export function ClinicalWorkstation({
         onToggleFullscreen={handleToggleFullscreen}
         aiStatus={study.status === "processing" ? "processing" : "complete"}
         hasUnsavedReport={false}
+        annotation3DDisplayMode={annotation3DDisplayMode}
+        onToggleAnnotation3DDisplayMode={setAnnotation3DDisplayMode}
       />
 
       {/* 2. MAIN WORKSPACE: Left Series Sidebar + Center Viewport + Right Context Panel */}
@@ -908,7 +911,7 @@ export function ClinicalWorkstation({
           {activeMode === "images" && (
             <div className="flex-1 flex flex-col min-h-0 relative">
               {/* Diagnostic Toolbar */}
-              <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-[#0d121c] px-3 py-1.5 text-[12px] text-gray-300 shrink-0 z-10">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-[#060c18]/85 backdrop-blur-xl px-3 py-1.5 text-[12px] text-gray-300 shrink-0 z-10 shadow-sm">
                 {/* Left tools: Layout & Primary Tools */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {/* Layout Selector */}
@@ -1130,6 +1133,7 @@ export function ClinicalWorkstation({
                         if (target) {
                           setViewerState((s) => ({
                             ...s,
+                            activePresetId: target.id,
                             windowWidth: target.windowWidth,
                             windowCenter: target.windowCenter,
                             brightness: target.brightness,
@@ -1677,6 +1681,9 @@ export function ClinicalWorkstation({
                     onOrganMeshesChange={setOrganMeshes}
                     onSelectOrgan={setActiveOrganId}
                     activeOrganId={activeOrganId}
+                    annotationDisplayMode={annotation3DDisplayMode}
+                    onAnnotationDisplayModeChange={setAnnotation3DDisplayMode}
+                    activePresetId={viewerState.activePresetId}
                   />
                 </ViewerErrorBoundary>
 
@@ -1916,12 +1923,12 @@ export function ClinicalWorkstation({
               </div>
             </div>
           ) : (
-            <aside className="w-[320px] shrink-0 h-full border-l border-border bg-panel overflow-hidden flex flex-col relative">
-              <div className="flex items-center justify-between border-b border-border px-3 py-1.5 bg-panel-alt">
-                <span className="text-[11px] font-semibold text-ink-primary tracking-tight">Clinical Inspector</span>
+            <aside className="w-[320px] shrink-0 h-full border-l border-white/10 bg-[#060b14]/90 backdrop-blur-xl overflow-hidden flex flex-col relative shadow-2xl">
+              <div className="flex items-center justify-between border-b border-white/10 px-3 py-1.5 bg-[#0a1120]/80 backdrop-blur-md">
+                <span className="text-[11px] font-semibold text-slate-200 tracking-tight">Clinical Inspector</span>
                 <button
                   onClick={() => setRightPanelCollapsed(true)}
-                  className="rounded p-1 text-ink-muted hover:text-ink-primary hover:bg-base transition-colors"
+                  className="rounded p-1 text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
                   title="Collapse Inspector"
                 >
                   <ChevronRight className="h-3.5 w-3.5" />
@@ -1931,7 +1938,7 @@ export function ClinicalWorkstation({
             {activeMode === "images" && (
               <div className="flex-1 flex flex-col min-h-0">
                 {/* Subtabs: Tools & W/L | Findings | Annotations */}
-                <div className="flex border-b border-border bg-base text-[12px] shrink-0">
+                <div className="flex border-b border-white/10 bg-[#080d19]/80 backdrop-blur-md text-[12px] shrink-0">
                   <button
                     onClick={() => setRightSubTab("tools")}
                     className={cn(

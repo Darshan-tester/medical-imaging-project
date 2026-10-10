@@ -63,6 +63,7 @@ export interface ViewerState {
   panY: number;
   crosshairSync: boolean;
   sharpness: boolean;
+  activePresetId?: string;
 }
 
 export const DEFAULT_VIEWER_STATE: ViewerState = {
@@ -78,6 +79,7 @@ export const DEFAULT_VIEWER_STATE: ViewerState = {
   panY: 0,
   crosshairSync: true,
   sharpness: true,
+  activePresetId: "soft_tissue",
 };
 
 function ToolButton({

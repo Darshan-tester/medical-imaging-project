@@ -152,36 +152,36 @@ export function SliceNavigator({
         </button>
       )}
 
-      {/*
-       * Playback speed, next to the transport control it modifies rather than off
-       * in the toolbar.
-       */}
-      <Tooltip label="Cine playback speed">
-        <div
-          className="hidden shrink-0 items-center gap-px rounded-md border border-border-strong bg-panel p-px sm:flex"
-          role="group"
-          aria-label="Cine playback speed"
-        >
-          {SPEEDS.map((s) => (
-            <button
-              key={s}
-              onClick={() => setSpeed(s)}
-              aria-pressed={s === speed}
-              aria-label={`${s}× playback speed`}
-              className={cn(
-                "rounded-[5px] px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-clinical",
-                s === speed
-                  ? "bg-clinical/15 text-clinical"
-                  : "text-ink-muted hover:bg-[rgb(var(--overlay-hover)/0.07)] hover:text-ink-primary"
-              )}
+      {/* Cine playback speed — only visible during active cine playback to prevent radiologist interface clutter */}
+      {playing && (
+        <>
+          <Tooltip label="Cine playback speed">
+            <div
+              className="hidden shrink-0 items-center gap-px rounded-md border border-border-strong bg-panel p-px sm:flex"
+              role="group"
+              aria-label="Cine playback speed"
             >
-              {s}x
-            </button>
-          ))}
-        </div>
-      </Tooltip>
-
-      <div className="mx-0.5 h-5 w-px shrink-0 bg-border-strong" />
+              {SPEEDS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSpeed(s)}
+                  aria-pressed={s === speed}
+                  aria-label={`${s}× playback speed`}
+                  className={cn(
+                    "rounded-[5px] px-1.5 py-0.5 font-mono text-[10.5px] tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-clinical",
+                    s === speed
+                      ? "bg-clinical/15 text-clinical"
+                      : "text-ink-muted hover:bg-[rgb(var(--overlay-hover)/0.07)] hover:text-ink-primary"
+                  )}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+          </Tooltip>
+          <div className="mx-0.5 h-5 w-px shrink-0 bg-border-strong" />
+        </>
+      )}
 
       <Tooltip label="First slice">
         <button

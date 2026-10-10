@@ -45,6 +45,8 @@ interface ClinicalTopBarProps {
   onToggleFullscreen?: () => void;
   aiStatus?: string;
   hasUnsavedReport?: boolean;
+  annotation3DDisplayMode?: "original" | "annotated";
+  onToggleAnnotation3DDisplayMode?: (mode: "original" | "annotated") => void;
 }
 
 export const ClinicalTopBar = memo(function ClinicalTopBar({
@@ -63,6 +65,8 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
   onToggleFullscreen,
   aiStatus = "complete",
   hasUnsavedReport = false,
+  annotation3DDisplayMode = "annotated",
+  onToggleAnnotation3DDisplayMode,
 }: ClinicalTopBarProps) {
   const router = useRouter();
   const [showWorkflowStatus, setShowWorkflowStatus] = useState(false);
@@ -89,7 +93,7 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
     .join(" · ");
 
   return (
-    <header className="flex h-13 shrink-0 items-center justify-between border-b border-[#1e293b] bg-[#0b0f19] px-3.5 select-none z-30 shadow-md">
+    <header className="flex h-13 shrink-0 items-center justify-between border-b border-white/10 bg-[#060b14]/85 backdrop-blur-xl px-3.5 select-none z-30 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
       {/* Left: Worklist Navigation & Patient Identity */}
       <div className="flex items-center gap-3 min-w-0 shrink">
         <Tooltip label="Return to Worklist (Esc)">
@@ -265,6 +269,38 @@ export const ClinicalTopBar = memo(function ClinicalTopBar({
               <span className="hidden xl:inline">3D Annotation</span>
               <span className="xl:hidden">3D</span>
             </button>
+
+            {/* Original vs Annotated toggle for 3D annotation */}
+            {annotationMode === "3d" && activeMode === "3d" && onToggleAnnotation3DDisplayMode && (
+              <div className="flex items-center rounded bg-black/60 p-0.5 border border-white/10 text-[9.5px] font-mono ml-1">
+                <button
+                  type="button"
+                  onClick={() => onToggleAnnotation3DDisplayMode("original")}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 transition-all font-medium",
+                    annotation3DDisplayMode === "original"
+                      ? "bg-sky-500 text-white font-semibold"
+                      : "text-slate-400 hover:text-slate-200"
+                  )}
+                  title="View original 3D volume without annotations"
+                >
+                  Original
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToggleAnnotation3DDisplayMode("annotated")}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 transition-all font-medium",
+                    annotation3DDisplayMode === "annotated"
+                      ? "bg-amber-500 text-white font-semibold"
+                      : "text-slate-400 hover:text-slate-200"
+                  )}
+                  title="View annotated 3D volume with spatial VOIs"
+                >
+                  Annotated
+                </button>
+              </div>
+            )}
           </div>
         )}
       </nav>

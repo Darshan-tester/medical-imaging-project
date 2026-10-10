@@ -12,16 +12,15 @@ export interface ModalityWindowPreset extends WindowLevelPreset {
 }
 
 export const CLINICAL_PRESETS: ModalityWindowPreset[] = [
-  // CT Presets
-  { id: "ct-lung", name: "Lung", label: "Lung (CT)", description: "Parenchymal air-tissue contrast", windowWidth: 1500, windowCenter: -600, brightness: 125, contrast: 130, category: "CT" },
-  { id: "ct-mediastinum", name: "Mediastinum", label: "Mediastinum (CT)", description: "Visceral margins & lymph nodes", windowWidth: 350, windowCenter: 40, brightness: 100, contrast: 115, category: "CT" },
-  { id: "ct-bone", name: "Bone", label: "Bone (CT)", description: "Cortical definition & trabeculae", windowWidth: 2000, windowCenter: 450, brightness: 90, contrast: 130, category: "CT" },
-  { id: "ct-soft-tissue", name: "Soft Tissue", label: "Soft Tissue (CT)", description: "Musculature and visceral density", windowWidth: 400, windowCenter: 40, brightness: 100, contrast: 110, category: "CT" },
-  { id: "ct-brain", name: "Brain", label: "Brain (CT)", description: "Gray/white matter differentiation", windowWidth: 80, windowCenter: 40, brightness: 110, contrast: 140, category: "CT" },
-  { id: "ct-subdural", name: "Subdural / Stroke", label: "Subdural / Stroke (CT)", description: "Acute hemorrhage & ischemia", windowWidth: 130, windowCenter: 35, brightness: 105, contrast: 145, category: "CT" },
-  { id: "ct-skull-bone", name: "Bone / Skull", label: "Bone / Skull (CT)", description: "Calvarial & skull base bone", windowWidth: 2000, windowCenter: 450, brightness: 90, contrast: 130, category: "CT" },
-  { id: "ct-abdomen", name: "Abdomen", label: "Abdomen (CT)", description: "Peritoneal organs & viscera", windowWidth: 350, windowCenter: 40, brightness: 100, contrast: 115, category: "CT" },
-  { id: "ct-liver", name: "Liver", label: "Liver (CT)", description: "Hepatic parenchyma & focal lesions", windowWidth: 150, windowCenter: 30, brightness: 105, contrast: 135, category: "CT" },
+  // CT Presets — authentic radiological tissue windows
+  { id: "ct-soft-tissue", name: "Soft Tissue", label: "Soft Tissue (CT)", description: "Musculature, organs & visceral density", windowWidth: 400, windowCenter: 40, brightness: 104, contrast: 120, category: "CT" },
+  { id: "ct-brain", name: "Brain", label: "Brain (CT)", description: "Gray/white matter differentiation", windowWidth: 80, windowCenter: 40, brightness: 112, contrast: 168, category: "CT" },
+  { id: "ct-bone", name: "Bone / Skull", label: "Bone / Skull (CT)", description: "Cortical definition & trabecular bone", windowWidth: 2000, windowCenter: 450, brightness: 75, contrast: 188, category: "CT" },
+  { id: "ct-subdural", name: "Subdural / Stroke", label: "Subdural / Stroke (CT)", description: "Acute hemorrhage & ischemia differentiation", windowWidth: 130, windowCenter: 35, brightness: 106, contrast: 162, category: "CT" },
+  { id: "ct-lung", name: "Lung", label: "Lung (CT)", description: "Parenchymal air-tissue & pulmonary markings", windowWidth: 1500, windowCenter: -600, brightness: 138, contrast: 136, category: "CT" },
+  { id: "ct-mediastinum", name: "Mediastinum", label: "Mediastinum (CT)", description: "Visceral margins & lymph node stations", windowWidth: 350, windowCenter: 40, brightness: 102, contrast: 125, category: "CT" },
+  { id: "ct-abdomen", name: "Abdomen", label: "Abdomen (CT)", description: "Peritoneal organs & viscera", windowWidth: 350, windowCenter: 40, brightness: 102, contrast: 125, category: "CT" },
+  { id: "ct-liver", name: "Liver", label: "Liver (CT)", description: "Hepatic parenchyma & focal lesions", windowWidth: 150, windowCenter: 30, brightness: 108, contrast: 152, category: "CT" },
 
   // MRI Presets
   { id: "mri-t1", name: "T1 Anatomical", label: "T1 Anatomical (MRI)", description: "Fat bright, CSF dark anatomical", windowWidth: 500, windowCenter: 250, brightness: 105, contrast: 115, category: "MRI" },
@@ -52,7 +51,6 @@ export const CLINICAL_PRESETS: ModalityWindowPreset[] = [
 export const WINDOW_LEVEL_PRESETS = CLINICAL_PRESETS;
 
 export function getModalityPresets(modality?: Modality, bodyRegion?: string): ModalityWindowPreset[] {
-  const normRegion = (bodyRegion || "").toUpperCase();
   const defaultPreset = CLINICAL_PRESETS.find((p) => p.id === "default")!;
 
   if (modality === "MRI") {
@@ -94,45 +92,25 @@ export function getModalityPresets(modality?: Modality, bodyRegion?: string): Mo
   }
 
   if (modality === "CT") {
-    if (normRegion.includes("CHEST") || normRegion.includes("THORAX") || normRegion.includes("LUNG")) {
-      return [
-        CLINICAL_PRESETS.find((p) => p.id === "ct-lung")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-mediastinum")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
-        defaultPreset,
-      ];
-    }
-    if (normRegion.includes("BRAIN") || normRegion.includes("HEAD") || normRegion.includes("NECK")) {
-      return [
-        CLINICAL_PRESETS.find((p) => p.id === "ct-brain")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-subdural")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-skull-bone")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
-        defaultPreset,
-      ];
-    }
-    if (normRegion.includes("ABDOMEN") || normRegion.includes("PELVIS") || normRegion.includes("LIVER")) {
-      return [
-        CLINICAL_PRESETS.find((p) => p.id === "ct-abdomen")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-liver")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
-        CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
-        defaultPreset,
-      ];
-    }
-    // Generic CT
+    // Return all standard diagnostic CT tissue presets so radiologists can switch between
+    // soft tissue, brain, bone, stroke, lung, mediastinum, and abdomen regardless of the scan type
     return [
       CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
-      CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
-      CLINICAL_PRESETS.find((p) => p.id === "ct-lung")!,
       CLINICAL_PRESETS.find((p) => p.id === "ct-brain")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-subdural")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-lung")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-mediastinum")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-abdomen")!,
+      CLINICAL_PRESETS.find((p) => p.id === "ct-liver")!,
       defaultPreset,
     ];
   }
 
   // General fallback
   return [
+    CLINICAL_PRESETS.find((p) => p.id === "ct-soft-tissue")!,
+    CLINICAL_PRESETS.find((p) => p.id === "ct-bone")!,
     defaultPreset,
     CLINICAL_PRESETS.find((p) => p.id === "xray-high")!,
     CLINICAL_PRESETS.find((p) => p.id === "us-smooth")!,
@@ -179,16 +157,16 @@ export function WindowLevelControls({
     : WINDOW_LEVEL_PRESETS.filter((p) => p.category === activeCategory);
 
   return (
-    <div className="w-84 rounded-xl border border-border-strong bg-panel/95 p-4 shadow-2xl backdrop-blur-md">
-      <div className="mb-3 flex items-center justify-between border-b border-border-strong pb-2">
-        <div className="flex items-center gap-1.5 font-medium text-ink-primary text-xs">
-          <Sliders className="h-4 w-4 text-clinical" />
-          <span>Window & Contrast Controls</span>
+    <div className="w-84 rounded-2xl border border-white/10 bg-[#0a101f]/90 p-4 shadow-[0_16px_40px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+      <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-2">
+        <div className="flex items-center gap-1.5 font-medium text-white text-xs">
+          <Sliders className="h-4 w-4 text-sky-400" />
+          <span className="tracking-wide">Window & Contrast Controls</span>
         </div>
         <button
           onClick={resetWindow}
           title="Reset to default window"
-          className="flex items-center gap-1 text-[11px] text-ink-muted transition-colors hover:text-ink-primary"
+          className="flex items-center gap-1 text-[11px] text-slate-400 transition-colors hover:text-white"
         >
           <RotateCcw className="h-3 w-3" />
           <span>Reset</span>
@@ -203,10 +181,10 @@ export function WindowLevelControls({
               key={cat}
               onClick={() => setActiveCategory(cat)}
               className={cn(
-                "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
+                "rounded-lg px-2.5 py-1 text-[10px] font-medium transition-all backdrop-blur-md",
                 activeCategory === cat
-                  ? "bg-clinical text-white font-semibold"
-                  : "bg-base text-ink-secondary hover:text-ink-primary"
+                  ? "bg-sky-500 text-white font-semibold shadow-[0_0_10px_rgba(14,165,233,0.4)]"
+                  : "bg-white/[0.05] text-slate-400 hover:text-white border border-white/5"
               )}
             >
               {cat}
@@ -217,7 +195,7 @@ export function WindowLevelControls({
 
       {/* Preset buttons */}
       <div className="mb-4">
-        <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto pr-0.5">
+        <div className="grid grid-cols-2 gap-1.5 max-h-40 overflow-y-auto pr-0.5">
           {displayPresets.map((p) => {
             const isSelected =
               state.windowWidth === p.windowWidth && state.windowCenter === p.windowCenter;
@@ -226,17 +204,17 @@ export function WindowLevelControls({
                 key={p.id}
                 onClick={() => applyPreset(p)}
                 className={cn(
-                  "flex flex-col items-start rounded-md border p-1.5 text-left transition-all",
+                  "flex flex-col items-start rounded-xl border p-2 text-left transition-all backdrop-blur-md",
                   isSelected
-                    ? "border-clinical bg-clinical-dim text-clinical-strong"
-                    : "border-border-strong/60 bg-base/50 text-ink-secondary hover:border-border-strong hover:bg-base hover:text-ink-primary"
+                    ? "border-sky-400/80 bg-sky-500/20 text-white shadow-[0_0_12px_rgba(56,189,248,0.25)] ring-1 ring-sky-400/40"
+                    : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
                 )}
               >
                 <div className="flex w-full items-center justify-between">
-                  <span className="truncate text-[10px] font-medium">{p.name}</span>
-                  {isSelected && <Check className="h-2.5 w-2.5 shrink-0 text-clinical" />}
+                  <span className="truncate text-[10.5px] font-semibold">{p.name}</span>
+                  {isSelected && <Check className="h-3 w-3 shrink-0 text-sky-400" />}
                 </div>
-                <span className="font-mono text-[8.5px] text-ink-muted opacity-80">
+                <span className="font-mono text-[9px] text-slate-400 opacity-90 mt-0.5">
                   W:{p.windowWidth} L:{p.windowCenter}
                 </span>
               </button>

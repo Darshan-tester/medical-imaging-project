@@ -465,7 +465,7 @@ export function MultiPlaneGrid({
   return (
     <div ref={containerRef} className="relative flex flex-col h-full w-full select-none overflow-hidden rounded-lg bg-black">
       {/* MPR Synchronization Bar */}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-border-strong/70 bg-panel/90 px-2.5 text-[11px] select-none z-30">
+      <div className="flex h-7 shrink-0 items-center justify-between border-b border-white/10 bg-[#060c18]/85 backdrop-blur-xl px-2.5 text-[11px] select-none z-30 shadow-sm">
         <div className="flex items-center gap-1.5 sm:gap-2">
           <span className="font-semibold uppercase tracking-wider text-ink-muted text-[9.5px]">MPR Sync:</span>
           <button
@@ -1123,16 +1123,16 @@ function SingleViewportPanel({
       className={cn(
         "relative flex flex-col h-full w-full min-h-0 min-w-0 overflow-hidden bg-black transition-all",
         isActive
-          ? "border-2 border-clinical ring-1 ring-clinical/50 shadow-[0_0_12px_rgba(14,165,233,0.3)]"
-          : "border border-border-strong/60"
+          ? "border-2 border-cyan-400/60 ring-1 ring-cyan-400/40 shadow-[0_0_16px_rgba(0,240,255,0.25)]"
+          : "border border-white/10"
       )}
     >
       {/* Viewport Header */}
       <div className={cn(
-        "flex h-7 shrink-0 items-center justify-between border-b px-2 text-[11px] backdrop-blur z-20 transition-colors",
+        "flex h-7 shrink-0 items-center justify-between border-b px-2 text-[11px] backdrop-blur-xl z-20 transition-all",
         isActive
-          ? "border-clinical/40 bg-clinical/15 text-clinical-strong"
-          : "border-border-strong/60 bg-panel/90 text-ink-primary"
+          ? "border-cyan-400/40 bg-[#07182c]/85 text-cyan-300 shadow-[0_0_12px_rgba(0,240,255,0.2)]"
+          : "border-white/10 bg-[#070d18]/85 text-slate-200"
       )}>
         <div className="relative flex items-center gap-1.5">
           <button
@@ -1225,12 +1225,22 @@ function SingleViewportPanel({
               modality={study.modality}
               volumeUrl={activeImageUrl}
               sliceCount={activeSeries?.sliceCount}
-              sliceUrlAt={(idx) => activeSeries ? getImageUrl(activeSeries, idx) : undefined}
+              sliceUrlAt={(idx) => (activeSeries ? getImageUrl(activeSeries, idx) : undefined)}
               initialAnnotations={annotations3D}
               onAnnotationsChange={onAnnotations3DChange}
               findings={findings}
               activeFindingId={activeFindingId}
               onSelectFinding={onSelectFinding}
+              compact={!isMaximized}
+              activePresetId={
+                panel.viewerState.windowWidth >= 1600 || panel.viewerState.windowCenter >= 350
+                  ? "bone"
+                  : panel.viewerState.windowWidth <= 95
+                  ? "brain"
+                  : panel.viewerState.windowWidth >= 300 && panel.viewerState.windowWidth <= 500
+                  ? "soft_tissue"
+                  : undefined
+              }
               crosshairPos={crosshairPos ? { x: crosshairPos.x, y: crosshairPos.y, z: crosshairPos.z ?? 0.5 } : null}
               onPointSelected={(pt) => {
                 if (onPointSelected) {
